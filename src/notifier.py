@@ -4,7 +4,7 @@ from datetime import datetime
 # ==========================================
 # CẤU HÌNH TELEGRAM CỦA BẠN
 # ==========================================
-TELEGRAM_TOKEN = "8304516858:AAEPmQmNr2wrI31yvszBNjOJ5HOjunTG79k"
+TELEGRAM_TOKEN = ""
 TELEGRAM_CHAT_ID = "-5129050658"
 
 def send_telegram_alert(message):
