@@ -218,9 +218,6 @@ class VNStockDataPipeline:
         def fetch_fx(start, end):
             # df = self.macro.exchange_rate(start=start, end=end, period='day')
             df = self.macro.currency().exchange_rate(start=start, end=end, period='day')
-            required_cols = ['time', 'name', 'value']
-            if not self._validate_schema(df, required_cols, item_name=f"FX USD/VND - {ticker}"):
-                return None
             if df is not None and not df.empty:
                 df = df.reset_index() # Hạ index xuống thành cột
                 
@@ -232,6 +229,10 @@ class VNStockDataPipeline:
                     df = df.dropna(subset=['value'])
                 if 'name' in df.columns:
                     df = df[df['name'].str.contains("trung tâm", na=False, case=False)]
+
+                required_cols = ['time', 'name', 'value']
+                if not self._validate_schema(df, required_cols, item_name=f"FX USD/VND"):
+                    return None
             return df
             
         _update_macro_file(fetch_fx, "usd_vnd.parquet")
@@ -240,15 +241,16 @@ class VNStockDataPipeline:
         def fetch_oil(start, end):
             commodity = CommodityPrice(start=start, end=end)
             df = commodity.oil_crude()
-            required_cols = ['time', 'open', 'high', 'low', 'close', 'volume']
-            if not self._validate_schema(df, required_cols, item_name=f"CRUDE OIL - {ticker}"):
-                return None
             if df is not None and not df.empty:
                 df = df.reset_index()
                 
                 # Tùy version vnstock, cột time có thể tên là 'date', ta gom hết về 'time'
                 if 'date' in df.columns and 'time' not in df.columns:
                     df = df.rename(columns={'date': 'time'})
+
+                required_cols = ['time', 'open', 'high', 'low', 'close', 'volume']
+                if not self._validate_schema(df, required_cols, item_name=f"CRUDE OIL"):
+                    return None
             return df
             
         _update_macro_file(fetch_oil, "crude_oil.parquet")
@@ -258,7 +260,7 @@ class VNStockDataPipeline:
             quote = Quote(symbol='VNINDEX', source='vci')
             df = quote.history(start=start, end=end, interval='1D')
             required_cols = ['time', 'open', 'high', 'low', 'close', 'volume']
-            if not self._validate_schema(df, required_cols, item_name=f"VNINDEX - {ticker}"):
+            if not self._validate_schema(df, required_cols, item_name=f"VNINDEX"):
                 return None
             if df is not None and not df.empty:
                 # Kiểm tra nếu time đang là index thì hạ xuống thành cột
@@ -580,7 +582,7 @@ class VNStockDataPipeline:
                 trading = Trading(symbol=ticker, source='vci')
                 df_prop = trading.prop_trade(start=start_str, end=current_date_str)
                 required_cols = ['trading_date', 'total_buy_trade_volume', 'total_buy_trade_value', 'total_sell_trade_volume', 'total_sell_trade_value', 'total_trade_net_volume', 'total_trade_net_value']
-                if not self._validate_schema(df_foreign, required_cols, item_name=f"Foreign Flow - {ticker}"):
+                if not self._validate_schema(df_prop, required_cols, item_name=f"Foreign Flow - {ticker}"):
                     return None
                 if df_prop is not None and not df_prop.empty:
                     df_prop['ticker'] = ticker
@@ -785,7 +787,7 @@ class VNStockDataPipeline:
                 new_df = quote.intraday()
                 
                 required_cols = ['time', 'price', 'volume', 'match_type', 'id']
-                if not self._validate_schema(df_foreign, required_cols, item_name=f"INTRADAY - {ticker}"):
+                if not self._validate_schema(new_df, required_cols, item_name=f"INTRADAY - {ticker}"):
                     return None
 
                 if new_df is not None and not new_df.empty:

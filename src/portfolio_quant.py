@@ -5,7 +5,7 @@ from pathlib import Path
 # from config import settings
 
 class QuantPortfolioEngine:
-    def __init__(self, price_dir=None, company_dir=None, output_dir=None):
+    def __init__(self, price_dir=None, output_dir=None):
         # price_dir được truyền từ live.py
         self.price_dir = Path(price_dir) / 'master_price.parquet' if price_dir else Path('data/parquet/price/master_price.parquet')
         self.output_dir = Path(output_dir) if output_dir else Path('data/portfolio')
@@ -30,10 +30,18 @@ class QuantPortfolioEngine:
             prices = df.pivot_table(index='time', columns='ticker', values='close')
             prices = prices.sort_index()
 
-            # Làm sạch dữ liệu
-            threshold = len(prices) * 0.7
+            # CHỈ LẤY LỊCH SỬ 1 NĂM GẦN NHẤT (252 PHIÊN)
+            # Giúp các mã mới lên sàn (như NO1) không bị loại bỏ oan uổng
+            prices = prices.tail(252) # Cắt lấy 252 ngày giao dịch cuối cùng
+            
+            # Làm sạch dữ liệu: Mã nào vắng mặt > 30% trong 1 năm qua mới bị loại
+            threshold = len(prices) * 0.7  # 252 * 0.7 = ~176 phiên
             prices = prices.dropna(axis=1, thresh=int(threshold))
+            
+            # Điền khuyết dữ liệu cho các ngày nghỉ lễ / mất thanh khoản
             prices = prices.ffill().bfill()
+            
+            # Xóa các dòng (ngày) mà vẫn còn NaN (rất hiếm khi xảy ra sau khi ffill)
             prices = prices.dropna()
             
             return prices
@@ -85,7 +93,7 @@ class QuantPortfolioEngine:
         # 2. Lọc danh sách mã hợp lệ
         selected_tickers = forecast_df['Ticker'].tolist()
         valid_tickers = [t for t in selected_tickers if t in self.prices_df.columns]
-        
+
         if not valid_tickers:
             print("[ERROR] Các mã được chọn không đủ dữ liệu giá lịch sử để tính rủi ro.")
             return None

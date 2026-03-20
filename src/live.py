@@ -767,10 +767,10 @@ class LiveAssistant:
         # 3. ĐIỀU KIỆN TỬ THẦN (KẾT LIỄU NHỮNG KẺ THAO TÚNG)
         # - adv_value >= 3_000_000_000 (Thanh khoản > 3 Tỷ VNĐ)
         # - flat_days <= 2 (Không quá 2 phiên nến gạch ngang trong 1 tháng)
-        tradable_tickers = metrics[
-            (metrics['adv_value'] >= 3000000000) & (metrics['flat_days'] <= 2)
-        ].index
-        # tradable_tickers = metrics.index
+        # tradable_tickers = metrics[
+        #     (metrics['adv_value'] >= 3000000000) & (metrics['flat_days'] <= 2)
+        # ].index
+        tradable_tickers = metrics.index
         
         # Ghi đè lại df_price chỉ chứa các mã tinh khiết nhất
         df_price = df_clean[df_clean['ticker'].isin(tradable_tickers)]
@@ -1401,6 +1401,9 @@ class LiveAssistant:
         else:
             signals = report[report['Signal'].isin(['SOS', 'SPRING'])].copy()
 
+        # Test
+        signals = report[report['Signal'].isin(['SOS', 'SPRING'])].copy()
+
         if signals.empty:
             print("\nKhông có tín hiệu MUA hợp lệ hôm nay (Hoặc đã bị đóng băng do VNI).")
             self._cleanup()
@@ -1524,7 +1527,7 @@ class LiveAssistant:
             print(f"   🛑 Cắt lỗ: {stop_loss:,.0f}đ | Biên độ ngày: {floor_price:,.0f} - {ceil_price:,.0f}")
             if (total_score < dynamic_threshold or ticker in active_blacklist or mf_result.get('divergence') == "BEARISH_TRAP" or dump_warnings):
                 print("   " + "-" * 62)
-                print(f">>> LƯU Ý:")
+                print(f"  >>> LƯU Ý:")
                 if total_score < dynamic_threshold:
                     print(f"   Đánh giá: scrore / threshold => {total_score} / {dynamic_threshold}")
                 if ticker in active_blacklist:
@@ -1553,7 +1556,7 @@ class LiveAssistant:
             return
 
         print("\n>>> Tối ưu hóa Danh mục (Quant Max-Sharpe) cho các mã đã lọc...")
-        # # Chuyển list thành DataFrame
+        # Chuyển list thành DataFrame
         df_selected = pd.DataFrame(selected_candidates)
         
         # Gọi danh mục đang cầm hiện tại ra
@@ -1564,7 +1567,6 @@ class LiveAssistant:
             from src.portfolio_quant import QuantPortfolioEngine
             engine_quant = QuantPortfolioEngine(price_dir=self.parquet_dir / 'price', output_dir=self.temp_dir)
             weights = engine_quant.optimize_portfolio(df_selected)
-            
             if weights:
                 for t, w in sorted(weights.items(), key=lambda item: item[1], reverse=True):
                     if w >= 0.01:
