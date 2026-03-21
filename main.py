@@ -31,24 +31,24 @@ def main():
 
     # pipeline = VNStockDataPipeline(source='VCI')
     # pipeline.get_group = 'HOSE'
-    # # pipeline.get_macro = True
+    # pipeline.get_macro = True
     # # pipeline.get_com = True
     # pipeline.get_price = True
     # pipeline.get_intra = True
     # pipeline.get_board = True
     # # pipeline.get_fin = True
-    # # pipeline.get_foreign = True
-    # # pipeline.get_prop = True
+    # pipeline.get_foreign = True
+    # pipeline.get_prop = True
     # # pipeline.get_fund = True
     # # pipeline.get_share_group = True
     # pipeline.run_pipeline()
 
     # Chạy vào 14h15 hàng ngày là tốt nhất
-    run_trading_system()
+    # run_trading_system()
 
-    # # Test: Kiểm tra thị trường, thanh khoản và volume mà Cá Mập nắm giữ
+    # Test: Kiểm tra thị trường, thanh khoản và volume mà Cá Mập nắm giữ
     # analyzer = MarketFlowAnalyzer(df_price, df_foreign, df_prop)
-    # res = analyzer.analyze_flow("HRC", target_date_str="2026-02-27")
+    # res = analyzer.analyze_flow("NO1", target_date_str=None)
     # print(analyzer.format_report(res))
 
     # watch_list = _load_watchlist(Path("data/live/watchlist.json"))
@@ -56,7 +56,7 @@ def main():
     #     res = analyzer.analyze_flow(ticker, target_date_str=None)
     #     print(analyzer.format_report(res))
 
-    # manual_list = ["HRC","D2D","GSP"]
+    # manual_list = ["DHM","NO1","VSI"]
     # for ticker in manual_list:
     #     res = analyzer.analyze_flow(ticker, target_date_str=None)
     #     # res = analyzer.analyze_flow(ticker, target_date_str='2026-03-09')
@@ -68,19 +68,19 @@ def main():
     # best_config = opt.run_optimization_pipeline(test_tickers=VN30)
 
     # # Test: Kiềm tra dòng tiền lớn ở các mã theo ngày
-    # run_cashflow_report('day', df_foreign, df_prop, target_date='2026-03-09')
-    # run_cashflow_report('week', df_foreign, df_prop, target_date='2026-03-13')
+    # run_cashflow_report('day', df_foreign, df_prop, target_date='2026-03-20')
+    # run_cashflow_report('week', df_foreign, df_prop, target_date='2026-03-20')
     # run_cashflow_report('month', df_foreign, df_prop, target_date='2026-03-13')
 
     # # Test: Kiềm tra dòng tiền lớn ở các mã theo ngày và theo ngành
-    # run_cashflow_group_report('day', df_foreign, df_prop, df_industry, target_date='2026-03-16')
+    # run_cashflow_group_report('day', df_foreign, df_prop, df_industry, target_date='2026-03-20')
     # run_cashflow_group_report('week', df_foreign, df_prop, df_industry, target_date=None)
     # run_cashflow_group_report('month', df_foreign, df_prop, df_industry, target_date='2026-03-13')
 
     # # Test: Kiềm tra quá khứ của các mã để phân tích nếu cần
     # inspector = SignalInspector(df_price, df_foreign, df_prop)
     # # Lấy Top 30 mã Win/Loss để chuẩn bị cho Giai đoạn 2
-    # winners, losers = inspector.scan_momentum(top_n=30, min_liquidity_bn=3.0)
+    # winners, losers = inspector.scan_momentum(top_n=30, min_liquidity_bn=0.1)
     # if winners is not None:
     #     audit_report = inspector.audit_winners(winners, lookback_days=60)
     # if losers is not None:
@@ -90,7 +90,7 @@ def main():
 
     # # Test: Bóc tách dòng tiền của 1 mã bất kỳ (Anh điền mã anh muốn soi vào đây)
     # tracker = SmartMoneyTracker(df_price, df_foreign, df_prop)
-    # tracker.track_ticker(ticker='VVS', target_date=None, start_date='2025-12-01')
+    # tracker.track_ticker(ticker='MSN', target_date=None, start_date='2025-12-01')
 
     # # Test thử giai đoạn Khó khăn nhất (Năm 2022 - Downtrend)
     # # bt = VectorizedBacktester(start_date='2022-01-01', end_date='2022-12-31')
