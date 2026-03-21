@@ -1,0 +1,189 @@
+import os
+import json
+import pandas as pd
+import time
+import copy
+from datetime import datetime, timedelta
+from pathlib import Path
+
+# from vnstock_data import Listing, Company, Quote, Trading, Finance, Macro, CommodityPrice, Fund
+
+# from vnstock_data.explorer.vci import Quote, Trading
+
+class VN30DataPipeline:
+    def __init__(self):
+        self.source = 'vci'
+        # vci
+        # cafef
+        # kbs
+        # mbk
+
+    def run_pipeline(self):
+        df_price = self._load_parquet(Path('data/parquet/price/master_price.parquet'))
+        df_foreign = self._load_parquet(Path('data/parquet/macro/foreign_flow.parquet'))
+        df_prop = self._load_parquet(Path('data/parquet/macro/prop_flow.parquet'))
+        df_industry = self._load_parquet(Path('data/parquet/macro/groups_by_industries.parquet'))
+
+        START_DATE = '2026-01-01'
+        END_DATE = datetime.now().strftime('%Y-%m-%d')
+        tickers = ['ACB', 'BID', 'CTG', 'DGC', 'FPT', 'GAS', 'GVR', 'HDB', 'HPG', 'LPB', 'MBB', 'MSN', 'MWG', 'PLX', 'SAB', 'SHB', 'SSB', 'SSI', 'STB', 'TCB', 'TPB', 'VCB', 'VHM', 'VIB', 'VIC', 'VJC', 'VNM', 'VPB', 'VPL', 'VRE']
+        ticker = ['VCB']
+
+        # company = Company(symbol='ACB', source='KBS')
+        # com_df = company.overview()
+        # print(com_df)
+        # print(f"Data: {type(com_df)}")
+
+        # trading = Trading(symbol='ACB', source='vci')
+        # data_df = trading.price_board(symbols_list=['ACB', 'BID', 'CTG'])
+        # data_df = trading.price_history(start=START_DATE, end=END_DATE, resolution='1D')
+        # data_df = trading.prop_trade(start=START_DATE, end=END_DATE, resolution='1D')
+        # data_df = trading.insider_deal(lang='vi')
+        # print(data_df) 
+
+        # trading = Trading(symbol='ACB', source='cafef')
+        # data_df = trading.price_history(start=START_DATE, end=END_DATE)
+        # data_df = trading.order_stats(start=START_DATE, end=END_DATE)
+        # data_df = trading.foreign_trade(start=START_DATE, end=END_DATE)
+        # data_df = trading.prop_trade(start=START_DATE, end=END_DATE)
+        # data_df = trading.insider_deal(start='2024-01-02', end=END_DATE)
+        # print(data_df) 
+
+        # trading = Trading(symbol='ACB', source='cafef')
+        # data_df = trading.price_board(symbols_list=['HRC'])
+        # if not data_df.empty:
+        #     data_df.to_json("HRC_board.json", orient='records', force_ascii=False, indent=4)
+        # data_df = trading.price_history()
+        # print(data_df)
+        # df_foreign = trading.foreign_trade(start=START_DATE, end=END_DATE)
+        # if not df_foreign.empty:
+        #     df_foreign.to_json("ACB_foreign.json", orient='records', force_ascii=False, indent=4)
+        # print(df_foreign) 
+        # df_prop = trading.prop_trade(start=START_DATE, end=END_DATE)
+        # if not df_prop.empty:
+        #     df_prop.to_json("ACB_prop.json", orient='records', force_ascii=False, indent=4)
+        # print(df_prop) 
+        # df_order = trading.order_stats(start=START_DATE, end=END_DATE)
+        # if not df_order.empty:
+        #     df_order.to_json("ACB_order.json", orient='records', force_ascii=False, indent=4)
+        # print(df_order) 
+
+
+        # quote = Quote(symbol='ACB', source='vci')
+        # df_price = quote.history(start=START_DATE, end=END_DATE, interval='1D')
+        # print(df_price.tail(10))
+        # if not df_price.empty:
+        #     df_price.to_json("ACB_price.json", orient='records', force_ascii=False, indent=4)
+        # new_df = quote.intraday() # output: time, price, volume, match_type, id
+        # if not new_df.empty:
+        #     new_df.to_json("ACB_intra.json", orient='records', force_ascii=False, indent=4)
+        # print(new_df)
+        # depth_df = quote.price_depth() # output: price, volume, buy_volume, sell_volume, undefined_volume
+        # print(depth_df)
+        
+        # fin = Finance(symbol='ACB', source='kbs', period='quarter')
+        # fin_df = fin.ratio(lang='en', style='code', get_all=True) # chỉ lấy đc ở MAS
+        # # print(fin_df)
+        # if not fin_df.empty:
+        #     fin_df.to_json("ACB.json", orient='records', force_ascii=False, indent=4)
+
+        # macro = Macro(source='mbk')
+        # macro = Macro()
+        # df_fx = macro.currency().exchange_rate(start=START_DATE, end=END_DATE, period='day')
+        # if not df_fx.empty:
+        #     df_fx.to_json("usd_vnd.json", orient='records', force_ascii=False, indent=4)
+        # df_gdp = macro.gdp(start='2025-01', end='2026-03')
+        # df_gdp = macro.economy().gdp(start='2025-01', end='2026-03')
+        # df_gdp = df_gdp.reset_index()
+        # if not df_gdp.empty:
+        #     df_gdp.to_json("vn_gdp.json", orient='records', force_ascii=False, indent=4)
+        # df_cpi = macro.cpi(start="2025-01", end="2026-03", period="month")
+        # df_cpi = df_cpi.reset_index()
+        # if not df_cpi.empty:
+        #     df_cpi.to_json("vn_cpi.json", orient='records', force_ascii=False, indent=4)
+        # df_ip = macro.industry_prod(start="2025-01", end="2026-03", period="month")
+        # df_ip = macro.economy().industry_prod(start="2025-01", end="2026-03", period="month")
+        # df_ip = df_ip.reset_index()
+        # if not df_ip.empty:
+        #     df_ip.to_json("vn_ip.json", orient='records', force_ascii=False, indent=4)
+        # df_retail = macro.retail(start="2025-01", end="2026-03", period="month")
+        # df_retail = macro.economy().retail(start="2025-01", end="2026-03", period="month")
+        # df_retail = df_retail.reset_index()
+        # if not df_retail.empty:
+        #     df_retail.to_json("vn_retail.json", orient='records', force_ascii=False, indent=4)
+        # df_ie = macro.import_export(start="2025-01", end="2026-03", period="month")
+        # df_ie = macro.economy().import_export(start="2025-01", end="2026-03", period="month")
+        # df_ie = df_ie.reset_index()
+        # if not df_ie.empty:
+        #     df_ie.to_json("vn_ie.json", orient='records', force_ascii=False, indent=4)
+        # df_fdi = macro.fdi(start="2025-01", end="2026-03", period="month")
+        # df_fdi = macro.economy().fdi(start="2025-01", end="2026-03", period="month")
+        # df_fdi = df_fdi.reset_index()
+        # if not df_fdi.empty:
+        #     df_fdi.to_json("vn_fdi.json", orient='records', force_ascii=False, indent=4)
+        # df_ms = macro.money_supply(start="2025-01", end="2026-03", period="month")
+        # df_ms = macro.money_supply(start="2025-01", end="2026-03", period="month")
+        # df_ms = macro.economy().money_supply(start="2025-01", end="2026-03", period="month")
+        # df_ms = df_ms.reset_index()
+        # if not df_ms.empty:
+        #     df_ms.to_json("vn_ms.json", orient='records', force_ascii=False, indent=4)
+        # df_pl = macro.population_labor(start="2024", end="2026", period="year")
+        # print(df_pl)
+
+        # commodity = CommodityPrice(start=START_DATE, end=END_DATE)
+        # df_fx = commodity.oil_crude()
+        # df_fx = df_fx.reset_index()
+        # if not df_fx.empty:
+        #     df_fx.to_json("crude_oil.json", orient='records', force_ascii=False, indent=4)
+        # print(df_fx)
+
+        # f = Fund()
+        # df_funds = f.listing(fund_type='BOND')
+        # # if not df_funds.empty:
+        # #     df_funds.to_json("funds.json", orient='records', force_ascii=False, indent=4)
+        # print(df_funds)
+
+        # l = Listing(source='vci')
+        # df_ind = l.symbols_by_industries()
+        # if not df_ind.empty:
+        #     df_ind.to_json("groups_by_industries_new.json", orient='records', force_ascii=False, indent=4)
+        # print(df_ind)
+
+        # df_oil = self._load_parquet(Path('data/parquet') / 'macro/crude_oil.parquet')
+        # if not df_oil.empty:
+        #     print(df_oil.tail(5))
+        
+        # df_f_flow = self._load_parquet(Path('data/parquet') / 'macro/foreign_flow.parquet')
+        # if not df_f_flow.empty:
+        #     print(df_f_flow.tail(5))
+
+        # df_usd = self._load_parquet(Path('data/parquet') / 'macro/usd_vnd.parquet')
+        # if not df_usd.empty:
+        #     print(df_usd.tail(5))
+
+        # df_vnindex = self._load_parquet(Path('data/parquet') / 'macro/vnindex.parquet')
+        # if not df_vnindex.empty:
+        #     print(df_vnindex.tail(5))
+
+        # if not df_price.empty:
+        #     df_group = {ticker: group for ticker, group in df_price.groupby('ticker')}
+        #     print(df_group['HRC'].tail(30))
+
+        # if not df_industry.empty:
+        #     # print(df_industry.tail(10))
+        #     df_industry.to_json("groups_by_industries_new.json", orient='records', force_ascii=False, indent=4)
+
+
+    def _load_parquet(self, path):
+        """Hàm đọc Parquet an toàn, tránh lỗi nếu file chưa tồn tại"""
+        if path.exists():
+            try: 
+                return pd.read_parquet(path)
+            except: 
+                print(f"Could NOT read {path}")
+                return pd.DataFrame()
+        return pd.DataFrame()
+
+if __name__ == "__main__":
+    pipeline = VN30DataPipeline()
+    pipeline.run_pipeline()
