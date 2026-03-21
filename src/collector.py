@@ -55,7 +55,7 @@ class VNStockDataPipeline:
         self.request_timestamps = deque()
         self.rate_lock = threading.Lock()
         self.total_requests_sent = 0
-        self.MAX_RPM = 500  # Ngưỡng an toàn tối đa (500 thay vì 600 để chừa hao phí cho thư viện)
+        self.MAX_RPM = 290  # Ngưỡng an toàn tối đa (500 thay vì 600 để chừa hao phí cho thư viện)
 
     def _load_master_data(self, folder_key, file_name):
         """Đọc file Parquet cũ và chia thành Dictionary theo Ticker để truy xuất O(1)"""
@@ -955,19 +955,41 @@ class VNStockDataPipeline:
         # Tải ds mã theo nhóm ngành
         if self.get_share_group:
             print("\n" + "="*50)
-            print("     TẢI DANH SÁCH MÃ THEO NGÀNH")
+            print("     TẢI DANH SÁCH MÃ THEO NGÀNH (ADAPTER MODE)")
             print("="*50)
             try:
-                df_ind = self.listing.symbols_by_industries()
-                required_cols = ['symbol', 'icb_name2'] 
-                if not self._validate_schema(df_ind, required_cols, item_name="Industry Groups"):
+                df_ind_raw = self.listing.symbols_by_industries()
+                
+                # KIỂM DUYỆT DANH SÁCH SÓNG NGÀNH (CẤU TRÚC MỚI)
+                # Bắt theo đúng cấu trúc Long Format của vnstock_data mới
+                required_cols = ['symbol', 'icb_level', 'icb_name'] 
+                if not self._validate_schema(df_ind_raw, required_cols, item_name="Industry Groups"):
                     print("   [-] Dữ liệu Ngành bị lỗi cấu trúc. Giữ nguyên file cũ.")
-                if df_ind is not None and not df_ind.empty:
+                else:
+                    # ADAPTER: Chuyển đổi từ Dọc (Long) sang Ngang (Wide)
+                    # Gom nhóm theo 'symbol', xoay 'icb_level' thành cột, đưa 'icb_name' vào giá trị
+                    df_ind = df_ind_raw.pivot_table(
+                        index='symbol', 
+                        columns='icb_level', 
+                        values='icb_name', 
+                        aggfunc='first'
+                    ).reset_index()
+                    
+                    # Đổi tên các cột số (1, 2, 3, 4) thành tên cột truyền thống (icb_name1, icb_name2...)
+                    # Sử dụng dict comprehension để bọc các level động (tránh lỗi nếu API thiếu level 4)
+                    rename_dict = {level: f'icb_name{level}' for level in df_ind.columns if isinstance(level, (int, float))}
+                    df_ind = df_ind.rename(columns=rename_dict)
+                    
+                    # Xóa tên cho cái trục cột (index name) sinh ra do hàm pivot
+                    df_ind.columns.name = None 
+                    
+                    # Lưu file Parquet với cấu trúc Cũ (Tương thích ngược 100%)
                     group_path = self.folders['macro'] / "groups_by_industries.parquet"
                     df_ind.to_parquet(group_path, engine='pyarrow')
-                    print(f" [OK] Đã lưu danh sách theo ngành {len(df_ind)} mã vào groups_by_industries.parquet")
+                    print(f" [OK] Đã bẻ ngang và lưu danh sách {len(df_ind)} mã vào groups_by_industries.parquet")
             except Exception as e:
                 print(f" [!] Lỗi tải Danh sách theo ngành: {e}")
+
 
         # Lấy danh sách mã
         print("\n" + "="*50)
