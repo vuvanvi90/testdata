@@ -21,7 +21,8 @@ from src.optimizer import QuantOptimizer
 from src.reporter import CashFlowReporter 
 from src.notifier import send_telegram_alert 
 from src.inspector import SignalInspector 
-from src.flow_tracker import SmartMoneyTracker 
+from src.flow_tracker import SmartMoneyTracker
+from src.shadow_profiler import ShadowProfiler
 
 def main():
     df_price = _load_parquet(Path('data/parquet/price/master_price.parquet'))
@@ -48,7 +49,7 @@ def main():
 
     # Test: Kiểm tra thị trường, thanh khoản và volume mà Cá Mập nắm giữ
     # analyzer = MarketFlowAnalyzer(df_price, df_foreign, df_prop)
-    # res = analyzer.analyze_flow("NO1", target_date_str=None)
+    # res = analyzer.analyze_flow("VNM", target_date_str=None)
     # print(analyzer.format_report(res))
 
     # watch_list = _load_watchlist(Path("data/live/watchlist.json"))
@@ -78,19 +79,38 @@ def main():
     # run_cashflow_group_report('month', df_foreign, df_prop, df_industry, target_date='2026-03-13')
 
     # # Test: Kiềm tra quá khứ của các mã để phân tích nếu cần
-    # inspector = SignalInspector(df_price, df_foreign, df_prop)
+    # inspector = SignalInspector(df_price, df_foreign, df_prop, lookback_days=90)
     # # Lấy Top 30 mã Win/Loss để chuẩn bị cho Giai đoạn 2
     # winners, losers = inspector.scan_momentum(top_n=30, min_liquidity_bn=0.1)
     # if winners is not None:
-    #     audit_report = inspector.audit_winners(winners, lookback_days=60)
+    #     audit_report = inspector.audit_winners(winners)
     # if losers is not None:
-    #     audit_lose_report = inspector.audit_losers(losers, lookback_days=60)
+    #     audit_lose_report = inspector.audit_losers(losers)
     #     # Mang Tội đồ đi đối chất với Smart Money
     #     inspector.cross_audit_traps(audit_lose_report)
 
+    # # Soi mã anh muốn kiểm tra
+    # manual_list = ["DHM","NO1","VSI"]
+    # for ticker in manual_list:
+    #     inspector.inspect_single_ticker(ticker=ticker)
+
     # # Test: Bóc tách dòng tiền của 1 mã bất kỳ (Anh điền mã anh muốn soi vào đây)
     # tracker = SmartMoneyTracker(df_price, df_foreign, df_prop)
-    # tracker.track_ticker(ticker='MSN', target_date=None, start_date='2025-12-01')
+    # tracker.track_ticker(ticker='VNM', target_date=None, start_date='2025-12-01')
+
+    # Kiểm soát vùng xám
+    profiler = ShadowProfiler(df_price)
+    # Định nghĩa Tệp Tội phạm (Các mã Penny/Midcap siêu đầu cơ thường có lái)
+    all_tickers = df_price['ticker'].unique().tolist()
+    market_tickers = [t for t in all_tickers if len(str(t)) == 3]
+    training_tickers = profiler._filter_shadow_candidates(market_tickers)
+    # shadow_tickers = ['DHM', 'NO1', 'VSI']
+    shadow_tickers = ['HRC']
+    # Pha 1: Máy học tự động đo lường quy luật của nhóm này
+    rules = profiler.build_criminal_profile(training_tickers, lookback_days=300)
+    # Pha 2: Áp luật quét trực tiếp bảng điện hôm nay
+    if rules:
+        profiler.live_shadow_radar(shadow_tickers, rules, target_date='2026-02-10')
 
     # # Test thử giai đoạn Khó khăn nhất (Năm 2022 - Downtrend)
     # # bt = VectorizedBacktester(start_date='2022-01-01', end_date='2022-12-31')
