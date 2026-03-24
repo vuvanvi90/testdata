@@ -23,6 +23,7 @@ from src.notifier import send_telegram_alert
 from src.inspector import SignalInspector 
 from src.flow_tracker import SmartMoneyTracker
 from src.shadow_profiler import ShadowProfiler
+from src.market_tracker import MarketTracker
 
 def main():
     df_price = _load_parquet(Path('data/parquet/price/master_price.parquet'))
@@ -98,19 +99,29 @@ def main():
     # tracker = SmartMoneyTracker(df_price, df_foreign, df_prop)
     # tracker.track_ticker(ticker='VNM', target_date=None, start_date='2025-12-01')
 
-    # Kiểm soát vùng xám
-    profiler = ShadowProfiler(df_price)
-    # Định nghĩa Tệp Tội phạm (Các mã Penny/Midcap siêu đầu cơ thường có lái)
-    all_tickers = df_price['ticker'].unique().tolist()
-    market_tickers = [t for t in all_tickers if len(str(t)) == 3]
-    training_tickers = profiler._filter_shadow_candidates(market_tickers)
-    # shadow_tickers = ['DHM', 'NO1', 'VSI']
-    shadow_tickers = ['HRC']
-    # Pha 1: Máy học tự động đo lường quy luật của nhóm này
-    rules = profiler.build_criminal_profile(training_tickers, lookback_days=300)
-    # Pha 2: Áp luật quét trực tiếp bảng điện hôm nay
-    if rules:
-        profiler.live_shadow_radar(shadow_tickers, rules, target_date='2026-02-10')
+    # # Kiểm soát vùng xám
+    # profiler = ShadowProfiler(df_price)
+    # # Định nghĩa Tệp Tội phạm (Các mã Penny/Midcap siêu đầu cơ thường có lái)
+    # all_tickers = df_price['ticker'].unique().tolist()
+    # market_tickers = [t for t in all_tickers if len(str(t)) == 3]
+    # training_tickers = profiler._filter_shadow_candidates(market_tickers)
+    # # shadow_tickers = ['DHM', 'NO1', 'VSI']
+    # shadow_tickers = ['HRC']
+    # # Pha 1: Máy học tự động đo lường quy luật của nhóm này
+    # rules = profiler.build_criminal_profile(training_tickers, lookback_days=300)
+    # # Pha 2: Áp luật quét trực tiếp bảng điện hôm nay
+    # if rules:
+    #     profiler.live_shadow_radar(shadow_tickers, rules, target_date='2026-02-10')
+
+    # tracker = MarketTracker(data_dir='data/parquet')
+    # # # Tuần
+    # # df_perf_1w = tracker.analyze_market_breadth(lookback_days=5, label="1 TUẦN QUA")
+    # # leading_sectors = tracker.analyze_sector_rotation(df_perf_1w, top_n=5)
+    # # tracker.analyze_flow_attribution(lookback_days=5)
+    # # Ngày
+    # df_perf = tracker.analyze_market_breadth(lookback_days=1, label="HÔM QUA")
+    # leading_sectors = tracker.analyze_sector_rotation(df_perf, top_n=5)
+    # tracker.analyze_flow_attribution(lookback_days=1)
 
     # # Test thử giai đoạn Khó khăn nhất (Năm 2022 - Downtrend)
     # # bt = VectorizedBacktester(start_date='2022-01-01', end_date='2022-12-31')
