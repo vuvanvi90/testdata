@@ -14,6 +14,7 @@ from src.smart_money import SmartMoneyEngine
 from src.market_flow import MarketFlowAnalyzer
 from src.reporter_by_group import GroupCashFlowReporter
 from src.shadow_profiler import ShadowProfiler
+from src.portfolio import QuantPortfolioEngine
 
 """
 LIVE TRADING SYSTEM - QUY TRÌNH LUỒNG DỮ LIỆU (DATA FLOW)
@@ -1527,8 +1528,6 @@ class LiveAssistant:
             # Gọi Radar Đo lường Tồn kho & Dòng tiền Ẩn
             cum_inventory, dominance_pct, shadow_flow = self._get_inventory_metrics(ticker)
 
-            # # KIỂM TOÁN LÁI NỘI (trong ngày)
-            # shadow_info = self.shadow_dict.get(ticker)
 
             # KIỂM TOÁN LÁI NỘI (VỚI BỘ NHỚ T+15)
             current_date = pd.to_datetime(self.run_date) if hasattr(self, 'run_date') else pd.to_datetime('today')
@@ -1594,7 +1593,6 @@ class LiveAssistant:
         has_new_buy = False
         
         try:
-            from src.portfolio_quant import QuantPortfolioEngine
             engine_quant = QuantPortfolioEngine(price_dir=self.parquet_dir / 'price', output_dir=self.temp_dir)
             weights = engine_quant.optimize_portfolio(df_selected)
             if weights:

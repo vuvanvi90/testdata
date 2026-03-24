@@ -317,4 +317,3 @@ if __name__ == "__main__":
         # Pha 2: Mang bộ luật đi quét lại toàn bộ bảng điện
         if rules:
             profiler.live_shadow_radar(market_tickers, rules)
-
