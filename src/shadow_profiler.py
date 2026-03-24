@@ -4,10 +4,12 @@ import os
 from datetime import datetime
 
 class ShadowProfiler:
-    def __init__(self, price_df):
+    def __init__(self, price_df, verbose=True):
         """Khởi tạo Hệ thống Nhận diện Đội lái (Shadow Profiler)"""
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] Khởi động Radar Săn Lái Nội (Shadow Profiler)...")
+        if verbose:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Khởi động Radar Săn Lái Nội (Shadow Profiler)...")
         self.df_price = price_df
+        self.verbose = verbose
         
         if not self.df_price.empty:
             self.df_price['time'] = pd.to_datetime(self.df_price['time']).dt.normalize()
@@ -34,7 +36,8 @@ class ShadowProfiler:
         Bộ lọc Thanh trừng: Tự động loại bỏ Bluechips và hàng nặng mông.
         Chỉ giữ lại các mã Midcap/Penny có 'Tiền án tiền sự' bơm xả.
         """
-        print(f"[*] Đang rà soát tố chất đầu cơ của {len(tickers)} mã...")
+        if self.verbose:
+            print(f"[*] Đang rà soát tố chất đầu cơ của {len(tickers)} mã...")
         valid_candidates = []
         
         for ticker in tickers:
@@ -62,7 +65,8 @@ class ShadowProfiler:
                 
             valid_candidates.append(ticker)
             
-        print(f"   => [OK] Đã tự động chắt lọc được {len(valid_candidates)} mã thuần Đầu Cơ (Penny/Midcap).")
+        if self.verbose:
+            print(f"   => [OK] Đã tự động chắt lọc được {len(valid_candidates)} mã thuần Đầu Cơ (Penny/Midcap).")
         return valid_candidates
 
     def build_criminal_profile(self, tickers, lookback_days=250):
@@ -70,9 +74,10 @@ class ShadowProfiler:
         Pha 1: "Học" hành vi của Đội lái trong quá khứ.
         Đã đồng bộ thuật toán Chống nhiễu (Robust Statistics) và Time-in-Zone.
         """
-        print("\n" + "="*85)
-        print(" 🕵️ GIAI ĐOẠN 1: TRÍCH XUẤT HỒ SƠ LÁI NỘI (CRIMINAL PROFILING)")
-        print("="*85)
+        if self.verbose:
+            print("\n" + "="*85)
+            print(" 🕵️ GIAI ĐOẠN 1: TRÍCH XUẤT HỒ SƠ LÁI NỘI (CRIMINAL PROFILING)")
+            print("="*85)
         
         profiles = []
         
@@ -155,7 +160,8 @@ class ShadowProfiler:
         df_profiles = pd.DataFrame(profiles)
         
         if df_profiles.empty:
-            print("[!] Không tìm thấy cú kéo giá >20% nào của các mã này trong lịch sử.")
+            if self.verbose:
+                print("[!] Không tìm thấy cú kéo giá >20% nào của các mã này trong lịch sử.")
             return None
             
         # TÍNH TOÁN TRUNG VỊ (MEDIAN) CỦA TOÀN BỘ CHỈ SỐ
@@ -165,14 +171,15 @@ class ShadowProfiler:
         median_acc_days = df_profiles['Accumulation_Days'].median()
         median_markup = df_profiles['Markup_Duration'].median()
         
-        print(f"[*] Đã mổ xẻ {len(df_profiles)} siêu sóng đầu cơ. Rút ra BỘ LUẬT CHUẨN như sau:")
-        print(f"  1. Thời gian Gom hàng (Tích lũy) : Trung bình mất {median_acc_days:.0f} phiên nén giá.")
-        print(f"  2. Biên độ Nền nén               : Dao động quanh {median_volatility:.1f}%")
-        print(f"  3. Tỷ lệ Vắt kiệt Cung           : Volume tụt chỉ còn {median_dry_up:.1f}% so với MA20")
-        print(f"  4. Sức chịu đựng (Nổ xịt)        : Nhẫn nhịn {median_upthrusts:.0f} lần rũ bỏ.")
-        print("-" * 85)
-        print(f"  => 🚀 QUỸ ĐẠO KÉO GIÁ (MARKUP): Nhịp đánh sẽ đạt đỉnh và kết thúc sau trung bình {median_markup:.0f} phiên kể từ điểm nổ!")
-        print("="*85)
+        if self.verbose:
+            print(f"[*] Đã mổ xẻ {len(df_profiles)} siêu sóng đầu cơ. Rút ra BỘ LUẬT CHUẨN như sau:")
+            print(f"  1. Thời gian Gom hàng (Tích lũy) : Trung bình mất {median_acc_days:.0f} phiên nén giá.")
+            print(f"  2. Biên độ Nền nén               : Dao động quanh {median_volatility:.1f}%")
+            print(f"  3. Tỷ lệ Vắt kiệt Cung           : Volume tụt chỉ còn {median_dry_up:.1f}% so với MA20")
+            print(f"  4. Sức chịu đựng (Nổ xịt)        : Nhẫn nhịn {median_upthrusts:.0f} lần rũ bỏ.")
+            print("-" * 85)
+            print(f"  => 🚀 QUỸ ĐẠO KÉO GIÁ (MARKUP): Nhịp đánh sẽ đạt đỉnh và kết thúc sau trung bình {median_markup:.0f} phiên kể từ điểm nổ!")
+            print("="*85)
         
         # ÁP DỤNG CÁC HỆ SỐ NỚI LỎNG (CHỐNG OVERFITTING)
         return {
@@ -190,10 +197,11 @@ class ShadowProfiler:
         và đưa ra Chiến lược chốt lời (Markup Duration).
         Nếu có target_date, radar sẽ lùi về quá khứ để quét.
         """
-        date_label = target_date if target_date else "HÔM NAY"
-        print("\n" + "="*95)
-        print(f" 🎯 GIAI ĐOẠN 2: RADAR CẢNH BÁO SÓNG ĐẦU CƠ - THỜI ĐIỂM QUÉT: [ {date_label} ]")
-        print("="*95)
+        if self.verbose:
+            date_label = target_date if target_date else "HÔM NAY"
+            print("\n" + "="*95)
+            print(f" 🎯 GIAI ĐOẠN 2: RADAR CẢNH BÁO SÓNG ĐẦU CƠ - THỜI ĐIỂM QUÉT: [ {date_label} ]")
+            print("="*95)
         
         if not profile_rules: return
         
@@ -241,7 +249,7 @@ class ShadowProfiler:
             live_upthrusts = df_live['is_upthrust'].sum()
             
             # --- X-QUANG DEBUG (CHỈ HIỂN THỊ KHI QUÉT TRÚNG MÃ HRC) ---
-            if ticker == 'HRC':
+            if ticker == 'HRC' and self.verbose:
                 print(f"\n[🔬 DEBUG HRC - NGÀY {target_date if target_date else 'HIỆN TẠI'}]")
                 print(f"  + Độ nén nền (Volat): {live_volatility:.1f}% (Luật cho phép <= {profile_rules['max_volatility']:.1f}%) -> Pass: {live_volatility <= profile_rules['max_volatility']}")
                 print(f"  + Độ cạn cung (Dry) : {live_dry_up:.1f}% (Luật cho phép <= {profile_rules['max_dry_up']:.1f}%) -> Pass: {live_dry_up <= profile_rules['max_dry_up']}")
@@ -272,14 +280,17 @@ class ShadowProfiler:
                 })
                 
         # --- 4. IN BÁO CÁO ---
-        if not alerts:
-            print("[*] Hiện tại không có mã nào lọt vào form nén sóng của Đội lái.")
-        else:
-            print(f"{'MÃ CP':<8} | {'TRẠNG THÁI':<26} | {'CHIẾN LƯỢC & HÀNH VI':<60}")
-            print("-" * 95)
-            for a in alerts:
-                print(f"{a['Ticker']:<8} | {a['Status']:<26} | {a['Note']:<60}")
-        print("="*95)
+        if self.verbose:
+            if not alerts:
+                print("[*] Hiện tại không có mã nào lọt vào form nén sóng của Đội lái.")
+            else:
+                print(f"{'MÃ CP':<8} | {'TRẠNG THÁI':<26} | {'CHIẾN LƯỢC & HÀNH VI':<60}")
+                print("-" * 95)
+                for a in alerts:
+                    print(f"{a['Ticker']:<8} | {a['Status']:<26} | {a['Note']:<60}")
+            print("="*95)
+
+        return alerts
 
 # ==========================================
 # KHỐI CHẠY THỬ NGHIỆM

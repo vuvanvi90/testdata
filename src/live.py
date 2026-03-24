@@ -13,6 +13,7 @@ from src.forecaster import WyckoffForecaster
 from src.smart_money import SmartMoneyEngine
 from src.market_flow import MarketFlowAnalyzer
 from src.reporter_by_group import GroupCashFlowReporter
+from src.shadow_profiler import ShadowProfiler
 
 """
 LIVE TRADING SYSTEM - QUY TRÌNH LUỒNG DỮ LIỆU (DATA FLOW)
@@ -29,42 +30,6 @@ LIVE TRADING SYSTEM - QUY TRÌNH LUỒNG DỮ LIỆU (DATA FLOW)
 RISK_PER_TRADE = 500000
 MAX_POSITION_SIZE = 5000
 BASE_SCORE_THRESHOLD = 70
-
-# ==============================================================================
-# 1. CẤU HÌNH THEMATIC 2026 (VĨ MÔ: HẠ TẦNG AI, FDI & CHÍNH SÁCH TIỀN TỆ)
-# ==============================================================================
-
-# Nhóm KCN & Bất động sản KCN (Hưởng lợi FDI & Nhu cầu Hạ tầng Data Center):
-# Bổ sung các "ông trùm" quỹ đất cao su chuyển đổi và KCN phía Nam/Bắc
-THEME_KCN = [
-    'VGC', 'IDC', 'KBC', 'SZC', 'GVR', 'SIP', 
-    'BCM', 'PHR', 'DPR', 'NTC', 'TIP', 'D2D', 'SNZ', 'LHG'
-]
-
-# Nhóm Năng lượng & Hạ tầng Điện (Cung cấp điện/Khí cho Data Center & Sản xuất):
-# Bổ sung các doanh nghiệp Xây lắp điện, Thủy điện, Điện khí và Năng lượng tái tạo
-THEME_ENERGY = [
-    'POW', 'PC1', 'TV2', 'REE', 'GAS', 
-    'NT2', 'HDG', 'GEG', 'VSH', 'QTP', 'PVD', 'PVS', 'BCG', 'GEX'
-]
-
-# Nhóm Công nghệ & Tài chính số (Trực tiếp làm AI, Viễn thông & Ngân hàng số):
-# Bổ sung các mã Viễn thông, Phần mềm, Phần cứng và các Ngân hàng dẫn đầu về CASA/Tech
-THEME_TECH_FIN = [
-    'FPT', 'CMG', 'TCB', 'TCX',
-    'ELC', 'ITD', 'VGI', 'FOX', 'CTR', 'LCG', 'MBB', 'VPB', 'VIB'
-]
-
-# Nhóm Đầu tư công & Vật liệu xây dựng (Đẩy mạnh hạ tầng 2026):
-# Bổ sung nhóm Thép, Đá, Nhựa đường, Thi công (Hưởng lợi gián tiếp từ chu kỳ bơm tiền)
-THEME_INFRASTRUCTURE = [
-    'HPG', 'HSG', 'NKG', 'KSB', 'VLC', 'PLC', 'HHV', 'VCG', 'C4G'
-]
-
-# Tổng hợp tất cả các mã được cộng điểm Vĩ mô
-THEMATIC_2026 = THEME_KCN + THEME_ENERGY + THEME_TECH_FIN + THEME_INFRASTRUCTURE
-
-# ==============================================================================
 
 # --- DANH SÁCH ĐEN (CÁC MÃ LỖI DỮ LIỆU / KHÔNG GIAO DỊCH) ---
 IGNORE_TICKERS = ['ABR', 'ACG', 'ADP', 'AFX', 'ANT', 'ACL', 'CTR', 'DSC', 'TCI', 'TDP']
@@ -129,8 +94,50 @@ class LiveAssistant:
         self._analyze_macro_conditions()
 
         # Khởi tạo Động cơ Smart Money
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] Đang khởi động Smart Money Engine...")
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Khởi động Smart Money Engine...")
         self.sm_engine = SmartMoneyEngine(self.foreign_dict, self.prop_dict, self.out_shares_dict)
+
+        # KHỞI ĐỘNG BỘ NÃO SĂN LÁI NỘI
+        try:
+            print("\n[*] Khởi động Radar Săn Lái Nội và Học bộ luật mới nhất...")
+            self.shadow_profiler = ShadowProfiler(price_df=self.df_price, verbose=False)
+            all_tickers = self.shadow_profiler.df_price['ticker'].unique().tolist()
+            market_tickers = [t for t in all_tickers if len(str(t)) == 3]
+            self.shadow_candidates = self.shadow_profiler._filter_shadow_candidates(market_tickers)
+            self.shadow_rules = self.shadow_profiler.build_criminal_profile(self.shadow_candidates, lookback_days=250)
+        except Exception as e:
+            print(f"[!] Lỗi khởi động Shadow Profiler: {e}")
+
+    def _check_historical_shadow_profile(self, ticker, sos_date, lookback_window=15):
+        """
+        Bộ nhớ Rình mồi: Lùi về quá khứ (tối đa 15 ngày trước ngày nổ SOS) 
+        để xem mã này đã từng được Radar Lái nội đánh giá là 'CHÍN MUỒI' hay chưa.
+        """
+        if not hasattr(self, 'shadow_profiler') or not hasattr(self, 'shadow_rules'):
+            return None
+
+        # Chạy lùi từ ngày nổ SOS về trước
+        # Bỏ qua đúng ngày SOS (vì ngày nổ vol to chắc chắn bị Radar đánh trượt)
+        for days_back in range(1, lookback_window + 1):
+            check_date = sos_date - pd.Timedelta(days=days_back)
+            date_str = check_date.strftime('%Y-%m-%d')
+            
+            # Mượn Cỗ máy thời gian của Profiler để soi lại quá khứ
+            raw_alerts = self.shadow_profiler.live_shadow_radar(
+                [ticker], 
+                self.shadow_rules, 
+                target_date=date_str
+            )
+            
+            if raw_alerts:
+                alert = raw_alerts[0]
+                if "CHÍN MUỒI" in alert['Status'] or "CHỜ ĐỢI" in alert['Status']:
+                    # Ghi nhận lại độ trễ (Đã ủ mưu bao nhiêu ngày trước khi nổ)
+                    alert['Days_Delayed'] = days_back
+                    alert['Memory_Date'] = date_str
+                    return alert
+                    
+        return None # Quét 15 ngày không thấy dấu vết Lái nội
 
     def _ensure_temp_dir(self):
         if self.temp_dir.exists(): shutil.rmtree(self.temp_dir)
@@ -339,9 +346,11 @@ class LiveAssistant:
 
         # 🌟 TÍCH HỢP SMART MONEY SECTOR ROTATION TỪ REPORTER.PY
         try:
-            print("\n   [+] Đang kích hoạt Radar Dòng tiền Tuần (Smart Money Flow)...")
+            print("\n" +"="*65)
+            print("ĐÁNH GIÁ DÒNG TIỀN VÀ SÓNG NGÀNH")
+            print("="*65)
             
-            reporter = GroupCashFlowReporter(self.df_foreign, self.df_prop, self.df_ind)
+            reporter = GroupCashFlowReporter(self.df_foreign, self.df_prop, self.df_ind, verbose=False)
             sector_flow, flow_report_df = reporter.generate_report(timeframe='week')
             
             if sector_flow is not None and not sector_flow.empty:
@@ -395,7 +404,7 @@ class LiveAssistant:
             self.buy_threshold = BASE_SCORE_THRESHOLD + 5 # 75đ mới mua
             self.risk_factor = 0.7 # Hạ tỷ trọng mua mới
             
-        print(f"[*] Chế độ Vận hành: {self.season} | Điểm mua: {self.buy_threshold} | Tỷ trọng: {self.risk_factor*100}%")
+        print(f"\n[***] Chế độ Vận hành: {self.season} | Điểm mua: {self.buy_threshold} | Tỷ trọng: {self.risk_factor*100}%")
 
     def get_top_bond_funds(self, top_n=2):
         """
@@ -508,9 +517,9 @@ class LiveAssistant:
         # -----------------------------------------------------
         # CẬP NHẬT LẠI THÔNG SỐ VÀ IN RA BÁO CÁO
         # -----------------------------------------------------
-        print("\n" + "="*45)
+        print("\n" + "="*65)
         print(" 🌍 ĐÁNH GIÁ VĨ MÔ TOP-DOWN")
-        print("="*45)
+        print("="*65)
         
         if self.macro_warnings:
             self.macro_status = "PHÒNG THỦ CAO (RỦI RO VĨ MÔ)"
@@ -525,16 +534,16 @@ class LiveAssistant:
             print(f"🟢 TRẠNG THÁI: {self.macro_status}")
             print("   ✅ Tỷ giá ổn định, Giá dầu trong tầm kiểm soát.")
             
-        print("-" * 45)
+        print("-" * 65)
         print(f"🎯 Điểm Mua Kỹ thuật Tối thiểu: {self.buy_threshold}đ")
         print(f"💰 Tỷ trọng Giải ngân Tối đa:   {self.risk_factor*100:.0f}%")
-        print("="*45)
+        print("="*65)
 
     def _check_market_regime(self):
         """Kiểm tra Xu hướng thị trường chung (VN-Index) từ Parquet"""
-        print("\n" + "="*45)
+        print("\n" + "="*65)
         print(" 🏛️ KIỂM TRA XU HƯỚNG THỊ TRƯỜNG CHUNG (VN-INDEX)")
-        print("="*45)
+        print("="*65)
         
         vnindex_path = self.parquet_dir / 'macro/vnindex.parquet'
         
@@ -565,12 +574,12 @@ class LiveAssistant:
                 if current_close < current_ema89:
                     print(f"🚨 CẢNH BÁO: VN-Index ({current_close:,.1f}) NẰM DƯỚI EMA89 ({current_ema89:,.1f}).")
                     print("   -> BẬT CÔNG TẮC ĐÓNG BĂNG: Dừng giải ngân mua mới!")
-                    print("="*45)
+                    print("="*65)
                     return False # Downtrend
                 else:
                     print(f"✅ UPTREND: VN-Index ({current_close:,.1f}) NẰM TRÊN EMA89 ({current_ema89:,.1f}).")
                     print("   -> Xu hướng ủng hộ: Cho phép quét tín hiệu Wyckoff.")
-                    print("="*45)
+                    print("="*65)
                     return True # Uptrend
             else:
                 print(f"[!] Dữ liệu VN-Index quá ngắn ({len(df_vnindex)} phiên), chưa đủ để vẽ EMA89.")
@@ -1169,7 +1178,7 @@ class LiveAssistant:
 
         # 2. Chạy Forecaster (Truyền đường dẫn file Parquet tạm vào)
         print("\n>>> Đang chạy phân tích Wyckoff & Vĩ mô...")
-        forecaster = WyckoffForecaster(price_dir=temp_price_path, output_dir=self.temp_dir, run_date=datetime.now())
+        forecaster = WyckoffForecaster(price_dir=temp_price_path, output_dir=self.temp_dir, run_date=datetime.now(), verbose=False)
         report = forecaster.run_forecast()
 
         if report.empty: return
@@ -1518,6 +1527,13 @@ class LiveAssistant:
             # Gọi Radar Đo lường Tồn kho & Dòng tiền Ẩn
             cum_inventory, dominance_pct, shadow_flow = self._get_inventory_metrics(ticker)
 
+            # # KIỂM TOÁN LÁI NỘI (trong ngày)
+            # shadow_info = self.shadow_dict.get(ticker)
+
+            # KIỂM TOÁN LÁI NỘI (VỚI BỘ NHỚ T+15)
+            current_date = pd.to_datetime(self.run_date) if hasattr(self, 'run_date') else pd.to_datetime('today')
+            shadow_memory = self._check_historical_shadow_profile(ticker, current_date, lookback_window=15)
+
             print("-" * 65)
             print(f"✅ MUA | {ticker} | Điểm: {total_score}/100")
             print(f"   Lý do: {', '.join(score_details)}")
@@ -1539,6 +1555,20 @@ class LiveAssistant:
                 if dump_warnings:
                     print(f"   🚫 TỪ CHỐI MUA {ticker}: Khối ngoại/Tự doanh vừa có nhịp phân phối rát!")
                     print(f"      Dấu vết: {' | '.join(dump_warnings)}")
+            
+            # Lịch sử gom hàng của lái
+            if shadow_memory:
+                print(f"  >>> KIỂM TOÁN LÁI NỘI:")
+                status = shadow_memory['Status']
+                memory_date = shadow_memory['Memory_Date']
+                delay = shadow_memory['Days_Delayed']
+                if "CHÍN MUỒI" in status:
+                    print(f"   🌟 BỆ PHÓNG HOÀN HẢO (Ủ mưu từ {delay} ngày trước - {memory_date}): {shadow_memory['Note']}")
+                elif "CHỜ ĐỢI" in status:
+                    print(f"   ⏳ CẢNH BÁO NỔ SỚM (Ghi nhận lúc {memory_date}): {shadow_memory['Note']}")
+                elif "NGUY HIỂM" in status:
+                    print(f"   🩸 BẪY PHÂN PHỐI LÁI NỘI (Ghi nhận lúc {memory_date}): {shadow_memory['Note']}")
+            
             print("-" * 65)
 
         # Các mã đã được chấm điểm => lưu lại để kiểm tra

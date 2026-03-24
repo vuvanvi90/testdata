@@ -14,12 +14,13 @@ LUNAR_NEW_YEARS = [
 ]
 
 class WyckoffForecaster:
-    def __init__(self, price_dir=None, output_dir=None, run_date=datetime.now()):
+    def __init__(self, price_dir=None, output_dir=None, run_date=datetime.now(), verbose=True):
         self.price_dir = Path(price_dir) if price_dir else Path('data/parquet/price/master_price.parquet')
         self.output_dir = Path(output_dir) if output_dir else Path('data/forecast')
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.lookback = settings.LOOKBACK_TR
         self.run_date = pd.to_datetime(run_date)
+        self.verbose = verbose
 
     def _is_pre_tet_period(self, current_date):
         """Kiểm tra xem ngày hiện tại có nằm trong 30 ngày trước Tết Âm lịch không"""
@@ -119,7 +120,8 @@ class WyckoffForecaster:
             return pd.DataFrame()
 
         # Đọc toàn bộ dữ liệu thị trường chỉ với 1 dòng lệnh
-        print("Đang tải dữ liệu Parquet...")
+        if self.verbose:
+            print("Đang tải dữ liệu Parquet...")
         df_master = pd.read_parquet(self.price_dir)
 
         # Group by mã cổ phiếu để xử lý
@@ -166,7 +168,8 @@ class WyckoffForecaster:
             report_df = report_df.sort_values('priority').drop(columns=['priority'])
             output_path = self.output_dir / 'wyckoff_forecast.csv'
             report_df.to_csv(output_path, index=False, encoding='utf-8-sig')
-            print(f"[OK] Đã phân tích xong {len(report_df)} mã. Kết quả lưu tại: {output_path}")
+            if self.verbose:
+                print(f"[OK] Đã phân tích xong {len(report_df)} mã. Kết quả lưu tại: {output_path}")
         
         return report_df
 

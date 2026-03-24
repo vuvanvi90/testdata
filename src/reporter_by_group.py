@@ -3,14 +3,16 @@ import os
 from datetime import datetime
 
 class GroupCashFlowReporter:
-    def __init__(self, foreign_df, prop_df, industry_df):
+    def __init__(self, foreign_df, prop_df, industry_df, verbose=True):
         """
         Khởi tạo Reporter với dữ liệu Dòng tiền và Danh mục Ngành (ICB)
         """
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] Đang nạp dữ liệu Dòng tiền và Sóng Ngành...")
+        if verbose:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Đang nạp dữ liệu Dòng tiền và Sóng Ngành...")
         self.df_foreign = foreign_df
         self.df_prop = prop_df
         self.df_ind = industry_df
+        self.verbose = verbose
         
         # Chuẩn hóa thời gian
         for df in [self.df_foreign, self.df_prop]:
@@ -107,41 +109,42 @@ class GroupCashFlowReporter:
         # ---------------------------------------------------------------------
         # 🖨️ IN BÁO CÁO CẤP CAO RA TERMINAL
         # ---------------------------------------------------------------------
-        print("\n" + "="*75)
-        print(f" 🏭 BỨC TRANH DÒNG TIỀN VĨ MÔ: {title_prefix}")
-        print(f"    Giai đoạn: {start_date.strftime('%d/%m/%Y')} -> {latest_date.strftime('%d/%m/%Y')}")
-        print("="*75)
-        
-        # IN TOP NGÀNH HÚT TIỀN (SÓNG NGÀNH)
-        print("🌊 TOP NGÀNH ĐƯỢC TAY TO GOM RÒNG MẠNH NHẤT:")
-        print(f"{'TÊN NGÀNH':<30} | {'KHỐI NGOẠI':>10} | {'TỰ DOANH':>10} | {'TỔNG CỘNG (TỶ)':>14}")
-        print("-" * 75)
-        for _, row in sector_flow.head(5).iterrows():
-            if row['total_val_bn'] > 0:
-                print(f"{str(row['industry'])[:28]:<30} | {row['foreign_val_bn']:>10.1f} | {row['prop_val_bn']:>10.1f} | {row['total_val_bn']:>14.1f}")
-                
-        # IN TOP NGÀNH BỊ RÚT TIỀN
-        print("\n🩸 TOP NGÀNH BỊ TAY TO XẢ RÒNG RÁT NHẤT:")
-        print("-" * 75)
-        # Quét từ dưới lên của bảng sector_flow
-        for _, row in sector_flow.tail(5).iloc[::-1].iterrows():
-            if row['total_val_bn'] < 0:
-                print(f"{str(row['industry'])[:28]:<30} | {row['foreign_val_bn']:>10.1f} | {row['prop_val_bn']:>10.1f} | {row['total_val_bn']:>14.1f}")
-
-        print("\n" + "="*75)
-        print(" 🎯 TOP CỔ PHIẾU TRỌNG ĐIỂM CHI PHỐI DÒNG TIỀN")
-        print("="*75)
-        print(f"{'MÃ CP':<6} | {'NGÀNH':<18} | {'TỔNG CỘNG (TỶ)':>14}")
-        print("-" * 75)
-        
-        print("🔻 TOP BỊ BÁN RÒNG:")
-        for _, row in report_df.head(10).iterrows():
-            print(f"{row['ticker']:<6} | {str(row['industry'])[:16]:<18} | {row['total_val_bn']:>14.2f}")
+        if self.verbose:
+            print("\n" + "="*75)
+            print(f" 🏭 BỨC TRANH DÒNG TIỀN VĨ MÔ: {title_prefix}")
+            print(f"    Giai đoạn: {start_date.strftime('%d/%m/%Y')} -> {latest_date.strftime('%d/%m/%Y')}")
+            print("="*75)
             
-        print("\n🟢 TOP ĐƯỢC MUA RÒNG:")
-        for _, row in report_df.tail(10).iloc[::-1].iterrows(): # Sắp xếp lượng gom từ cao xuống thấp cho dễ đọc
-            print(f"{row['ticker']:<6} | {str(row['industry'])[:16]:<18} | {row['total_val_bn']:>14.2f}")
-        print("="*75)
+            # IN TOP NGÀNH HÚT TIỀN (SÓNG NGÀNH)
+            print("🌊 TOP NGÀNH ĐƯỢC TAY TO GOM RÒNG MẠNH NHẤT:")
+            print(f"{'TÊN NGÀNH':<30} | {'KHỐI NGOẠI':>10} | {'TỰ DOANH':>10} | {'TỔNG CỘNG (TỶ)':>14}")
+            print("-" * 75)
+            for _, row in sector_flow.head(5).iterrows():
+                if row['total_val_bn'] > 0:
+                    print(f"{str(row['industry'])[:28]:<30} | {row['foreign_val_bn']:>10.1f} | {row['prop_val_bn']:>10.1f} | {row['total_val_bn']:>14.1f}")
+                    
+            # IN TOP NGÀNH BỊ RÚT TIỀN
+            print("\n🩸 TOP NGÀNH BỊ TAY TO XẢ RÒNG RÁT NHẤT:")
+            print("-" * 75)
+            # Quét từ dưới lên của bảng sector_flow
+            for _, row in sector_flow.tail(5).iloc[::-1].iterrows():
+                if row['total_val_bn'] < 0:
+                    print(f"{str(row['industry'])[:28]:<30} | {row['foreign_val_bn']:>10.1f} | {row['prop_val_bn']:>10.1f} | {row['total_val_bn']:>14.1f}")
+
+            print("\n" + "="*75)
+            print(" 🎯 TOP CỔ PHIẾU TRỌNG ĐIỂM CHI PHỐI DÒNG TIỀN")
+            print("="*75)
+            print(f"{'MÃ CP':<6} | {'NGÀNH':<18} | {'TỔNG CỘNG (TỶ)':>14}")
+            print("-" * 75)
+            
+            print("🔻 TOP BỊ BÁN RÒNG:")
+            for _, row in report_df.head(10).iterrows():
+                print(f"{row['ticker']:<6} | {str(row['industry'])[:16]:<18} | {row['total_val_bn']:>14.2f}")
+                
+            print("\n🟢 TOP ĐƯỢC MUA RÒNG:")
+            for _, row in report_df.tail(10).iloc[::-1].iterrows(): # Sắp xếp lượng gom từ cao xuống thấp cho dễ đọc
+                print(f"{row['ticker']:<6} | {str(row['industry'])[:16]:<18} | {row['total_val_bn']:>14.2f}")
+            print("="*75)
 
         # 7. XUẤT FILE CSV
         os.makedirs('data/reports', exist_ok=True)
@@ -157,7 +160,8 @@ class GroupCashFlowReporter:
         
         export_df = export_df.sort_values('Tong_TyDong', ascending=False).round(2)
         export_df.to_csv(out_csv, index=False, encoding='utf-8-sig')
-        print(f"[💾] Đã xuất chi tiết {len(export_df)} mã ra file: {out_csv}")
+        if self.verbose:
+            print(f"[💾] Đã xuất chi tiết {len(export_df)} mã ra file: {out_csv}")
 
         return sector_flow, report_df
 
