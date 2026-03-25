@@ -3,15 +3,22 @@ import numpy as np
 import os
 from datetime import datetime, timedelta
 
+import warnings
+warnings.filterwarnings('ignore', category=FutureWarning)
+warnings.filterwarnings('ignore', category=DeprecationWarning)
+warnings.filterwarnings('ignore', message=".*DataFrameGroupBy.apply.*")
+
 class MarketTracker:
-    def __init__(self, data_dir='data/parquet'):
+    def __init__(self, data_dir='data/parquet', verbose=True):
         """Khởi tạo Đài quan sát Vĩ mô & Dòng tiền"""
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] Khởi động Hệ thống Kiểm kê Thị trường (Market Tracker)...")
+        if verbose:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Khởi động Hệ thống Kiểm kê Thị trường (Market Tracker)...")
         
         self.price_path = f"{data_dir}/price/master_price.parquet"
         self.foreign_path = f"{data_dir}/macro/foreign_flow.parquet"
         self.prop_path = f"{data_dir}/macro/prop_flow.parquet"
         self.industry_path = f"{data_dir}/macro/groups_by_industries.parquet"
+        self.verbose = verbose
         
         # Nạp dữ liệu vào RAM
         self.df_price = pd.read_parquet(self.price_path) if os.path.exists(self.price_path) else pd.DataFrame()
@@ -94,33 +101,34 @@ class MarketTracker:
         
         total_tickers = summary['Count'].sum()
         
-        print("\n" + "="*85)
-        print(f" 📊 BÁO CÁO ĐỘ RỘNG THỊ TRƯỜNG (BREADTH) - KHUNG: {label}")
-        print("="*85)
+        if self.verbose:
+            print("\n" + "="*85)
+            print(f" 📊 BÁO CÁO ĐỘ RỘNG THỊ TRƯỜNG (BREADTH) - KHUNG: {label}")
+            print("="*85)
         for _, row in summary.iterrows():
             pct = (row['Count'] / total_tickers) * 100
-            print(f"  🔸 Số mã {row['Status']:<10}: {row['Count']:>4} mã ({pct:>5.1f}%) | Dòng tiền: {row['Value_Bn']:>8,.0f} Tỷ VNĐ")
+            if self.verbose:
+                print(f"  🔸 Số mã {row['Status']:<10}: {row['Count']:>4} mã ({pct:>5.1f}%) | Dòng tiền: {row['Value_Bn']:>8,.0f} Tỷ VNĐ")
             
         # CHẨN ĐOÁN RỦI RO (BULL TRAP / THẾ TRẬN TẤN CÔNG)
         advancers = summary[summary['Status'] == 'Tăng']
         decliners = summary[summary['Status'] == 'Giảm']
-        
-        if not advancers.empty and not decliners.empty:
-            adv_vol = advancers['Value_Bn'].values[0]
-            dec_vol = decliners['Value_Bn'].values[0]
-            adv_count = advancers['Count'].values[0]
-            dec_count = decliners['Count'].values[0]
-            
-            print("-" * 85)
-            if adv_count > dec_count and dec_vol > adv_vol * 1.2:
-                print("  🚨 CẢNH BÁO XANH VỎ ĐỎ LÒNG: Số mã tăng nhiều hơn nhưng Tiền lại tập trung bán tháo ở mã Giảm!")
-            elif adv_count > total_tickers * 0.7 and adv_vol > dec_vol * 2:
-                print("  🚀 BÙNG NỔ THEO ĐÀ (FOLLOW-THROUGH): 70% thị trường đồng thuận tăng với thanh khoản áp đảo. TẤN CÔNG!")
-            elif dec_count > total_tickers * 0.7:
-                print("  🩸 ÁP LỰC BÁN DIỆN RỘNG: Thị trường đang hoảng loạn diện rộng. Ưu tiên quản trị rủi ro.")
-            else:
-                print("  ⚖️ TRẠNG THÁI CÂN BẰNG: Dòng tiền đang phân hóa, chọn lọc cổ phiếu kỹ lưỡng.")
-        print("="*85)
+        if self.verbose:
+            if not advancers.empty and not decliners.empty:
+                adv_vol = advancers['Value_Bn'].values[0]
+                dec_vol = decliners['Value_Bn'].values[0]
+                adv_count = advancers['Count'].values[0]
+                dec_count = decliners['Count'].values[0]
+                print("-" * 85)
+                if adv_count > dec_count and dec_vol > adv_vol * 1.2:
+                    print("  🚨 CẢNH BÁO XANH VỎ ĐỎ LÒNG: Số mã tăng nhiều hơn nhưng Tiền lại tập trung bán tháo ở mã Giảm!")
+                elif adv_count > total_tickers * 0.7 and adv_vol > dec_vol * 2:
+                    print("  🚀 BÙNG NỔ THEO ĐÀ (FOLLOW-THROUGH): 70% thị trường đồng thuận tăng với thanh khoản áp đảo. TẤN CÔNG!")
+                elif dec_count > total_tickers * 0.7:
+                    print("  🩸 ÁP LỰC BÁN DIỆN RỘNG: Thị trường đang hoảng loạn diện rộng. Ưu tiên quản trị rủi ro.")
+                else:
+                    print("  ⚖️ TRẠNG THÁI CÂN BẰNG: Dòng tiền đang phân hóa, chọn lọc cổ phiếu kỹ lưỡng.")
+            print("="*85)
         return df_perf
 
     def analyze_sector_rotation(self, df_perf, top_n=5):
@@ -147,16 +155,16 @@ class MarketTracker:
         # Tạo điểm Score = Rank(Return) + Rank(Value)
         sector_stats['Score'] = sector_stats['Avg_Return'].rank() + sector_stats['Total_Val'].rank()
         leaders = sector_stats.sort_values('Score', ascending=False).head(top_n)
-        
-        print("\n" + "="*85)
-        print(f" 🏆 TOP {top_n} NGÀNH HÚT TIỀN & DẪN DẮT (SECTOR LEADERS)")
-        print("="*85)
-        print(f"{'TÊN NGÀNH':<30} | {'MỨC TĂNG TB':>12} | {'ĐỘ ĐỒNG THUẬN':>15} | {'DÒNG TIỀN (TỶ)':>15}")
-        print("-" * 85)
-        for index, row in leaders.iterrows():
-            name = str(index)[:28]
-            print(f"{name:<30} | {row['Avg_Return']:>11.2f}% | {row['Advance_Ratio_%']:>14.1f}% | {row['Total_Val']:>15,.0f}")
-        print("="*85)
+        if self.verbose:
+            print("\n" + "="*85)
+            print(f" 🏆 TOP {top_n} NGÀNH HÚT TIỀN & DẪN DẮT (SECTOR LEADERS)")
+            print("="*85)
+            print(f"{'TÊN NGÀNH':<30} | {'MỨC TĂNG TB':>12} | {'ĐỘ ĐỒNG THUẬN':>15} | {'DÒNG TIỀN (TỶ)':>15}")
+            print("-" * 85)
+            for index, row in leaders.iterrows():
+                name = str(index)[:28]
+                print(f"{name:<30} | {row['Avg_Return']:>11.2f}% | {row['Advance_Ratio_%']:>14.1f}% | {row['Total_Val']:>15,.0f}")
+            print("="*85)
         
         return leaders.index.tolist()
 
@@ -187,24 +195,130 @@ class MarketTracker:
                 
         total_top_val = df_top['Total_Val_Bn'].sum()
         
-        print("\n" + "="*85)
-        print(f" 🕵️ GIẢI PHẪU DÒNG TIỀN TRÊN TOP 50 MÃ TĂNG MẠNH NHẤT ({lookback_days} NGÀY)")
-        print("="*85)
-        print(f"  + Tổng Thanh khoản Top 50 : {total_top_val:,.0f} Tỷ VNĐ")
-        print(f"  + Khối Ngoại Đóng góp     : {f_net_total:>+8.1f} Tỷ VNĐ")
-        print(f"  + Tự Doanh Đóng góp       : {p_net_total:>+8.1f} Tỷ VNĐ")
-        print("-" * 85)
+        if self.verbose:
+            print("\n" + "="*85)
+            print(f" 🕵️ GIẢI PHẪU DÒNG TIỀN TRÊN TOP 50 MÃ TĂNG MẠNH NHẤT ({lookback_days} NGÀY)")
+            print("="*85)
+            print(f"  + Tổng Thanh khoản Top 50 : {total_top_val:,.0f} Tỷ VNĐ")
+            print(f"  + Khối Ngoại Đóng góp     : {f_net_total:>+8.1f} Tỷ VNĐ")
+            print(f"  + Tự Doanh Đóng góp       : {p_net_total:>+8.1f} Tỷ VNĐ")
+            print("-" * 85)
         
         # Chẩn đoán bản chất sóng
         sm_net = f_net_total + p_net_total
-        if sm_net < 0:
-            print("  🩸 BẢN CHẤT SÓNG: KÉO XẢ! Top 50 mã tăng mạnh nhất đang bị Tổ chức XẢ RÒNG.")
-            print("  => Động lực kéo giá 100% đến từ Dòng tiền Ẩn (Lái nội) và FOMO của Nhỏ lẻ.")
-        elif sm_net > total_top_val * 0.05: # Tay to chiếm > 5% thanh khoản
-            print("  ✅ BẢN CHẤT SÓNG: UY TÍN! Sóng tăng được bảo kê bởi Dòng tiền Tổ chức (Gom ròng mạnh).")
-        else:
-            print("  ⚠️ BẢN CHẤT SÓNG: ĐẦU CƠ! Tay to đứng ngoài quan sát, thị trường tự chơi với nhau.")
-        print("="*85)
+        if self.verbose:
+            if sm_net < 0:
+                print("  🩸 BẢN CHẤT SÓNG: KÉO XẢ! Top 50 mã tăng mạnh nhất đang bị Tổ chức XẢ RÒNG.")
+                print("  => Động lực kéo giá 100% đến từ Dòng tiền Ẩn (Lái nội) và FOMO của Nhỏ lẻ.")
+            elif sm_net > total_top_val * 0.05: # Tay to chiếm > 5% thanh khoản
+                print("  ✅ BẢN CHẤT SÓNG: UY TÍN! Sóng tăng được bảo kê bởi Dòng tiền Tổ chức (Gom ròng mạnh).")
+            else:
+                print("  ⚠️ BẢN CHẤT SÓNG: ĐẦU CƠ! Tay to đứng ngoài quan sát, thị trường tự chơi với nhau.")
+            print("="*85)
+
+    def analyze_full_intraday_macro(self, intraday_df):
+        """
+        CHẾ ĐỘ TOÀN TRI (OMNISCIENT MODE) - XỬ LÝ ORDER FLOW TOÀN THỊ TRƯỜNG
+        Đánh giá X-Quang toàn bộ 1,600 mã để tìm ra Bản chất Dòng tiền ngay lúc 14h15.
+        """
+        if intraday_df is None or intraday_df.empty:
+            print("[!] Thiếu dữ liệu Intraday trong master_intraday.parquet.")
+            return None
+            
+        try:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Đang nạp và giải phẫu Order Flow Toàn Thị Trường...")
+            df = intraday_df
+            
+            col_type = 'match_type' 
+            col_vol = 'volume'
+            col_price = 'price'
+            
+            if col_type not in df.columns:
+                print(f"[!] Dữ liệu Intraday thiếu cột phân loại lệnh ({col_type}). Cột hiện có: {df.columns.tolist()}")
+                return None
+                
+            # Tính Giá trị mỗi lệnh (Tỷ VNĐ)
+            df['trade_val_bn'] = (df[col_price] * df[col_vol]) / 1_000_000_000
+            
+            # 🚀 Phân loại Mua/Bán chủ động bằng Vector (Bao phủ cả chữ 'Buy'/'Sell' và các mã viết tắt cũ)
+            is_bu = df[col_type].isin(['Buy', 'BU', 'B'])
+            is_sd = df[col_type].isin(['Sell', 'SD', 'S'])
+            
+            # 1. THỐNG KÊ VĨ MÔ TOÀN THỊ TRƯỜNG (MARKET-WIDE FLOW)
+            total_bu_bn = df.loc[is_bu, 'trade_val_bn'].sum()
+            total_sd_bn = df.loc[is_sd, 'trade_val_bn'].sum()
+            market_net_active = total_bu_bn - total_sd_bn
+            
+            # Thống kê Cá Mập toàn thị trường (Lệnh > 1 Tỷ VNĐ)
+            is_shark = df['trade_val_bn'] >= 1.0
+            shark_bu_bn = df.loc[is_bu & is_shark, 'trade_val_bn'].sum()
+            shark_sd_bn = df.loc[is_sd & is_shark, 'trade_val_bn'].sum()
+            shark_net_active = shark_bu_bn - shark_sd_bn
+            
+            if self.verbose:
+                print("\n" + "="*90)
+                print(f" 🌐 BÁO CÁO ORDER FLOW TOÀN THỊ TRƯỜNG - {datetime.now().strftime('%H:%M')}")
+                print("="*90)
+                print(f" 1. TỔNG QUAN DÒNG TIỀN CHỦ ĐỘNG (RETAIL + INSTITUTION):")
+                print(f"    🔸 Tổng MUA Chủ Động : {total_bu_bn:>8,.1f} Tỷ VNĐ")
+                print(f"    🔸 Tổng BÁN Chủ Động : {total_sd_bn:>8,.1f} Tỷ VNĐ")
+                print(f"    => CHÊNH LỆCH RÒNG   : {market_net_active:>+8,.1f} Tỷ VNĐ")
+                print(f"\n 2. DẤU CHÂN CÁ MẬP (CÁC LỆNH KHỚP > 1 TỶ VNĐ):")
+                print(f"    🔸 Cá Mập MUA C.Động : {shark_bu_bn:>8,.1f} Tỷ VNĐ")
+                print(f"    🔸 Cá Mập BÁN C.Động : {shark_sd_bn:>8,.1f} Tỷ VNĐ")
+                print(f"    => CÁ MẬP ĐANG       : {'🟢 GOM RÒNG' if shark_net_active > 0 else '🔴 XẢ RÒNG'} ({shark_net_active:>+8,.1f} Tỷ VNĐ)")
+                print("-" * 90)
+            
+            # CHẨN ĐOÁN VĨ MÔ (MACRO VERDICT)
+            if market_net_active > 0 and shark_net_active > 0:
+                if self.verbose:
+                    print("  🟢 ĐÈN XANH (FULL ATTACK): Tiền vào dứt khoát, Cá Mập dẫn đường. Tự tin giải ngân!")
+                market_status = "GREEN"
+            elif market_net_active < 0 and shark_net_active < 0:
+                if self.verbose:
+                    print("  🔴 ĐÈN ĐỎ (PANIC / DISTRIBUTION): Cá mập xả hàng, thị trường bán đuổi. ĐÓNG BĂNG MUA MỚI!")
+                market_status = "RED"
+            elif market_net_active > 0 and shark_net_active < 0:
+                if self.verbose:
+                    print("  🟡 ĐÈN VÀNG (BULL TRAP): Nhỏ lẻ hưng phấn Mua chủ động, nhưng Cá Mập đang âm thầm XẢ RÒNG. Rất rủi ro!")
+                market_status = "YELLOW"
+            else:
+                if self.verbose:
+                    print("  ⚪ TRẠNG THÁI CÂN BẰNG: Dòng tiền đang giằng co.")
+                market_status = "NEUTRAL"
+            print("="*90)
+            
+            if self.verbose:
+                print(f"[*] Đang đóng gói dữ liệu Order Flow cho từng mã cổ phiếu...")
+            
+            # Hàm phụ trợ để tính an toàn cho từng group
+            def calculate_ticker_flow(x):
+                bu_val = x.loc[x[col_type].isin(['Buy', 'BU', 'B']), 'trade_val_bn'].sum()
+                sd_val = x.loc[x[col_type].isin(['Sell', 'SD', 'S']), 'trade_val_bn'].sum()
+                total_v = x[col_vol].sum()
+                vwap_val = (x[col_price] * x[col_vol]).sum() / total_v if total_v > 0 else 0
+                return pd.Series({
+                    'bu_bn': bu_val,
+                    'sd_bn': sd_val,
+                    'vwap': vwap_val,
+                    'last_price': x[col_price].iloc[-1] if not x.empty else 0
+                })
+
+            ticker_stats = df.groupby('ticker').apply(calculate_ticker_flow).reset_index()
+            ticker_stats['net_active_bn'] = ticker_stats['bu_bn'] - ticker_stats['sd_bn']
+            
+            # Chuyển thành Dictionary để live.py tra cứu siêu tốc O(1)
+            intraday_dict = ticker_stats.set_index('ticker').to_dict('index')
+            
+            return {
+                'market_status': market_status,
+                'market_net_active': market_net_active,
+                'intraday_dict': intraday_dict
+            }
+                
+        except Exception as e:
+            print(f"[!] Lỗi phân tích Full Intraday Macro: {e}")
+            return None
 
 # ==========================================
 # KHỐI CHẠY THỬ NGHIỆM

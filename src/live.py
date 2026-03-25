@@ -15,6 +15,7 @@ from src.market_flow import MarketFlowAnalyzer
 from src.reporter_by_group import GroupCashFlowReporter
 from src.shadow_profiler import ShadowProfiler
 from src.portfolio import QuantPortfolioEngine
+from src.market_tracker import MarketTracker
 
 """
 LIVE TRADING SYSTEM - QUY TRÌNH LUỒNG DỮ LIỆU (DATA FLOW)
@@ -108,6 +109,24 @@ class LiveAssistant:
             self.shadow_rules = self.shadow_profiler.build_criminal_profile(self.shadow_candidates, lookback_days=250)
         except Exception as e:
             print(f"[!] Lỗi khởi động Shadow Profiler: {e}")
+
+        # KHỞI ĐỘNG ĐÀI QUAN SÁT VĨ MÔ & ORDER FLOW (MARKET TRACKER)
+        try:
+            print("\n[*] Đang kết nối Đài quan sát Vĩ mô (Market Tracker)...")
+            self.market_tracker = MarketTracker(data_dir=self.parquet_dir, verbose=False)
+            intraday_result = self.market_tracker.analyze_full_intraday_macro(intraday_df=self.df_intra)
+            if intraday_result:
+                self.market_status = intraday_result.get('market_status', 'NEUTRAL')
+                self.market_net_active = intraday_result.get('market_net_active', 0)
+                self.intraday_dict = intraday_result.get('intraday_dict', {})
+            else:
+                self.market_status = 'NEUTRAL'
+                self.market_net_active = 0
+                self.intraday_dict = {}
+        except Exception as e:
+            print(f"[!] Lỗi khởi động Market Tracker: {e}")
+            self.market_status = 'NEUTRAL'
+            self.intraday_dict = {}
 
     def _check_historical_shadow_profile(self, ticker, sos_date, lookback_window=15):
         """
@@ -1421,6 +1440,30 @@ class LiveAssistant:
         else:
             print("\n=== QUÉT CƠ HỘI MỚI ===")
 
+        # KIỂM DIỆN VĨ MÔ TOÀN THỊ TRƯỜNG (MARKET-WIDE STATUS)
+        if hasattr(self, 'market_status'):
+            if self.market_status == 'RED':
+                print(f"🚨 BÁO ĐỘNG VĨ MÔ ĐỎ: Cá mập đang xả ròng toàn TT. Tuyệt đối không mua mới!")
+            elif self.market_status == 'YELLOW':
+                print(f"⚠️ VĨ MÔ RỦI RO (ĐÈN VÀNG): Cảnh báo Bull-Trap ảo, hạn chế FOMO")
+            elif self.market_status == 'GREEN':
+                print(f"🌐 VĨ MÔ THUẬN LỢI (ĐÈN XANH): Tiền vào dứt khoát toàn TT. Cờ tới tay!")
+
+        # X-QUANG LỆNH TỪNG MÃ (MICROSTRUCTURE)
+        if hasattr(self, 'intraday_dict') and ticker in self.intraday_dict:
+            intra_data = self.intraday_dict[ticker]
+            net_active = intra_data.get('net_active_bn', 0)
+            vwap = intra_data.get('vwap', 0)
+            last_price = intra_data.get('last_price', 0)
+            
+            if net_active > 0:
+                if last_price >= vwap:
+                    print(f"🌊 TIỀN VÀO CHỦ ĐỘNG: Cầu nuốt trọn cung (+{net_active:.1f} Tỷ), Giá neo trên VWAP vững chắc.")
+                else:
+                    print(f"⚖️ LỰC CẦU GIẰNG CO: Mua chủ động (+{net_active:.1f} Tỷ) nhưng Lái đang đè giá dưới VWAP.")
+            elif net_active <= 0:
+                print(f"🩸 BẪY LỆNH ẢO (SPOOFING): Breakout nhưng Bán chủ động áp đảo ({net_active:.1f} Tỷ). Lái đang kê mua xả bán!")
+
         # Tạo list lưu các mã đã vượt qua vòng chấm điểm và các mã đã được chấm điểm
         selected_candidates, score_candidates = [], []
         # Nạp lại blacklist để làm bộ lọc
@@ -1433,11 +1476,7 @@ class LiveAssistant:
             price = row['Price']
             signal = row['Signal']
             atr = row.get('ATR', price * 0.02)
-
-            # if ticker in active_blacklist:
-            #     print(f"   🚫 Bỏ qua mã {ticker} vì nằm trong blacklist.")
-            #     continue # Nhảy cóc sang mã khác luôn, không thèm tính điểm nữa
-            
+          
             # Lấy bản án từ X-Ray Engine
             mf_result = mf_info_dict.get(ticker, {})
 
@@ -1445,17 +1484,8 @@ class LiveAssistant:
             df_p_ticker = df_full_price[df_full_price['ticker'] == ticker]
             poc_price = self._calculate_poc(df_p_ticker)
 
-            # # BỘ LỌC CHỐNG BẪY KÉO XẢ (Xử lý các case thao túng như HRC)
-            # if mf_result.get('divergence') == "BEARISH_TRAP":
-            #     print(f"   🚫 TỪ CHỐI MUA {ticker}: Kéo xả ảo (Giá vốn tạo lập: {mf_result.get('sm_vwap', 0):,.0f}đ, Tồn kho đang bị xả!)")
-            #     continue # Nhảy qua mã khác, cấm giải ngân!
-
             # KHIÊN CHỐNG ĐỔ VỎ (BẪY T+1 / XẢ ĐỘT BIẾN)
             dump_warnings = self._check_smart_money_distribution(ticker)
-            # if dump_warnings:
-            #     print(f"   🚫 TỪ CHỐI MUA {ticker}: Khối ngoại/Tự doanh vừa có nhịp phân phối rát!")
-            #     print(f"      Dấu vết: {' | '.join(dump_warnings)}")
-            #     continue # Lệnh cấm tuyệt đối: Nến có đẹp đến mấy cũng loại ngay từ vòng gửi xe!
 
             board_info = board_info_dict.get(ticker)
             fund_info = fund_info_dict.get(ticker)
