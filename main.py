@@ -13,34 +13,35 @@ from pathlib import Path
 # Giao dịch thỏa thuận: 9h00 – 15h00
 
 # from src.collector import VNStockDataPipeline
-from src.run_bot import run_trading_system, run_cashflow_report, run_cashflow_group_report
+# from src.run_bot import run_trading_system, run_cashflow_report, run_cashflow_group_report
 # from src.backtester import VectorizedBacktester
 # from src.validator import ValidatePipeline
-from src.market_flow_by_unit import MarketFlowAnalyzer
-from src.optimizer import QuantOptimizer 
-from src.reporter import CashFlowReporter 
-from src.notifier import send_telegram_alert 
-from src.inspector import SignalInspector 
-from src.flow_tracker import SmartMoneyTracker
-from src.shadow_profiler import ShadowProfiler
-from src.market_tracker import MarketTracker
+# from src.market_flow_by_unit import MarketFlowAnalyzer
+# from src.optimizer import QuantOptimizer 
+# from src.reporter import CashFlowReporter 
+# from src.notifier import send_telegram_alert 
+# from src.inspector import SignalInspector 
+# from src.flow_tracker import SmartMoneyTracker
+# from src.shadow_profiler import ShadowProfiler
+# from src.market_tracker import MarketTracker
 
 def main():
     df_price = _load_parquet(Path('data/parquet/price/master_price.parquet'))
+    df_intra = _load_parquet(Path('data/parquet/intraday/master_intraday.parquet'))
     df_foreign = _load_parquet(Path('data/parquet/macro/foreign_flow.parquet'))
     df_prop = _load_parquet(Path('data/parquet/macro/prop_flow.parquet'))
     df_industry = _load_parquet(Path('data/parquet/macro/groups_by_industries.parquet'))
 
     # pipeline = VNStockDataPipeline(source='VCI')
     # pipeline.get_group = 'HOSE'
-    # pipeline.get_macro = True
+    # # pipeline.get_macro = True
     # # pipeline.get_com = True
     # pipeline.get_price = True
     # pipeline.get_intra = True
     # pipeline.get_board = True
     # # pipeline.get_fin = True
-    # pipeline.get_foreign = True
-    # pipeline.get_prop = True
+    # # pipeline.get_foreign = True
+    # # pipeline.get_prop = True
     # # pipeline.get_fund = True
     # # pipeline.get_share_group = True
     # pipeline.run_pipeline()
@@ -118,10 +119,11 @@ def main():
     # # df_perf_1w = tracker.analyze_market_breadth(lookback_days=5, label="1 TUẦN QUA")
     # # leading_sectors = tracker.analyze_sector_rotation(df_perf_1w, top_n=5)
     # # tracker.analyze_flow_attribution(lookback_days=5)
-    # # Ngày
-    # df_perf = tracker.analyze_market_breadth(lookback_days=1, label="HÔM QUA")
-    # leading_sectors = tracker.analyze_sector_rotation(df_perf, top_n=5)
-    # tracker.analyze_flow_attribution(lookback_days=1)
+    # # # Ngày
+    # # df_perf = tracker.analyze_market_breadth(lookback_days=1, label="HÔM QUA")
+    # # leading_sectors = tracker.analyze_sector_rotation(df_perf, top_n=5)
+    # # tracker.analyze_flow_attribution(lookback_days=1)
+    # tracker.analyze_full_intraday_macro(intraday_df=df_intra)
 
     # # Test thử giai đoạn Khó khăn nhất (Năm 2022 - Downtrend)
     # # bt = VectorizedBacktester(start_date='2022-01-01', end_date='2022-12-31')

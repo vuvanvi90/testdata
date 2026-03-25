@@ -20,6 +20,7 @@ class VN30DataPipeline:
 
     def run_pipeline(self):
         df_price = self._load_parquet(Path('data/parquet/price/master_price.parquet'))
+        df_intra = self._load_parquet(Path('data/parquet/intraday/master_intraday.parquet'))
         df_foreign = self._load_parquet(Path('data/parquet/macro/foreign_flow.parquet'))
         df_prop = self._load_parquet(Path('data/parquet/macro/prop_flow.parquet'))
         df_industry = self._load_parquet(Path('data/parquet/macro/groups_by_industries.parquet'))
@@ -173,6 +174,14 @@ class VN30DataPipeline:
         #     # print(df_industry.tail(10))
         #     df_industry.to_json("groups_by_industries_new.json", orient='records', force_ascii=False, indent=4)
 
+        # if not df_intra.empty:
+        #     print(df_intra.tail(10))
+        #     df_intra.to_json("intraday.json", orient='records', force_ascii=False, indent=4)
+
+        # if not df_foreign.empty:
+        #     # df_group = {ticker: group for ticker, group in df_foreign.groupby('ticker')}
+        #     # print(df_group['VNM'].tail(10))
+        #     df_foreign.to_json("foreign.json", orient='records', force_ascii=False, indent=4)
 
     def _load_parquet(self, path):
         """Hàm đọc Parquet an toàn, tránh lỗi nếu file chưa tồn tại"""
