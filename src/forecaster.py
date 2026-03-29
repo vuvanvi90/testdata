@@ -18,19 +18,21 @@ class WyckoffForecaster:
         self.price_dir = Path(price_dir) if price_dir else Path('data/parquet/price/master_price.parquet')
         self.output_dir = Path(output_dir) if output_dir else Path('data/forecast')
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.lookback = settings.LOOKBACK_TR
+        # Xử lý an toàn nếu settings chưa có LOOKBACK_TR
+        try:
+            self.lookback = settings.LOOKBACK_TR
+        except:
+            self.lookback = 20 # Mặc định 20 phiên nếu config lỗi
         self.run_date = pd.to_datetime(run_date)
         self.verbose = verbose
+        # Đổi mảng string sang datetime một lần duy nhất
+        self.lunar_dates = pd.to_datetime(LUNAR_NEW_YEARS)
 
     def _is_pre_tet_period(self, current_date):
         """Kiểm tra xem ngày hiện tại có nằm trong 30 ngày trước Tết Âm lịch không"""
-        current_date_str = current_date.strftime('%Y-%m-%d')
-        for tet in LUNAR_NEW_YEARS:
-            tet_date = pd.to_datetime(tet)
-            # Kiểm tra: Trong vòng 30 ngày trước Tết
-            if 0 < (tet_date - current_date).days <= 30:
-                return True
-        return False
+        # Trừ trực tiếp chuỗi thời gian bằng Vector siêu nhanh
+        days_to_tet = (self.lunar_dates - current_date).days
+        return any((days_to_tet > 0) & (days_to_tet <= 30))
 
     def _calculate_indicators(self, df):
         """Bước 1: Phân tích Khối lượng và Giá (VPA)"""
@@ -80,9 +82,11 @@ class WyckoffForecaster:
         # 1. SPRING (Cú rũ bỏ)
         if (prev_low < sup) and (curr_close >= sup):
             trend_ok = (curr_close > curr['ema89']) or (curr_close > curr['ema34'] * 0.98)
-            if curr_rel_vol < 1.0 and trend_ok:
+            # Cho phép Volume lên mức 1.5 (Bao gồm cả Spring Type 2 - Shakeout)
+            if curr_rel_vol < 1.5 and trend_ok:
+                vol_desc = "Vol thấp" if curr_rel_vol < 1.0 else "Vol trung bình"
                 signal = "SPRING"
-                note = f"SPRING: Rũ bỏ hỗ trợ {sup:,.0f} (Vol thấp). Trend ổn."
+                note = f"SPRING: Rũ bỏ hỗ trợ {sup:,.0f} ({vol_desc}). Trend ổn."
 
         # 2. SOS (Dấu hiệu sức mạnh)
         elif curr_close > res:
@@ -123,20 +127,25 @@ class WyckoffForecaster:
         if self.verbose:
             print("Đang tải dữ liệu Parquet...")
         df_master = pd.read_parquet(self.price_dir)
+        df_master['time'] = pd.to_datetime(df_master['time']) # Đảm bảo time là datetime
+        
+        # Lọc dữ liệu tới ngày run_date (Phục vụ Backtest)
+        df_master = df_master[df_master['time'] <= self.run_date]
 
         # Group by mã cổ phiếu để xử lý
         for ticker, df_ticker in df_master.groupby('ticker'):
             try:
-                # Sắp xếp lại thời gian cho chuẩn
-                df = df_ticker.sort_values('time').reset_index(drop=True)
+                # Sắp xếp lại thời gian cho chuẩn và Chỉ lấy 250 phiên cuối cùng (1 năm)
+                df = df_ticker.sort_values('time').tail(250).reset_index(drop=True)
+
+                # Bỏ qua nếu mã mới lên sàn chưa đủ data
+                if len(df) < self.lookback + 5: 
+                    continue
                 
                 df = self._calculate_indicators(df)
                 signal, note, sup, res = self._detect_signals(df)
                 curr = df.iloc[-1]
-                
-                # Lấy dữ liệu 250 phiên gần nhất (1 năm)
-                recent_250 = df.tail(250)
-                high_52w = recent_250['high'].max()
+                high_52w = df['high'].max()
                 last_price = curr['close']
                 dist_to_sup = ((last_price - sup) / sup) * 100 if sup > 0 else 0
 
