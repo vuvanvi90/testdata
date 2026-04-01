@@ -35,16 +35,25 @@ class WyckoffForecaster:
         return any((days_to_tet > 0) & (days_to_tet <= 30))
 
     def _calculate_indicators(self, df):
-        """Bước 1: Phân tích Khối lượng và Giá (VPA)"""
-        df['spread'] = df['high'] - df['low']
+        """Bước 1: Phân tích Khối lượng và Cấu trúc Nến (VPA - Volume Price Analysis)"""
+        # 1. Đo lường Khối lượng
         df['vol_ma20'] = df['volume'].rolling(window=settings.VOL_MA_PERIOD).mean()
         df['rel_vol'] = df['volume'] / df['vol_ma20']
         
-        # EMA
+        # 2. X-Quang Cấu trúc Nến (Spread & Close Position)
+        df['spread'] = df['high'] - df['low']
+        df['avg_spread'] = df['spread'].rolling(window=20).mean() # Biên độ trung bình 20 phiên
+        
+        # Vị trí đóng cửa (Từ 0.0 đến 1.0)
+        # 1.0 = Đóng cửa cao nhất phiên (Cầu mạnh) | 0.0 = Đóng cửa thấp nhất phiên (Cung mạnh)
+        # Thêm 0.0001 để tránh lỗi chia cho 0 khi giá tham chiếu/Doji
+        df['close_pos'] = (df['close'] - df['low']) / (df['spread'] + 0.0001) 
+        
+        # 3. Các đường xu hướng
         df['ema34'] = df['close'].ewm(span=settings.EMA_FAST, adjust=False).mean()
         df['ema89'] = df['close'].ewm(span=settings.EMA_SLOW, adjust=False).mean()
         
-        # --- NEW: Tính ATR (Average True Range) để dùng cho Stoploss động ---
+        # 4. Tính ATR cho Stoploss
         df['tr1'] = df['high'] - df['low']
         df['tr2'] = abs(df['high'] - df['close'].shift(1))
         df['tr3'] = abs(df['low'] - df['close'].shift(1))
@@ -58,60 +67,80 @@ class WyckoffForecaster:
         return df
 
     def _detect_signals(self, df):
-        """Bước 2: Nhận diện tín hiệu Wyckoff (2 Chiều: Mua & Bán)"""
+        """Bước 2: Nhận diện tín hiệu Wyckoff (2 Chiều & Test Cung)"""
         if len(df) < (self.lookback + 2):
             return "NEUTRAL", "Không đủ dữ liệu.", 0, 0
 
+        # Xác định Vùng đi ngang (Trading Range)
         range_df = df.iloc[-(self.lookback + 2) : -2] 
         sup, res = range_df['low'].min(), range_df['high'].max()
         
-        curr, prev = df.iloc[-1], df.iloc[-2]
-        curr_close, curr_vol, curr_rel_vol = curr['close'], curr['volume'], curr['rel_vol']
-        prev_low, prev_high = prev['low'], prev['high']
+        curr, prev, prev2 = df.iloc[-1], df.iloc[-2], df.iloc[-3]
         
         signal = "NEUTRAL"
         note = "Giá đang biến động trong vùng tích lũy."
 
-        # Kiểm tra hiệu ứng mùa vụ (nếu có giữ logic cũ)
         is_pre_tet = self._is_pre_tet_period(self.run_date) if hasattr(self, '_is_pre_tet_period') else False
         sos_vol_req = 2.0 if is_pre_tet else 1.2
         
+        # Lấy các thông số X-Quang nến hiện tại
+        c_close, c_vol, c_rel_vol = curr['close'], curr['volume'], curr['rel_vol']
+        c_high, c_low = curr['high'], curr['low']
+        c_pos, c_spread, avg_spread = curr['close_pos'], curr['spread'], curr['avg_spread']
+        
         # ==========================================
-        # 🟢 CHIỀU MUA (ACCUMULATION)
+        # 🟢 CHIỀU MUA (ACCUMULATION & MARKUP)
         # ==========================================
-        # 1. SPRING (Cú rũ bỏ)
-        if (prev_low < sup) and (curr_close >= sup):
-            trend_ok = (curr_close > curr['ema89']) or (curr_close > curr['ema34'] * 0.98)
-            # Cho phép Volume lên mức 1.5 (Bao gồm cả Spring Type 2 - Shakeout)
-            if curr_rel_vol < 1.5 and trend_ok:
-                vol_desc = "Vol thấp" if curr_rel_vol < 1.0 else "Vol trung bình"
-                signal = "SPRING"
-                note = f"SPRING: Rũ bỏ hỗ trợ {sup:,.0f} ({vol_desc}). Trend ổn."
-
-        # 2. SOS (Dấu hiệu sức mạnh)
-        elif curr_close > res:
-            if curr_rel_vol > sos_vol_req:
+        
+        # 1. SOS (Dấu hiệu sức mạnh - Breakout uy tín)
+        if c_close > res:
+            # SOS thật: Nổ Vol + Biên độ nến mở rộng + Đóng cửa ở 1/3 trên cùng (c_pos > 0.65)
+            if c_rel_vol > sos_vol_req and c_spread > avg_spread * 0.8 and c_pos > 0.65:
                 signal = "SOS"
-                note = f"SOS: Bứt phá kháng cự {res:,.0f}. RelVol: {curr_rel_vol:.2f}"
+                note = f"SOS CHUẨN: Bứt phá kháng cự {res:,.0f}. Lực cầu làm chủ (C.Pos: {c_pos:.2f}, Vol: {c_rel_vol:.1f}x)"
+            # SOS rác (Bị bán dội ngược rụt đầu)
+            elif c_rel_vol > sos_vol_req and c_pos < 0.5:
+                signal = "UTAD" 
+                note = f"BẪY FALSE-BREAK: Vượt cản nhưng bị bán rụt đầu (C.Pos: {c_pos:.2f}). Rủi ro Bull-trap!"
+
+        # 2. SPRING (Cú rũ bỏ hoảng loạn)
+        elif (prev['low'] < sup or c_low < sup) and (c_close >= sup):
+            trend_ok = (c_close > curr['ema89']) or (c_close > curr['ema34'] * 0.95)
+            # Spring chuẩn: Rút chân mạnh đóng cửa ở nửa trên nến (c_pos > 0.5)
+            if c_pos > 0.5 and trend_ok:
+                vol_desc = "Cạn cung" if c_rel_vol < 1.0 else "Có lực bắt đáy"
+                signal = "SPRING"
+                note = f"SPRING: Rút chân bảo vệ hỗ trợ {sup:,.0f} ({vol_desc})."
+
+        # 3. TEST CUNG (No Supply Bar) - Bắt sớm trong nền
+        elif (sup * 1.01) <= c_close <= (res * 0.99): # Đang nằm lơ lửng trong nền giá
+            # Cây nến giảm nhẹ, biên độ hẹp, volume cạn kiệt (nhỏ hơn 2 phiên trước)
+            if c_close < prev['close'] and c_spread < avg_spread * 0.8:
+                if c_vol < prev['volume'] and c_vol < prev2['volume'] and c_rel_vol < 0.8:
+                    if c_pos > 0.4: # Không đóng cửa quá thấp (Có cầu đỡ)
+                        signal = "TEST_CUNG"
+                        note = f"TEST CUNG (No Supply): Lực bán cạn kiệt. Dấu hiệu Lái sắp kéo giá."
 
         # ==========================================
-        # 🔴 CHIỀU BÁN (DISTRIBUTION)
+        # 🔴 CHIỀU BÁN (DISTRIBUTION & MARKDOWN)
         # ==========================================
-        # 3. UTAD (Bẫy Tăng Giá / Upthrust)
-        # Điều kiện: Nến trước (hoặc trong phiên) chọc thủng Kháng cự, nhưng nến hiện tại đóng cửa dưới Kháng cự.
-        elif (prev_high > res or curr['high'] > res) and (curr_close <= res):
-            if curr_rel_vol > 1.0: # Volume lớn cho thấy lực bán dội xuống mạnh
+        
+        # 4. UTAD (Bẫy Tăng Giá / Upthrust)
+        if signal == "NEUTRAL" and (prev['high'] > res or c_high > res) and (c_close <= res):
+            # Nến mọc tóc: Đóng cửa ở 1/3 dưới cùng (c_pos < 0.35)
+            if c_rel_vol > 1.0 and c_pos < 0.35: 
                 signal = "UTAD"
-                note = f"UTAD (Bẫy Bò): Kéo vượt {res:,.0f} nhưng bị bán ngược. Rủi ro đảo chiều."
+                note = f"UTAD (Bẫy Bò): Kéo vượt {res:,.0f} nhưng xả rụt đầu (Vol {c_rel_vol:.1f}x). Xác nhận Phân phối."
 
-        # 4. SOW / MARKDOWN (Dấu hiệu suy yếu / Gãy nền)
-        elif curr_close < sup:
-            if curr_rel_vol > 1.2:
+        # 5. SOW (Dấu hiệu suy yếu / Gãy nền)
+        elif signal == "NEUTRAL" and c_close < sup:
+            # Gãy nền uy tín: Biên độ lớn, đóng cửa thấp nhất phiên (c_pos < 0.3)
+            if c_rel_vol > 1.2 and c_pos < 0.3:
                 signal = "SOW"
-                note = f"SOW: Gãy hỗ trợ {sup:,.0f} với Volume lớn ({curr_rel_vol:.2f}x). Xác nhận Downtrend."
-            else:
+                note = f"SOW CHUẨN: Gãy hỗ trợ {sup:,.0f}. Lực bán quyết liệt (C.Pos: {c_pos:.2f}, Vol: {c_rel_vol:.1f}x)"
+            elif c_rel_vol <= 1.2:
                 signal = "MARKDOWN"
-                note = f"MARKDOWN: Trôi qua hỗ trợ {sup:,.0f} do cạn Cầu."
+                note = f"MARKDOWN: Cưa chân bàn thủng hỗ trợ do cạn Cầu."
 
         return signal, note, sup, res
 
@@ -171,9 +200,19 @@ class WyckoffForecaster:
 
         report_df = pd.DataFrame(results)
         if not report_df.empty:
-            # Xếp hạng ưu tiên: Mua (1, 2) -> Bán (3, 4, 5) -> Đi ngang (6)
-            priority_map = {'SPRING': 1, 'SOS': 2, 'UTAD': 3, 'SOW': 4, 'MARKDOWN': 5, 'NEUTRAL': 6}
+            # Xếp hạng ưu tiên
+            priority_map = {
+                'SPRING': 1,      # Ưu tiên 1: Bắt đáy hoảng loạn (Rủi ro/Lợi nhuận tốt nhất)
+                'TEST_CUNG': 2,   # Ưu tiên 2: Mua thăm dò tĩnh lặng trong nền (An toàn nhất)
+                'SOS': 3,         # Ưu tiên 3: Mua gia tăng khi bứt phá xác nhận
+                'UTAD': 4,        # Ưu tiên 4: Cảnh báo bẫy tăng giá (Canh Bán)
+                'SOW': 5,         # Ưu tiên 5: Gãy nền uy tín (Bán cắt lỗ/Chốt lời ngay)
+                'MARKDOWN': 6,    # Ưu tiên 6: Cổ phiếu trôi đáy, bò tùng xẻo (Bỏ qua/Bán)
+                'NEUTRAL': 7      # Ưu tiên 7: Đi ngang nhàm chán (Không quan tâm)
+            }
             report_df['priority'] = report_df['Signal'].map(priority_map)
+            # Điền số 8 cho bất kỳ tín hiệu rác nào lọt qua (nếu có) để không bị lỗi NaN
+            report_df['priority'] = report_df['priority'].fillna(8)
             report_df = report_df.sort_values('priority').drop(columns=['priority'])
             output_path = self.output_dir / 'wyckoff_forecast.csv'
             report_df.to_csv(output_path, index=False, encoding='utf-8-sig')

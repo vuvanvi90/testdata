@@ -11,7 +11,7 @@ class ShadowProfiler:
         self.df_price = price_df
         self.verbose = verbose
         
-        if not self.df_price.empty:
+        if not self.df_price.empty and 'time' in self.df_price.columns:
             self.df_price['time'] = pd.to_datetime(self.df_price['time']).dt.normalize()
             self.df_price = self.df_price.sort_values(by=['ticker', 'time'])
 
@@ -24,9 +24,10 @@ class ShadowProfiler:
         df['upper_shadow'] = df['high'] - df[['open', 'close']].max(axis=1)
         df['range'] = df['high'] - df['low']
         
-        # Định nghĩa Nổ xịt: Vol to (>1.5 lần MA20), râu trên dài gấp đôi thân nến
-        condition_vol = df['volume'] > (df['vol_ma20'] * 1.5)
-        condition_tail = (df['upper_shadow'] > (df['body'] * 2)) & (df['range'] > 0)
+        # (VPA): Định nghĩa Upthrust Uy tín
+        # Vol to (>1.2 lần MA20), Râu trên chiếm >50% nến, Thân nến hẹp (<30% nến)
+        condition_vol = df['volume'] > (df['vol_ma20'] * 1.2)
+        condition_tail = (df['upper_shadow'] > (df['range'] * 0.5)) & (df['body'] < (df['range'] * 0.3)) & (df['range'] > 0)
         
         df['is_upthrust'] = condition_vol & condition_tail
         return df
@@ -57,7 +58,8 @@ class ShadowProfiler:
                 
             # 2. TIÊU CHÍ 'TIỀN ÁN BƠM XẢ' (Historical Pump Factor)
             # Mã này trong 1 năm qua đã từng có nhịp nào tăng thốc > 30% trong vòng 15 ngày chưa?
-            df_t['future_15d_max'] = df_t['close'].shift(-15).rolling(15).max()
+            # (Pandas Rolling): Tính chính xác max 15 ngày tương lai
+            df_t['future_15d_max'] = df_t['close'].rolling(window=15, min_periods=1).max().shift(-14)
             df_t['max_pump'] = (df_t['future_15d_max'] - df_t['close']) / df_t['close']
             
             if df_t['max_pump'].max() < 0.30: # Nếu chưa từng bơm thốc 30%, nó là hàng "ngoan" -> Bỏ
@@ -89,7 +91,7 @@ class ShadowProfiler:
             df_t = self._detect_upthrusts(df_t)
             
             # Tìm kiếm các cú KÉO GIÁ (Pump) > 20% trong 10 ngày
-            df_t['future_10d_max'] = df_t['close'].shift(-10).rolling(10).max()
+            df_t['future_10d_max'] = df_t['close'].rolling(window=10, min_periods=1).max().shift(-9)
             df_t['pump_yield'] = (df_t['future_10d_max'] - df_t['close']) / df_t['close']
             
             breakouts = df_t[df_t['pump_yield'] >= 0.20].index.tolist()

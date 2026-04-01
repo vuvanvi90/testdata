@@ -40,19 +40,25 @@ class MarketTracker:
             if not df.empty and 'time' in df.columns:
                 df['time'] = pd.to_datetime(df['time']).dt.normalize()
 
-    def _get_period_performance(self, lookback_days):
+    def _get_period_performance(self, lookback_days, target_date=None):
         """Tính toán Hiệu suất (Return) và Thanh khoản của toàn thị trường trong N ngày qua"""
-        latest_date = self.df_price['time'].max()
+        df_target = self.df_price.copy()
+        if target_date:
+            df_target = df_target[df_target['time'] <= pd.to_datetime(target_date).normalize()]
+            
+        if df_target.empty: return pd.DataFrame()
+
+        latest_date = df_target['time'].max()
         
         # Lấy danh sách các ngày giao dịch
-        trading_days = sorted(self.df_price['time'].unique())
+        trading_days = sorted(df_target['time'].unique())
         if len(trading_days) < lookback_days + 1:
             return pd.DataFrame()
             
         start_date = trading_days[-(lookback_days + 1)]
         
         # Lọc dữ liệu trong khung thời gian
-        df_period = self.df_price[(self.df_price['time'] >= start_date) & (self.df_price['time'] <= latest_date)]
+        df_period = df_target[(df_target['time'] >= start_date) & (df_target['time'] <= latest_date)]
         
         results = []
         for ticker, group in df_period.groupby('ticker'):
@@ -68,9 +74,8 @@ class MarketTracker:
             ret_pct = (end_price - start_price) / start_price * 100
             
             # Tính tổng giá trị giao dịch trong kỳ (Tỷ VNĐ)
-            avg_price = group['close'].mean()
-            total_vol = group['volume'].sum()
-            total_val_bn = (avg_price * total_vol) / 1_000_000_000
+            # Tính chính xác từng phiên thay vì lấy trung bình
+            total_val_bn = (group['close'] * group['volume']).sum() / 1_000_000_000
             
             results.append({
                 'ticker': ticker,
@@ -81,9 +86,9 @@ class MarketTracker:
             
         return pd.DataFrame(results)
 
-    def analyze_market_breadth(self, lookback_days=1, label="1 Ngày"):
+    def analyze_market_breadth(self, lookback_days=1, target_date=None, label="1 Ngày"):
         """1. ĐO LƯỜNG ĐỘ RỘNG THỊ TRƯỜNG (MARKET BREADTH)"""
-        df_perf = self._get_period_performance(lookback_days)
+        df_perf = self._get_period_performance(lookback_days, target_date)
         if df_perf.empty: return None
         
         # Loại bỏ các mã thanh khoản quá thấp (< 1 tỷ/kỳ) để tránh nhiễu
@@ -105,10 +110,10 @@ class MarketTracker:
             print("\n" + "="*85)
             print(f" 📊 BÁO CÁO ĐỘ RỘNG THỊ TRƯỜNG (BREADTH) - KHUNG: {label}")
             print("="*85)
-        for _, row in summary.iterrows():
-            pct = (row['Count'] / total_tickers) * 100
-            if self.verbose:
-                print(f"  🔸 Số mã {row['Status']:<10}: {row['Count']:>4} mã ({pct:>5.1f}%) | Dòng tiền: {row['Value_Bn']:>8,.0f} Tỷ VNĐ")
+            for _, row in summary.iterrows():
+                pct = (row['Count'] / total_tickers) * 100
+                if self.verbose:
+                    print(f"  🔸 Số mã {row['Status']:<10}: {row['Count']:>4} mã ({pct:>5.1f}%) | Dòng tiền: {row['Value_Bn']:>8,.0f} Tỷ VNĐ")
             
         # CHẨN ĐOÁN RỦI RO (BULL TRAP / THẾ TRẬN TẤN CÔNG)
         advancers = summary[summary['Status'] == 'Tăng']
@@ -168,28 +173,33 @@ class MarketTracker:
         
         return leaders.index.tolist()
 
-    def analyze_flow_attribution(self, lookback_days=5):
+    def analyze_flow_attribution(self, lookback_days=5, target_date=None):
         """3. GIẢI PHẪU DÒNG TIỀN TAY TO (FLOW ATTRIBUTION) TRÊN TOP 50 MÃ TĂNG"""
-        df_perf = self._get_period_performance(lookback_days)
+        df_perf = self._get_period_performance(lookback_days, target_date)
         if df_perf is None or df_perf.empty: return
         
         # Lấy Top 50 mã tăng mạnh nhất (Chỉ lấy mã thanh khoản > 5 tỷ để loại rác)
         df_top = df_perf[df_perf['Total_Val_Bn'] >= 5.0].nlargest(50, 'Return_%')
         top_tickers = df_top['ticker'].tolist()
+
+        # Đồng bộ mốc thời gian
+        df_target = self.df_price.copy()
+        if target_date:
+            df_target = df_target[df_target['time'] <= pd.to_datetime(target_date).normalize()]
         
-        latest_date = self.df_price['time'].max()
-        start_date = sorted(self.df_price['time'].unique())[-(lookback_days + 1)]
+        latest_date = df_target['time'].max()
+        start_date = sorted(df_target['time'].unique())[-(lookback_days + 1)]
         
         # Lấy dữ liệu dòng tiền của Top 50 mã này
         f_net_total = 0
         p_net_total = 0
         
         if not self.df_foreign.empty:
-            df_f = self.df_foreign[(self.df_foreign['time'] >= start_date) & (self.df_foreign['ticker'].isin(top_tickers))]
+            df_f = self.df_foreign[(self.df_foreign['time'] >= start_date) & (self.df_foreign['time'] <= latest_date) & (self.df_foreign['ticker'].isin(top_tickers))]
             f_net_total = df_f['foreign_net_value'].sum() / 1_000_000_000 # Đổi ra Tỷ VNĐ
             
         if not self.df_prop.empty:
-            df_p = self.df_prop[(self.df_prop['time'] >= start_date) & (self.df_prop['ticker'].isin(top_tickers))]
+            df_p = self.df_prop[(self.df_prop['time'] >= start_date) & (self.df_prop['time'] <= latest_date) & (self.df_prop['ticker'].isin(top_tickers))]
             if 'prop_net_value' in df_p.columns:
                 p_net_total = df_p['prop_net_value'].sum() / 1_000_000_000
                 
@@ -257,17 +267,13 @@ class MarketTracker:
             
             if self.verbose:
                 print("\n" + "="*90)
-                print(f" 🌐 BÁO CÁO ORDER FLOW TOÀN THỊ TRƯỜNG - {datetime.now().strftime('%H:%M')}")
+                print(f" 🌐 BÁO CÁO ORDER FLOW TOÀN THỊ TRƯỜNG")
                 print("="*90)
-                print(f" 1. TỔNG QUAN DÒNG TIỀN CHỦ ĐỘNG (RETAIL + INSTITUTION):")
-                print(f"    🔸 Tổng MUA Chủ Động : {total_bu_bn:>8,.1f} Tỷ VNĐ")
-                print(f"    🔸 Tổng BÁN Chủ Động : {total_sd_bn:>8,.1f} Tỷ VNĐ")
-                print(f"    => CHÊNH LỆCH RÒNG   : {market_net_active:>+8,.1f} Tỷ VNĐ")
-                print(f"\n 2. DẤU CHÂN CÁ MẬP (CÁC LỆNH KHỚP > 1 TỶ VNĐ):")
-                print(f"    🔸 Cá Mập MUA C.Động : {shark_bu_bn:>8,.1f} Tỷ VNĐ")
-                print(f"    🔸 Cá Mập BÁN C.Động : {shark_sd_bn:>8,.1f} Tỷ VNĐ")
-                print(f"    => CÁ MẬP ĐANG       : {'🟢 GOM RÒNG' if shark_net_active > 0 else '🔴 XẢ RÒNG'} ({shark_net_active:>+8,.1f} Tỷ VNĐ)")
-                print("-" * 90)
+                print(f" 1. TỔNG QUAN DÒNG TIỀN CHỦ ĐỘNG:")
+                print(f"    🔸 Tổng MUA : {total_bu_bn:>8,.1f} Tỷ | 🔸 Tổng BÁN: {total_sd_bn:>8,.1f} Tỷ | => RÒNG: {market_net_active:>+8,.1f} Tỷ")
+                print(f"\n 2. DẤU CHÂN CÁ MẬP (> 1 TỶ/LỆNH):")
+                print(f"    🔸 MUA : {shark_bu_bn:>8,.1f} Tỷ | 🔸 BÁN: {shark_sd_bn:>8,.1f} Tỷ | => {'🟢 GOM' if shark_net_active > 0 else '🔴 XẢ'}: {shark_net_active:>+8,.1f} Tỷ")
+                print("="*90)
             
             # CHẨN ĐOÁN VĨ MÔ (MACRO VERDICT)
             if market_net_active > 0 and shark_net_active > 0:
@@ -291,23 +297,24 @@ class MarketTracker:
             if self.verbose:
                 print(f"[*] Đang đóng gói dữ liệu Order Flow cho từng mã cổ phiếu...")
             
-            # Hàm phụ trợ để tính an toàn cho từng group
-            def calculate_ticker_flow(x):
-                bu_val = x.loc[x[col_type].isin(['Buy', 'BU', 'B']), 'trade_val_bn'].sum()
-                sd_val = x.loc[x[col_type].isin(['Sell', 'SD', 'S']), 'trade_val_bn'].sum()
-                total_v = x[col_vol].sum()
-                vwap_val = (x[col_price] * x[col_vol]).sum() / total_v if total_v > 0 else 0
-                return pd.Series({
-                    'bu_bn': bu_val,
-                    'sd_bn': sd_val,
-                    'vwap': vwap_val,
-                    'last_price': x[col_price].iloc[-1] if not x.empty else 0
-                })
-
-            ticker_stats = df.groupby('ticker').apply(calculate_ticker_flow).reset_index()
-            ticker_stats['net_active_bn'] = ticker_stats['bu_bn'] - ticker_stats['sd_bn']
+            # Nhanh hơn 100 lần so với groupby.apply cũ
+            df['bu_bn'] = np.where(is_bu, df['trade_val_bn'], 0)
+            df['sd_bn'] = np.where(is_sd, df['trade_val_bn'], 0)
+            df['val_raw'] = df[col_price] * df[col_vol]
             
-            # Chuyển thành Dictionary để live.py tra cứu siêu tốc O(1)
+            agg_funcs = {
+                'bu_bn': 'sum',
+                'sd_bn': 'sum',
+                'val_raw': 'sum',
+                col_vol: 'sum',
+                col_price: 'last'
+            }
+            
+            ticker_stats = df.groupby('ticker').agg(agg_funcs).reset_index()
+            ticker_stats['vwap'] = np.where(ticker_stats[col_vol] > 0, ticker_stats['val_raw'] / ticker_stats[col_vol], 0)
+            ticker_stats['net_active_bn'] = ticker_stats['bu_bn'] - ticker_stats['sd_bn']
+            ticker_stats.rename(columns={col_price: 'last_price'}, inplace=True)
+            
             intraday_dict = ticker_stats.set_index('ticker').to_dict('index')
             
             return {

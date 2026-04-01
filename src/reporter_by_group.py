@@ -16,11 +16,11 @@ class GroupCashFlowReporter:
         
         # Chuẩn hóa thời gian
         for df in [self.df_foreign, self.df_prop]:
-            if not df.empty:
+            if df is not None and not df.empty and 'time' in df.columns:
                 df['time'] = pd.to_datetime(df['time']).dt.normalize()
 
     def generate_report(self, timeframe='week', target_date=None):
-        if self.df_foreign.empty and self.df_prop.empty:
+        if (self.df_foreign is None or self.df_foreign.empty) and (self.df_prop is None or self.df_prop.empty):
             print("[!] Thiếu dữ liệu để tạo báo cáo.")
             return
 
@@ -90,15 +90,32 @@ class GroupCashFlowReporter:
         else:
             report_df['industry'] = 'Chưa phân loại'
 
-        # ---------------------------------------------------------------------
-        # 📊 TỔNG HỢP THEO SÓNG NGÀNH (SECTOR FLOW)
-        # ---------------------------------------------------------------------
-        sector_flow = report_df.groupby('industry').agg({
-            'foreign_val_bn': 'sum',
-            'prop_val_bn': 'sum',
-            'total_val_bn': 'sum'
-        }).reset_index()
-        
+        # =====================================================================
+        # ĐO LƯỜNG ĐỘ LAN TỎA & TRUY TÌM LEADER NGÀNH
+        # =====================================================================
+        # Phân loại trạng thái của từng mã: Gom ròng (>0) hay Xả ròng (<0)
+        report_df['is_bought'] = (report_df['total_val_bn'] > 0).astype(int)
+        report_df['is_sold'] = (report_df['total_val_bn'] < 0).astype(int)
+
+        def get_sector_stats(x):
+            # Tìm mã được Mua nhiều nhất và Bán nhiều nhất trong ngành
+            top_stock = x.loc[x['total_val_bn'].idxmax(), 'ticker'] if x['total_val_bn'].max() > 0 else "None"
+            top_val = x['total_val_bn'].max() if x['total_val_bn'].max() > 0 else 0
+            
+            worst_stock = x.loc[x['total_val_bn'].idxmin(), 'ticker'] if x['total_val_bn'].min() < 0 else "None"
+            worst_val = x['total_val_bn'].min() if x['total_val_bn'].min() < 0 else 0
+            
+            return pd.Series({
+                'foreign_val_bn': x['foreign_val_bn'].sum(),
+                'prop_val_bn': x['prop_val_bn'].sum(),
+                'total_val_bn': x['total_val_bn'].sum(),
+                'stocks_bought': x['is_bought'].sum(), # Số mã được mua ròng
+                'stocks_sold': x['is_sold'].sum(),     # Số mã bị bán ròng
+                'leader': f"{top_stock} (+{top_val:.0f})",
+                'lagger': f"{worst_stock} ({worst_val:.0f})"
+            })
+
+        sector_flow = report_df.groupby('industry').apply(get_sector_stats).reset_index()
         sector_flow = sector_flow.sort_values(by='total_val_bn', ascending=False).reset_index(drop=True)
         # Bỏ qua những ngành giao dịch quá bé (Gần 0)
         sector_flow = sector_flow[sector_flow['total_val_bn'].abs() > 0.5] 
@@ -115,21 +132,22 @@ class GroupCashFlowReporter:
             print(f"    Giai đoạn: {start_date.strftime('%d/%m/%Y')} -> {latest_date.strftime('%d/%m/%Y')}")
             print("="*75)
             
-            # IN TOP NGÀNH HÚT TIỀN (SÓNG NGÀNH)
-            print("🌊 TOP NGÀNH ĐƯỢC TAY TO GOM RÒNG MẠNH NHẤT:")
-            print(f"{'TÊN NGÀNH':<30} | {'KHỐI NGOẠI':>10} | {'TỰ DOANH':>10} | {'TỔNG CỘNG (TỶ)':>14}")
+            print("🌊 TOP SÓNG NGÀNH - TAY TO GOM RÒNG MẠNH NHẤT:")
+            print(f"{'TÊN NGÀNH':<25} | {'TỔNG TIỀN (TỶ)':>14} | {'ĐỘ LAN TỎA (MUA/BÁN)':>20} | {'MÃ GÁNH TEAM (LEADER)':<20}")
             print("-" * 75)
             for _, row in sector_flow.head(5).iterrows():
                 if row['total_val_bn'] > 0:
-                    print(f"{str(row['industry'])[:28]:<30} | {row['foreign_val_bn']:>10.1f} | {row['prop_val_bn']:>10.1f} | {row['total_val_bn']:>14.1f}")
+                    breadth = f"🟢 {row['stocks_bought']} / 🔴 {row['stocks_sold']}"
+                    # Cảnh báo "Kéo Trụ/Sóng Ảo" nếu số mã bán lớn hơn số mã mua rất nhiều
+                    warning = " ⚠️(Sóng Ảo)" if row['stocks_sold'] > row['stocks_bought'] * 1.5 else ""
+                    print(f"{str(row['industry'])[:23]:<25} | {row['total_val_bn']:>14.1f} | {breadth:>20} | {row['leader']:<20}{warning}")
                     
-            # IN TOP NGÀNH BỊ RÚT TIỀN
             print("\n🩸 TOP NGÀNH BỊ TAY TO XẢ RÒNG RÁT NHẤT:")
             print("-" * 75)
-            # Quét từ dưới lên của bảng sector_flow
             for _, row in sector_flow.tail(5).iloc[::-1].iterrows():
                 if row['total_val_bn'] < 0:
-                    print(f"{str(row['industry'])[:28]:<30} | {row['foreign_val_bn']:>10.1f} | {row['prop_val_bn']:>10.1f} | {row['total_val_bn']:>14.1f}")
+                    breadth = f"🟢 {row['stocks_bought']} / 🔴 {row['stocks_sold']}"
+                    print(f"{str(row['industry'])[:23]:<25} | {row['total_val_bn']:>14.1f} | {breadth:>20} | Tội đồ: {row['lagger']:<20}")
 
             print("\n" + "="*75)
             print(" 🎯 TOP CỔ PHIẾU TRỌNG ĐIỂM CHI PHỐI DÒNG TIỀN")
