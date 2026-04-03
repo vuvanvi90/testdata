@@ -82,8 +82,14 @@ class MarketFlowAnalyzer:
         # 6. ĐO LƯỜNG PHÂN KỲ BẰNG HỆ SỐ TƯƠNG QUAN (15 PHIÊN)
         df_recent = df_lookback.tail(15).copy()
         if len(df_recent) >= 10:
-            # Tính Pearson Correlation giữa Giá và Dòng tiền cộng dồn
-            correlation = df_recent['close'].corr(df_recent['cum_sm'])
+            # Kiểm tra Zero-Variance
+            # Nếu giá đi ngang 1 đường HOẶC Dòng tiền không đổi (Tắt thanh khoản)
+            if df_recent['close'].nunique() <= 1 or df_recent['cum_sm'].nunique() <= 1:
+                correlation = 0.0 # Không có tương quan/phân kỳ vì đường biểu đồ phẳng
+            else:
+                # Tính Pearson Correlation giữa Giá và Dòng tiền cộng dồn
+                correlation = df_recent['close'].corr(df_recent['cum_sm'])
+                
             result["correlation"] = round(correlation, 2) if pd.notna(correlation) else 0.0
             
             # Xu hướng giá hiện tại (So với trung bình 15 phiên)
