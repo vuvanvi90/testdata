@@ -656,12 +656,11 @@ class LiveAssistant:
                 "pe": float(pe)                
             }
         except Exception as e:
-            # print(f"[!] Lỗi trích xuất CANSLIM {ticker}: {e}")
+            print(f"[!] Lỗi trích xuất CANSLIM {ticker}: {e}")
             return None
 
     def _get_market_sentiment(self, ticker):
         """Trích xuất Order Book & Foreign Flow từ DataFrame Bảng giá"""
-        # if self.df_board.empty or 'ticker' not in self.df_board.columns: return None
         if self.df_board.empty or 'symbol' not in self.df_board.columns: return None
 
         # df_ticker = self.df_board[self.df_board['ticker'] == ticker]
@@ -672,12 +671,18 @@ class LiveAssistant:
         try:
             bid_vol = float(row.get('bid_vol_1', 0)) + float(row.get('bid_vol_2', 0)) + float(row.get('bid_vol_3', 0))
             ask_vol = float(row.get('ask_vol_1', 0)) + float(row.get('ask_vol_2', 0)) + float(row.get('ask_vol_3', 0))
-            net_foreign = float(row.get('foreign_buy_volume', 0)) - float(row.get('foreign_sell_volume', 0))
+            foreign_net_vol = float(row.get('foreign_buy_volume', 0)) - float(row.get('foreign_sell_volume', 0))
+            foreign_net_value = float(row.get('average_price', 0)) * foreign_net_vol
+            net_foreign = 0
+            if foreign_net_value > 0 or foreign_net_value < 0:
+                net_foreign = foreign_net_value / 1_000_000_000
             
             # Lấy thông tin giá trần/sàn và bid/ask tốt nhất
             return {
                 "sentiment_ratio": bid_vol / ask_vol if ask_vol > 0 else 10.0,
-                "net_foreign": net_foreign,
+                "net_foreign_vol": foreign_net_vol,
+                "net_foreign_value": foreign_net_vol,
+                "net_foreign": net_foreign, # khối ngoại mua ròng theo tỷ
                 "best_bid": float(row.get('bid_price_1', row.get('close_price', 0))),  # Giá đang chờ mua cao nhất
                 "best_ask": float(row.get('ask_price_1', row.get('close_price', 0))),  # Giá đang chào bán rẻ nhất
                 "ceil": float(row.get('ceiling_price', row.get('high_price', 0))),
@@ -714,10 +719,6 @@ class LiveAssistant:
     def update_and_prepare_data(self, df_price, df_intra):
         """Gộp dữ liệu Lịch sử Giá và Khớp lệnh Intraday thành 1 file duy nhất cho Forecaster"""
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Đang tổng hợp Nến Provisional...")
-        
-        # # Load dữ liệu từ Parquet
-        # df_price = self.df_price
-        # df_intra = self.df_intra
         
         if df_price.empty:
             print("[!] Không tìm thấy dữ liệu giá lịch sử.")
@@ -796,10 +797,10 @@ class LiveAssistant:
         # 3. ĐIỀU KIỆN TỬ THẦN (KẾT LIỄU NHỮNG KẺ THAO TÚNG)
         # - adv_value >= 3_000_000_000 (Thanh khoản > 3 Tỷ VNĐ)
         # - flat_days <= 2 (Không quá 2 phiên nến gạch ngang trong 1 tháng)
-        # tradable_tickers = metrics[
-        #     (metrics['adv_value'] >= 3000000000) & (metrics['flat_days'] <= 2)
-        # ].index
-        tradable_tickers = metrics.index
+        tradable_tickers = metrics[
+            (metrics['adv_value'] >= 3000000000) 
+            # & (metrics['flat_days'] <= 2)
+        ].index
         
         # Ghi đè lại df_price chỉ chứa các mã tinh khiết nhất
         df_price = df_clean[df_clean['ticker'].isin(tradable_tickers)]
@@ -820,10 +821,22 @@ class LiveAssistant:
         price = row['Price']
 
         # 1. CORE SIGNAL (Tối đa 40đ)
-        if signal in ['SOS', 'SPRING']:
+        if signal in ['SOS', 'SPRING', 'TEST_CUNG']:
             score += 30; details.append("Tín hiệu Chuẩn (+30)")
             if signal == 'SOS' and row.get('VPA_Status') in ['High', 'Ultra High']:
                 score += 10; details.append("Vol Uy tín (+10)")
+            elif signal == 'TEST_CUNG':
+                if row.get('VPA_Status') == 'Low':
+                    score += 10
+                    details.append("Thanh khoản cạn kiệt (< 60% MA20) (+10 điểm)")
+                elif row.get('VPA_Status') == 'Normal':
+                    score += 5
+                    details.append("Cầu đang chờ xác nhận (+5 điểm)")
+                elif row.get('VPA_Status') in ['High', 'Ultra High']:
+                    # Nếu Test Cung mà Volume lại cao, chứng tỏ thuật toán nhận diện bị nhiễu 
+                    # Hoặc đây là lực Bán ngầm (Hidden Supply) chứ không phải Test Cung.
+                    score -= 10 
+                    details.append("Tín hiệu nhiễu! Nến giảm biên độ hẹp nhưng Volume cao -> Phân phối ngầm! (-10 điểm)")
             elif signal == 'SPRING' and row.get('VPA_Status') == 'Low':
                 score += 10; details.append("Vol Cạn (+10)")
 
@@ -924,28 +937,6 @@ class LiveAssistant:
             elif today_total_net > 0:
                 score += 5
                 details.append(f"✔️ Dòng tiền ngoại/tự doanh ủng hộ nhẹ (+5)")
-
-        # # 8. Gọi Radar Đo lường Tồn kho & Dòng tiền Ẩn
-        # cum_inventory, dominance_pct, shadow_flow = self._get_inventory_metrics(ticker)
-
-        # # LUẬT 1: PHẠT NẶNG LÁI NỘI ĐẨY GIÁ (SHADOW FLOW TRAP)
-        # # Nổ thanh khoản to nhưng Tay to đứng ngoài (Chi phối < 5%)
-        # if signal in ['SOS', 'SPRING'] and dominance_pct < 5.0 and shadow_flow > 15.0:
-        #     score -= 25
-        #     details.append(f"⚠️ Rủi ro Lái Nội: Breakout nhưng Tay to không tham gia (Chi phối: {dominance_pct:.1f}% | Dòng tiền ẩn: {shadow_flow:.1f} Tỷ) [-25]")
-
-        # # LUẬT 2: THƯỞNG ĐIỂM TỒN KHO TAY TO (INVENTORY BASE)
-        # if cum_inventory > 500: # Tay to ôm ròng trên 500 tỷ trong 6 tháng qua
-        #     score += 15
-        #     details.append(f"📦 Bệ phóng Vàng: Tồn kho Tay to Lũy kế 6T rất lớn (+{cum_inventory:,.0f} Tỷ) [+15]")
-        # elif cum_inventory < -500: # Tay to xả ròng hơn 500 tỷ trong 6 tháng
-        #     score -= 15
-        #     details.append(f"🩸 Cản trên dày: Tay to đã xả ròng Lũy kế 6T ({cum_inventory:,.0f} Tỷ) [-15]")
-        
-        # # LUẬT 3: THƯỞNG BREAKOUT CÓ SỰ BẢO KÊ CỦA TAY TO
-        # if dominance_pct > 20.0:
-        #     score += 10
-        #     details.append(f"🎯 Lực đẩy Uy tín: Tay to tham gia chi phối mạnh phiên nổ Vol ({dominance_pct:.1f}%) [+10]")
 
         return score, details
 
