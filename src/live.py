@@ -369,7 +369,7 @@ class LiveAssistant:
             print("ĐÁNH GIÁ DÒNG TIỀN VÀ SÓNG NGÀNH")
             print("="*65)
             
-            reporter = GroupCashFlowReporter(self.df_foreign, self.df_prop, self.df_ind, verbose=False)
+            reporter = GroupCashFlowReporter(self.df_foreign, self.df_prop, self.df_ind, self.df_price, verbose=False)
             sector_flow, flow_report_df = reporter.generate_report(timeframe='week')
             
             if sector_flow is not None and not sector_flow.empty:
