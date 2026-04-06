@@ -205,7 +205,6 @@ class LiveAssistant:
         return prop_dict
 
     def _load_price_dict(self, path):
-        """Đọc file Parquet Tự doanh và băm thành Dictionary O(1) chỉ giữ 20 phiên"""
         df = self._load_parquet_safe(path)
         if df.empty or 'ticker' not in df.columns:
             return {}
@@ -1018,41 +1017,67 @@ class LiveAssistant:
             print(f"[!] Lỗi ghi log: {e}")
 
     def _check_smart_money_distribution(self, ticker):
-        """Quét xem Khối ngoại hoặc Tự doanh có đang âm thầm xả hàng không"""
+        """Quét xem Khối ngoại hoặc Tự doanh có đang âm thầm xả hàng không (Đã vá lỗi lệch pha)"""
         warnings = []
-        current_date = pd.Timestamp.now().normalize()
+        
+        # 1. ĐỒNG BỘ MỐC THỜI GIAN BACKTEST / LIVE
+        current_date = pd.to_datetime(self.run_date).normalize() if hasattr(self, 'run_date') else pd.Timestamp.now().normalize()
         MAX_DELAY_DAYS = 15
         
-        # Lấy dữ liệu 10 phiên gần nhất để tính Trung bình Lực Gom
+        # 2. LẤY LƯỚI THỜI GIAN CHUẨN (TRUE-TIME WINDOW) TỪ BẢNG GIÁ
+        df_price = self.price_dict.get(ticker)
+        if df_price is None or df_price.empty: return warnings
+        
+        df_price_valid = df_price[df_price['time'] <= current_date]
+        if df_price_valid.empty: return warnings
+        
+        trading_dates = df_price_valid['time'].sort_values().unique()
+        cutoff_10d = trading_dates[-10] if len(trading_dates) >= 10 else trading_dates[0]
+        cutoff_3d = trading_dates[-3] if len(trading_dates) >= 3 else trading_dates[0]
+        latest_trading_date = trading_dates[-1] # Lấy chính xác ngày phiên giao dịch cuối cùng
+
+        # Hàm kiểm toán luồng tiền
         def check_flow(df, net_col, actor_name):
             if df is not None and not df.empty:
-                last_date = pd.to_datetime(df['time'].max())
+                # Cắt đứt tương lai
+                df_valid = df[df['time'] <= current_date]
+                if df_valid.empty: return
+                
+                last_date = pd.to_datetime(df_valid['time'].max())
+                
+                # Kiểm tra hạn sử dụng của Dòng tiền
                 if (current_date - last_date).days <= MAX_DELAY_DAYS:
-                    df_recent = df.tail(10)
-                    df_3d = df.tail(3)
                     
-                    # Quy tắc 1 (Cũ): Xả ròng 3 phiên liên tiếp (Xả rỉ rả)
-                    if len(df_3d[df_3d[net_col] < 0]) == 3:
-                        warnings.append(f"{actor_name} xả ròng 3 phiên liên tiếp")
+                    # 3. ÉP BẢNG DÒNG TIỀN THEO LƯỚI THỜI GIAN THỰC TẾ
+                    df_10d = df_valid[df_valid['time'] >= cutoff_10d]
+                    df_3d = df_valid[df_valid['time'] >= cutoff_3d]
+                    
+                    # Quy tắc 1: Xả ròng 3 phiên liên tiếp (Xả rỉ rả)
+                    if not df_3d.empty and net_col in df_3d.columns:
+                        if len(df_3d[df_3d[net_col] < 0]) == 3:
+                            warnings.append(f"{actor_name} xả ròng 3 phiên liên tiếp")
                         
-                    # 🚀 QUY TẮC 2 (MỚI): XẢ ĐỘT BIẾN (SUDDEN DUMP) TRONG PHIÊN GẦN NHẤT
-                    today_val = df.iloc[-1][net_col]
-                    if today_val < 0: # Nếu hôm nay là phiên Xả
-                        # Tính trung bình các phiên Gom trước đó để so sánh
-                        avg_buy = df_recent[df_recent[net_col] > 0][net_col].mean()
+                    # Quy tắc 2: CÚ XẢ ĐỘT BIẾN (SUDDEN DUMP) TRONG CHÍNH PHIÊN HÔM NAY
+                    # Lấy chính xác dữ liệu của phiên đang xét (nếu không có giao dịch thì bỏ qua)
+                    df_today = df_valid[df_valid['time'] == latest_trading_date]
+                    if not df_today.empty and net_col in df_today.columns:
+                        today_val = df_today.iloc[-1][net_col]
                         
-                        # Nếu giá trị xả hôm nay LỚN HƠN 1.5 lần mức độ gom trung bình trước đó
-                        # Tức là: Gom thì nhỏ giọt, mà xả thì xả 1 cục to đùng!
-                        if pd.notna(avg_buy) and avg_buy > 0 and abs(today_val) > (avg_buy * 1.5):
-                            warnings.append(f"CÚ XẢ ĐỘT BIẾN từ {actor_name} (Xả 1 phiên lấp luôn lực gom)")
+                        if today_val < 0: # Nếu chính phiên hôm nay là phiên Xả
+                            # Tính trung bình các phiên Gom trong 10 ngày qua
+                            avg_buy = df_10d[df_10d[net_col] > 0][net_col].mean()
+                            
+                            # Cú xả hôm nay lấp luôn 1.5 lần lực gom trung bình trước đó
+                            if pd.notna(avg_buy) and avg_buy > 0 and abs(today_val) > (avg_buy * 1.5):
+                                warnings.append(f"CÚ XẢ ĐỘT BIẾN từ {actor_name} (Xả 1 phiên lấp luôn lực gom)")
 
-        # Chạy kiểm tra cho cả Tây và Tự doanh
+        # Chạy kiểm tra chéo cho cả Tây và Tự doanh
         check_flow(self.foreign_dict.get(ticker), 'foreign_net_value', 'Khối ngoại')
         check_flow(self.prop_dict.get(ticker), 'prop_net_value', 'Tự doanh')
                 
         return warnings
 
-    def _get_inventory_metrics(self, ticker, lookback_days=120):
+    def _get_inventory_metrics(self, ticker, lookback_days=130):
         """
         Đo lường Tồn kho Lũy kế (6 tháng) và Tỷ lệ chi phối (Phiên hiện tại)
         """
@@ -1266,18 +1291,20 @@ class LiveAssistant:
         print(" 📡 RADAR CẢNH BÁO SỚM & KIỂM ĐỊNH BẪY TAY TO")
         print("="*65)
 
-        current_date = pd.Timestamp.now().normalize()
-        MAX_DELAY_DAYS = 15
+        # TẠO THƯỚC ĐO THỜI GIAN CHUẨN TỪ BẢNG GIÁ THỰC TẾ
+        trading_dates = df_full_price['time'].dropna().sort_values().unique()
+        cutoff_20d = trading_dates[-20] if len(trading_dates) >= 20 else trading_dates[0]
+        cutoff_3d = trading_dates[-3] if len(trading_dates) >= 3 else trading_dates[0]
         
         for _, row in report.iterrows():
             ticker = row['Ticker']
             signal = row['Signal']
             price = float(row['Price'])
             ema89 = float(row.get('EMA89', 0))
-            sm_result = sm_info_dict.get(ticker, {}) # Lấy kết quả đã phân tích
+            sm_result = sm_info_dict.get(ticker, {}) 
             
             # 1. KIỂM CHỨNG THÀNH CÔNG: Đã nổ tín hiệu Mua
-            if signal in ['SOS', 'SPRING']:
+            if signal in ['SOS', 'SPRING', 'TEST_CUNG']:
                 if ticker in watchlist:
                     print(f"🔥 BÙNG NỔ: {ticker} đã nổ {signal} đúng như Radar dự báo từ {watchlist[ticker]['date_added']}!")
                 continue 
@@ -1286,12 +1313,10 @@ class LiveAssistant:
             if ticker in watchlist:
                 days_pending = (datetime.now() - datetime.strptime(watchlist[ticker]['date_added'], '%Y-%m-%d')).days
                 
-                # PHÁT HIỆN BẪY (BULL TRAP): Cổ phiếu gãy Trend
                 if price < ema89:
                     print(f"🚨 PHÁT HIỆN BẪY: {ticker} gãy EMA89. Lực gom của {watchlist[ticker]['reason']} đã thất bại. Xóa khỏi tầm ngắm!")
-                    continue # Không đưa vào next_watchlist
+                    continue 
                     
-                # PHÁT HIỆN KẸP HÀNG: Ngâm quá 10 phiên không kéo
                 if days_pending > 10:
                     print(f"⏳ HẾT HẠN GOM: {ticker} quá 10 ngày không nổ SOS. Bỏ theo dõi để tránh chôn vốn.")
                     continue
@@ -1304,24 +1329,33 @@ class LiveAssistant:
                 df_f = self.foreign_dict.get(ticker)
                 df_p = self.prop_dict.get(ticker)
 
-                # 3A. Tây lông (Dùng cờ valid_f từ Engine để bỏ qua mã lãng quên)
-                if sm_result["valid_f"] and df_f is not None:
-                    df_3d = df_f.tail(3)
-                    net_buy_3d = len(df_3d[df_3d['foreign_net_volume'] > 0])
-                    if df_f.tail(20)['foreign_net_volume'].sum() > 0 and net_buy_3d >= 1:
-                        is_radar = True
-                        radar_reasons.append(f"Tây gom {net_buy_3d} phiên" if net_buy_3d > 1 else "Tây chớm gom")
+                # 3A. Tây lông (Màng lọc True-Time Window & Value)
+                if sm_result.get("valid_f") and df_f is not None:
+                    # Lọc chuẩn theo 20 phiên và 3 phiên giao dịch thực tế
+                    df_f_20d = df_f[df_f['time'] >= cutoff_20d]
+                    df_f_3d = df_f[df_f['time'] >= cutoff_3d]
+                    
+                    # Đếm số phiên gom ròng (>0 Tỷ) và Tổng gom 20 ngày
+                    if not df_f_3d.empty and 'foreign_net_value' in df_f_3d.columns:
+                        net_buy_3d = len(df_f_3d[df_f_3d['foreign_net_value'] > 0])
+                        sum_20d = df_f_20d['foreign_net_value'].sum()
+                        
+                        if sum_20d > 0 and net_buy_3d >= 1:
+                            is_radar = True
+                            radar_reasons.append(f"Tây gom {net_buy_3d} phiên" if net_buy_3d > 1 else "Tây chớm gom")
 
-                # 3B. Tự doanh (Dùng cờ valid_p từ Engine)
-                if sm_result["valid_p"] and df_p is not None:
-                    df_3d = df_p.tail(3)
-                    net_buy_3d = len(df_3d[df_3d['prop_net_volume'] > 0])
-                    if net_buy_3d >= 1:
-                        is_radar = True
-                        radar_reasons.append(f"Tự doanh gom {net_buy_3d} phiên" if net_buy_3d > 1 else "Tự doanh chớm gom")
+                # 3B. Tự doanh (Màng lọc True-Time Window & Value)
+                if sm_result.get("valid_p") and df_p is not None:
+                    df_p_3d = df_p[df_p['time'] >= cutoff_3d]
+                    
+                    if not df_p_3d.empty and 'prop_net_value' in df_p_3d.columns:
+                        net_buy_3d = len(df_p_3d[df_p_3d['prop_net_value'] > 0])
+                        
+                        if net_buy_3d >= 1:
+                            is_radar = True
+                            radar_reasons.append(f"Tự doanh gom {net_buy_3d} phiên" if net_buy_3d > 1 else "Tự doanh chớm gom")
 
                 if is_radar:
-                    # Ghi chú rõ lý do vào Tên mã để in ra màn hình
                     if ticker not in watchlist:
                         print(f"   🎯 TẦM NGẮM MỚI: {ticker} ({' + '.join(radar_reasons)}) | Giá: {price:,.0f}đ")
                         next_watchlist[ticker] = {
@@ -1330,7 +1364,6 @@ class LiveAssistant:
                             "reason": " + ".join(radar_reasons)
                         }
                     else:
-                        # Vẫn thỏa mãn tiêu chí, tiếp tục giữ trong Watchlist
                         next_watchlist[ticker] = watchlist[ticker]
         
         self._save_watchlist(next_watchlist)
@@ -1402,9 +1435,9 @@ class LiveAssistant:
                 print("   => Cho phép mở vị thế Bắt đáy (SPRING) với quy mô vốn thăm dò.")
                 dynamic_threshold += 5 # Khó tính hơn một chút
                 self.macro_risk_factor *= 0.5     # Đánh 50% vốn
-                signals = report[report['Signal'].isin(['SOS', 'SPRING'])].copy()
+                signals = report[report['Signal'].isin(['SOS', 'SPRING', 'TEST_CUNG'])].copy()
             else:
-                print("\n[!] THỊ TRƯỜNG CHUNG DOWNTREND: Hủy bỏ toàn bộ tín hiệu SOS/SPRING.")
+                print("\n[!] THỊ TRƯỜNG CHUNG DOWNTREND: Hủy bỏ toàn bộ tín hiệu SOS/SPRING/TEST_CUNG.")
                 signals = pd.DataFrame() 
 
                 # --- KÍCH HOẠT LÁ CHẮN FMARKET ---
@@ -1419,10 +1452,10 @@ class LiveAssistant:
                         for f in safe_funds:
                             print(f"🔹 Quỹ {f['fund_name']} - Lợi nhuận kỳ vọng: {f['expected_yield']:.1f}%/năm")
         else:
-            signals = report[report['Signal'].isin(['SOS', 'SPRING'])].copy()
+            signals = report[report['Signal'].isin(['SOS', 'SPRING', 'TEST_CUNG'])].copy()
 
         # Test
-        signals = report[report['Signal'].isin(['SOS', 'SPRING'])].copy()
+        signals = report[report['Signal'].isin(['SOS', 'SPRING', 'TEST_CUNG'])].copy()
 
         if signals.empty:
             print("\nKhông có tín hiệu MUA hợp lệ hôm nay (Hoặc đã bị đóng băng do VNI).")
@@ -1539,7 +1572,6 @@ class LiveAssistant:
             sl_distance = suggested_buy - stop_loss
             shares = 0
             if sl_distance > 0:
-                # shares = int(RISK_PER_TRADE / sl_distance)
                 shares = int(adj_risk_per_trade / sl_distance)
                 shares = (shares // 100) * 100
                 # Ép khối lượng theo Risk Factor của Quý hiện tại
@@ -1555,7 +1587,7 @@ class LiveAssistant:
             shadow_memory = self._check_historical_shadow_profile(ticker, current_date, lookback_window=15)
 
             print("-" * 65)
-            print(f"✅ MUA | {ticker} | Điểm: {total_score}/100")
+            print(f"✅ MUA | {ticker} | Điểm: {total_score}/100 | Signal: {row['Signal']}")
             print(f"   Lý do: {', '.join(score_details)}")
             print(f"   📊 X-Ray: Giá vốn Cá mập ~{mf_result.get('sm_vwap',0):,.0f}đ | Sức ép xả (DTL): {mf_result.get('dtl_days',0):.1f} ngày")
             print(f"   📊 Sổ lệnh hiện tại: Bán rẻ nhất {best_ask:,.0f} | Mua cao nhất {best_bid:,.0f}")

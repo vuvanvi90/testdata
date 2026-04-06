@@ -215,7 +215,7 @@ class ShadowProfiler:
                 df_full = df_full[df_full['time'] <= pd.to_datetime(target_date)]
 
             # Lấy 120 phiên tính từ thời điểm quét lùi về trước
-            df_t = df_full.tail(120).copy()
+            df_t = df_full.tail(130).copy()
             if len(df_t) < 25: continue
             
             df_t = df_t.sort_values('time').reset_index(drop=True)

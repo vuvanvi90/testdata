@@ -3,11 +3,12 @@ import numpy as np
 from datetime import datetime
 
 class MarketFlowAnalyzer:
-    """Cỗ máy X-Quang Dòng Tiền - Tối ưu hóa O(1) với Thống kê Tương quan"""
+    """Cỗ máy X-Quang Dòng Tiền - Bản vá Đồng bộ Thời gian chuẩn (True-Time Window)"""
     def __init__(self):
-        pass
+        # Đồng bộ Bộ lọc Hạn sử dụng với Smart Money
+        self.MAX_DELAY_DAYS = 15 
 
-    def analyze_flow(self, ticker, df_p, df_f, df_pr, target_date_str=None, lookback_months=6):
+    def analyze_flow(self, ticker, df_p, df_f, df_pr, target_date_str=None, lookback_sessions=130):
         result = {
             "ticker": ticker,
             "anchor_date": None,
@@ -23,51 +24,69 @@ class MarketFlowAnalyzer:
         if df_p is None or df_p.empty: return result
 
         target_date = pd.to_datetime(target_date_str) if target_date_str else pd.Timestamp.now().normalize()
-        start_date = target_date - pd.DateOffset(months=lookback_months)
 
-        # 1. TIỀN XỬ LÝ DỮ LIỆU GIÁ
+        # =====================================================================
+        # 1. TIỀN XỬ LÝ LƯỚI LỌC THỜI GIAN CHUẨN (TRUE-TIME WINDOW)
+        # =====================================================================
         df_p = df_p[df_p['time'] <= target_date].sort_values('time').copy()
+        if df_p.empty: return result
+
+        # 🚀 CHẶN ĐỨNG LỖI "ZOMBIE STOCK"
+        last_price_date = df_p['time'].iloc[-1]
+        if (target_date - last_price_date).days > self.MAX_DELAY_DAYS:
+            result["status"] = "OUTDATED_DATA"
+            return result
+
+        # 🚀 CẮT ĐÚNG N PHIÊN GIAO DỊCH THỰC TẾ (Mặc định 130 phiên ~ 6 tháng)
+        df_p = df_p.tail(lookback_sessions).copy()
         if len(df_p) < 20:
             result["status"] = "INSUFFICIENT_DATA"
             return result
             
         result["adv_20"] = df_p.tail(20)['volume'].mean()
         df_flow = df_p[['time', 'close', 'volume']].copy()
+        
+        # Lấy ngày bắt đầu chính xác từ tập df_p đã cắt để khớp với Dòng tiền
+        start_date = df_flow['time'].iloc[0] 
 
+        # =====================================================================
         # 2. GHÉP NỐI DÒNG TIỀN (SMART MONEY)
+        # =====================================================================
         if df_f is not None and not df_f.empty:
-            df_f = df_f[df_f['time'] <= target_date]
-            df_flow = pd.merge(df_flow, df_f[['time', 'foreign_net_volume']].rename(columns={'foreign_net_volume': 'f_net'}), on='time', how='left')
+            df_f_valid = df_f[(df_f['time'] >= start_date) & (df_f['time'] <= target_date)]
+            df_flow = pd.merge(df_flow, df_f_valid[['time', 'foreign_net_volume']].rename(columns={'foreign_net_volume': 'f_net'}), on='time', how='left')
         else:
             df_flow['f_net'] = 0
 
         if df_pr is not None and not df_pr.empty:
-            df_pr = df_pr[df_pr['time'] <= target_date]
-            df_flow = pd.merge(df_flow, df_pr[['time', 'prop_net_volume']].rename(columns={'prop_net_volume': 'p_net'}), on='time', how='left')
+            df_pr_valid = df_pr[(df_pr['time'] >= start_date) & (df_pr['time'] <= target_date)]
+            df_flow = pd.merge(df_flow, df_pr_valid[['time', 'prop_net_volume']].rename(columns={'prop_net_volume': 'p_net'}), on='time', how='left')
         else:
             df_flow['p_net'] = 0
 
         df_flow.fillna(0, inplace=True)
         df_flow['sm_net'] = df_flow['f_net'] + df_flow['p_net']
 
+        # =====================================================================
         # 3. XÁC ĐỊNH ĐIỂM NEO (ANCHOR DATE) AN TOÀN
-        df_lookback = df_flow[df_flow['time'] >= start_date].copy()
-        if df_lookback.empty or df_lookback['sm_net'].sum() == 0:
+        # =====================================================================
+        if df_flow['sm_net'].sum() == 0:
             result["status"] = "NO_SMART_MONEY"
             return result
 
-        df_lookback['cum_sm'] = df_lookback['sm_net'].cumsum()
+        df_flow['cum_sm'] = df_flow['sm_net'].cumsum()
         
-        # Ngăn chặn việc Anchor Date rơi vào quá gần hiện tại (Yêu cầu Tồn kho phải có ít nhất 10 ngày tích lũy)
-        valid_anchor_window = df_lookback.iloc[:-10] 
+        valid_anchor_window = df_flow.iloc[:-10] 
         if not valid_anchor_window.empty:
             anchor_date = valid_anchor_window.loc[valid_anchor_window['cum_sm'].idxmin(), 'time']
         else:
-            anchor_date = df_lookback['time'].iloc[0]
+            anchor_date = df_flow['time'].iloc[0]
             
         result["anchor_date"] = anchor_date.strftime('%Y-%m-%d')
 
+        # =====================================================================
         # 4. TÍNH TỒN KHO & ĐỊNH GIÁ VWAP
+        # =====================================================================
         df_accum = df_flow[df_flow['time'] >= anchor_date].copy()
         result["inventory"] = df_accum['sm_net'].sum()
 
@@ -75,27 +94,28 @@ class MarketFlowAnalyzer:
         if not df_buy_only.empty and result["inventory"] > 0:
             result["sm_vwap"] = (df_buy_only['close'] * df_buy_only['sm_net']).sum() / df_buy_only['sm_net'].sum()
 
+        # =====================================================================
         # 5. TÍNH CHỈ SỐ THANH LÝ (DTL - Days To Liquidate)
+        # =====================================================================
         if result["adv_20"] > 0 and result["inventory"] > 0:
             result["dtl_days"] = result["inventory"] / result["adv_20"]
 
+        # =====================================================================
         # 6. ĐO LƯỜNG PHÂN KỲ BẰNG HỆ SỐ TƯƠNG QUAN (15 PHIÊN)
-        df_recent = df_lookback.tail(15).copy()
+        # =====================================================================
+        # df_flow bây giờ đã chuẩn chỉnh 100% về mặt thời gian
+        df_recent = df_flow.tail(15).copy()
         if len(df_recent) >= 10:
-            # Kiểm tra Zero-Variance
-            # Nếu giá đi ngang 1 đường HOẶC Dòng tiền không đổi (Tắt thanh khoản)
+            # Kiểm tra Zero-Variance (Bản vá ở lượt trước)
             if df_recent['close'].nunique() <= 1 or df_recent['cum_sm'].nunique() <= 1:
-                correlation = 0.0 # Không có tương quan/phân kỳ vì đường biểu đồ phẳng
+                correlation = 0.0 
             else:
-                # Tính Pearson Correlation giữa Giá và Dòng tiền cộng dồn
                 correlation = df_recent['close'].corr(df_recent['cum_sm'])
                 
             result["correlation"] = round(correlation, 2) if pd.notna(correlation) else 0.0
             
-            # Xu hướng giá hiện tại (So với trung bình 15 phiên)
             price_trend_is_up = df_recent['close'].iloc[-1] > df_recent['close'].mean()
 
-            # Phân kỳ âm (Correlation < -0.4): Hai đường đi ngược nhau
             if correlation < -0.4:
                 if price_trend_is_up:
                     result["divergence"] = "BEARISH_TRAP" # Giá được neo cao nhưng SM đang âm thầm xả
