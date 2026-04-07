@@ -39,8 +39,9 @@ IGNORE_TICKERS = ['ABR', 'ACG', 'ADP', 'AFX', 'ANT', 'ACL', 'CTR', 'DSC', 'TCI',
 # ==============================================================================
 
 class LiveAssistant:
-    def __init__(self):
-        self.temp_dir = Path('data/temp_live')
+    def __init__(self, universe='VN30'):
+        self.universe = universe
+        self.temp_dir = Path(f'data/temp_live_{universe.lower()}')
         self.live_dir = Path('data/live')
         self.parquet_dir = Path('data/parquet')
         self._ensure_temp_dir()
@@ -79,6 +80,9 @@ class LiveAssistant:
         # Nạp quỹ trái phiếu
         self.df_funds = self._load_parquet_safe(self.parquet_dir / 'macro/bond_fund.parquet')
 
+        # Lọc rổ Cổ phiếu
+        self._filter_universe()
+
         # Đánh giá Ma trận Thanh khoản Vĩ mô
         self.macro_buy_threshold_adj = 0
         self.macro_risk_factor = 1.0
@@ -101,7 +105,7 @@ class LiveAssistant:
 
         # KHỞI ĐỘNG BỘ NÃO SĂN LÁI NỘI
         try:
-            print("\n[*] Khởi động Radar Săn Lái Nội và Học bộ luật mới nhất...")
+            # print("\n[*] Khởi động Radar Săn Lái Nội và Học bộ luật mới nhất...")
             self.shadow_profiler = ShadowProfiler(price_df=self.df_price, verbose=False)
             all_tickers = self.shadow_profiler.df_price['ticker'].unique().tolist()
             market_tickers = [t for t in all_tickers if len(str(t)) == 3]
@@ -112,7 +116,7 @@ class LiveAssistant:
 
         # KHỞI ĐỘNG ĐÀI QUAN SÁT VĨ MÔ & ORDER FLOW (MARKET TRACKER)
         try:
-            print("\n[*] Đang kết nối Đài quan sát Vĩ mô (Market Tracker)...")
+            # print("\n[*] Đang kết nối Đài quan sát Vĩ mô (Market Tracker) thông qua dữ liệu Intraday...")
             self.market_tracker = MarketTracker(data_dir=self.parquet_dir, verbose=False)
             intraday_result = self.market_tracker.analyze_full_intraday_macro(intraday_df=self.df_intra)
             if intraday_result:
@@ -123,10 +127,78 @@ class LiveAssistant:
                 self.market_status = 'NEUTRAL'
                 self.market_net_active = 0
                 self.intraday_dict = {}
+
         except Exception as e:
             print(f"[!] Lỗi khởi động Market Tracker: {e}")
             self.market_status = 'NEUTRAL'
             self.intraday_dict = {}
+
+
+    def _filter_universe(self):
+        """Lọc Master Price theo Rổ cổ phiếu Chuẩn MECE (HOSE, VN30, VNMID, VNSMALL)"""
+        if self.df_price.empty: return
+            
+        # print(f"\n" + "="*65)
+        # print(f" ĐANG KÍCH HOẠT RỔ CỔ PHIẾU ĐỘC LẬP: {self.universe}")
+        # print("="*65)
+        
+        valid_tickers = []
+        index_path = self.parquet_dir / 'macro/index_components.parquet' 
+        
+        if index_path.exists():
+            df_idx = pd.read_parquet(index_path)
+            vn30_tickers = df_idx[df_idx['index_code'] == 'VN30']['ticker'].tolist()
+            mid_tickers = df_idx[df_idx['index_code'] == 'VNMidCap']['ticker'].tolist()
+            small_tickers = df_idx[df_idx['index_code'] == 'VNSmallCap']['ticker'].tolist()
+            hose_tickers = df_idx[df_idx['index_code'] == 'HOSE']['ticker'].tolist()
+
+            if self.universe == "VN30":
+                valid_tickers = vn30_tickers
+            elif self.universe == "VNMidCap":
+                valid_tickers = mid_tickers
+            elif self.universe == "VNSmallCap":
+                valid_tickers = small_tickers
+            elif self.universe == "HOSE" or self.universe == "ALL":
+                valid_tickers = hose_tickers
+                
+        if valid_tickers:
+            # 1. LỌC ĐỒNG LOẠT CÁC DATAFRAME (GIẢI PHÓNG RAM)
+            if not self.df_price.empty and 'ticker' in self.df_price.columns:
+                self.df_price = self.df_price[self.df_price['ticker'].isin(valid_tickers)]
+                
+            if not self.df_intra.empty and 'ticker' in self.df_intra.columns:
+                self.df_intra = self.df_intra[self.df_intra['ticker'].isin(valid_tickers)]
+                
+            if not self.df_fin.empty and 'ticker' in self.df_fin.columns:
+                self.df_fin = self.df_fin[self.df_fin['ticker'].isin(valid_tickers)]
+                
+            if not self.df_foreign.empty and 'ticker' in self.df_foreign.columns:
+                self.df_foreign = self.df_foreign[self.df_foreign['ticker'].isin(valid_tickers)]
+                
+            if not self.df_prop.empty and 'ticker' in self.df_prop.columns:
+                self.df_prop = self.df_prop[self.df_prop['ticker'].isin(valid_tickers)]
+                
+            if not self.df_board.empty:
+                col_name = 'symbol' if 'symbol' in self.df_board.columns else 'ticker'
+                if col_name in self.df_board.columns:
+                    self.df_board = self.df_board[self.df_board[col_name].isin(valid_tickers)]
+
+            # 2. LỌC ĐỒNG LOẠT CÁC DICTIONARY BẰNG SET (TRA CỨU O(1))
+            valid_set = set(valid_tickers) # Chuyển list thành set để tăng tốc độ lặp lên 100 lần
+            
+            if hasattr(self, 'price_dict'):
+                self.price_dict = {k: v for k, v in self.price_dict.items() if k in valid_set}
+                
+            if hasattr(self, 'foreign_dict'):
+                self.foreign_dict = {k: v for k, v in self.foreign_dict.items() if k in valid_set}
+                
+            if hasattr(self, 'prop_dict'):
+                self.prop_dict = {k: v for k, v in self.prop_dict.items() if k in valid_set}
+                
+            if hasattr(self, 'out_shares_dict'):
+                self.out_shares_dict = {k: v for k, v in self.out_shares_dict.items() if k in valid_set}
+                
+        print(f"[*] Đã thanh lọc Toàn bộ Master Data: Giữ lại tối đa {len(valid_tickers)} mã thuộc rổ {self.universe}.")
 
     def _check_historical_shadow_profile(self, ticker, sos_date, lookback_window=15):
         """
@@ -366,7 +438,7 @@ class LiveAssistant:
         # 🌟 TÍCH HỢP SMART MONEY SECTOR ROTATION TỪ REPORTER.PY
         try:
             print("\n" +"="*65)
-            print("ĐÁNH GIÁ DÒNG TIỀN VÀ SÓNG NGÀNH")
+            print(" 💸 ĐÁNH GIÁ DÒNG TIỀN VÀ SÓNG NGÀNH")
             print("="*65)
             
             reporter = GroupCashFlowReporter(self.df_foreign, self.df_prop, self.df_ind, self.df_price, verbose=False)
@@ -410,20 +482,29 @@ class LiveAssistant:
             self.season = "Q1_DEFENSIVE"
             self.buy_threshold = BASE_SCORE_THRESHOLD + 10 # 80đ mới mua (Cực kỳ khắt khe)
             self.risk_factor = 0.5 # Chỉ giải ngân 50% quy mô thông thường
-            
         elif current_month in [4, 5, 6, 7, 8, 9]:
             # Q2 & Q3: Ổn định, Tấn công thu gom tài sản
             self.season = "Q2_Q3_AGGRESSIVE"
             self.buy_threshold = BASE_SCORE_THRESHOLD # 70đ là mua
             self.risk_factor = 1.0 # Đánh đủ 100% tỷ trọng
-            
         else:
             # Q4: Chốt lãi, Thu quân
             self.season = "Q4_HARVEST"
             self.buy_threshold = BASE_SCORE_THRESHOLD + 5 # 75đ mới mua
             self.risk_factor = 0.7 # Hạ tỷ trọng mua mới
+
+        # ĐIỀU CHỈNH THEO RỔ CỔ PHIẾU (UNIVERSE TWEAKS)
+        if getattr(self, 'universe', 'ALL') == "VN30":
+            self.buy_threshold -= 5
+            self.risk_factor *= 1.2 # Cho phép đánh vốn lớn hơn 20%
+        elif getattr(self, 'universe', 'ALL') == "VNMidCap":
+            self.buy_threshold += 5
+            self.risk_factor *= 0.7 # Cắt bớt 30% vốn mỗi lệnh
+        elif getattr(self, 'universe', 'ALL') == "VNSmallCap":
+            self.buy_threshold += 15
+            self.risk_factor *= 0.3 # Cắt bớt 70% vốn mỗi lệnh
             
-        print(f"\n[***] Chế độ Vận hành: {self.season} | Điểm mua: {self.buy_threshold} | Tỷ trọng: {self.risk_factor*100}%")
+        print(f"\n[***] Chế độ Vận hành: {self.season} | Rổ: {getattr(self, 'universe', 'ALL')} | Điểm mua: {self.buy_threshold} | Tỷ trọng: {self.risk_factor*100:.0f}%")
 
     def get_top_bond_funds(self, top_n=2):
         """
@@ -553,7 +634,7 @@ class LiveAssistant:
             print(f"🟢 TRẠNG THÁI: {self.macro_status}")
             print("   ✅ Tỷ giá ổn định, Giá dầu trong tầm kiểm soát.")
             
-        print("-" * 65)
+        # print("-" * 65)
         print(f"🎯 Điểm Mua Kỹ thuật Tối thiểu: {self.buy_threshold}đ")
         print(f"💰 Tỷ trọng Giải ngân Tối đa:   {self.risk_factor*100:.0f}%")
         print("="*65)
@@ -717,7 +798,7 @@ class LiveAssistant:
 
     def update_and_prepare_data(self, df_price, df_intra):
         """Gộp dữ liệu Lịch sử Giá và Khớp lệnh Intraday thành 1 file duy nhất cho Forecaster"""
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] Đang tổng hợp Nến Provisional...")
+        # print(f"[{datetime.now().strftime('%H:%M:%S')}] Đang tổng hợp Nến Provisional...")
         
         if df_price.empty:
             print("[!] Không tìm thấy dữ liệu giá lịch sử.")
@@ -770,7 +851,7 @@ class LiveAssistant:
         # ==========================================================
         # 🛡️ BỘ LỌC NHIỄU & THANH KHOẢN (NOISE & LIQUIDITY FILTER)
         # ==========================================================
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] Đang chạy Bộ lọc Nhiễu (Loại bỏ hàng bo cung, thanh khoản kém)...")
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Lọc Nhiễu (Loại bỏ hàng bo cung, thanh khoản kém)...")
         
         # 1. Bộ lọc Cổ phiếu Trưởng thành (Tối thiểu 89 phiên để vẽ EMA)
         ticker_counts = df_price['ticker'].value_counts()
@@ -796,10 +877,23 @@ class LiveAssistant:
         # 3. ĐIỀU KIỆN TỬ THẦN (KẾT LIỄU NHỮNG KẺ THAO TÚNG)
         # - adv_value >= 3_000_000_000 (Thanh khoản > 3 Tỷ VNĐ)
         # - flat_days <= 2 (Không quá 2 phiên nến gạch ngang trong 1 tháng)
-        tradable_tickers = metrics[
-            (metrics['adv_value'] >= 3000000000) 
-            # & (metrics['flat_days'] <= 2)
-        ].index
+        if self.universe == "VN30":
+            tradable_tickers = metrics[
+                (metrics['adv_value'] >= 100000000000) 
+                & (metrics['flat_days'] <= 2)
+            ].index
+        elif self.universe == "VNMidCap":
+            tradable_tickers = metrics[
+                (metrics['adv_value'] >= 50000000000) 
+                & (metrics['flat_days'] <= 2)
+            ].index
+        elif self.universe == "VNSmallCap":
+            tradable_tickers = metrics[
+                (metrics['adv_value'] >= 3000000000) 
+                & (metrics['flat_days'] <= 2)
+            ].index
+        elif self.universe == "HOSE" or self.universe == "ALL":
+            tradable_tickers = metrics.index
         
         # Ghi đè lại df_price chỉ chứa các mã tinh khiết nhất
         df_price = df_clean[df_clean['ticker'].isin(tradable_tickers)]
@@ -940,9 +1034,9 @@ class LiveAssistant:
         return score, details
 
     def load_investment(self):
-        """Đọc danh mục dưới dạng Dictionary { 'TICKER': {thông tin} }"""
-        pf_path = Path("data/invest/current.json")
-        if not pf_path.exists(): return {} # Sửa từ [] thành {}
+        """Đọc danh mục dưới dạng Dictionary (Đã phân rổ)"""
+        pf_path = Path(f"data/invest/current_{self.universe.lower()}.json")
+        if not pf_path.exists(): return {} 
         try:
             with open(pf_path, 'r', encoding='utf-8') as f: 
                 data = json.load(f)
@@ -950,17 +1044,17 @@ class LiveAssistant:
         except: return {}
 
     def save_investment(self, portfolio):
-        pf_path = Path("data/invest/current.json")
+        pf_path = Path(f"data/invest/current_{self.universe.lower()}.json")
         pf_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             with open(pf_path, 'w', encoding='utf-8') as f: 
                 json.dump(portfolio, f, indent=4, ensure_ascii=False)
         except Exception as e:
-            print(f"[!] Lỗi khi lưu danh mục: {e}")
+            print(f"[!] Lỗi khi lưu danh mục {self.universe}: {e}")
 
     def _load_watchlist(self):
-        """Đọc danh sách Tầm ngắm từ File"""
-        wl_path = Path("data/live/watchlist.json")
+        """Đọc danh sách Tầm ngắm từ File (Đã phân rổ)"""
+        wl_path = Path(f"data/live/watchlist_{self.universe.lower()}.json")
         if not wl_path.exists(): return {}
         try:
             with open(wl_path, 'r', encoding='utf-8') as f: 
@@ -969,18 +1063,18 @@ class LiveAssistant:
         except: return {}
 
     def _save_watchlist(self, wl_dict):
-        """Lưu danh sách Tầm ngắm xuống File"""
-        wl_path = Path("data/live/watchlist.json")
+        """Lưu danh sách Tầm ngắm xuống File (Đã phân rổ)"""
+        wl_path = Path(f"data/live/watchlist_{self.universe.lower()}.json")
         wl_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             with open(wl_path, 'w', encoding='utf-8') as f: 
                 json.dump(wl_dict, f, indent=4, ensure_ascii=False)
         except Exception as e:
-            print(f"[!] Lỗi khi lưu Watchlist: {e}")
+            print(f"[!] Lỗi khi lưu Watchlist {self.universe}: {e}")
 
     def _load_blacklist(self):
-        """Đọc danh sách Đen từ File"""
-        bl_path = Path("data/live/blacklist.json")
+        """Đọc danh sách Đen từ File (Đã phân rổ)"""
+        bl_path = Path(f"data/live/blacklist_{self.universe.lower()}.json")
         if not bl_path.exists(): return {}
         try:
             with open(bl_path, 'r', encoding='utf-8') as f: 
@@ -989,21 +1083,20 @@ class LiveAssistant:
         except: return {}
 
     def _save_blacklist(self, bl_dict):
-        """Lưu danh sách Đen xuống File"""
-        bl_path = Path("data/live/blacklist.json")
+        """Lưu danh sách Đen xuống File (Đã phân rổ)"""
+        bl_path = Path(f"data/live/blacklist_{self.universe.lower()}.json")
         bl_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             with open(bl_path, 'w', encoding='utf-8') as f: 
                 json.dump(bl_dict, f, indent=4, ensure_ascii=False)
         except Exception as e:
-            print(f"[!] Lỗi khi lưu Blacklist: {e}")
+            print(f"[!] Lỗi khi lưu Blacklist {self.universe}: {e}")
 
     def _log_trade(self, ticker, action, price, details=""):
-        """Ghi nhận lịch sử giao dịch (Audit Trail) ra file CSV"""
-        log_path = Path("data/invest/trade_history.csv")
+        """Ghi nhận lịch sử giao dịch (Audit Trail) ra file CSV (Đã phân rổ)"""
+        log_path = Path(f"data/invest/trade_history_{self.universe.lower()}.csv")
         log_path.parent.mkdir(parents=True, exist_ok=True)
         
-        # Nếu file chưa tồn tại, tạo file và ghi Header
         if not log_path.exists():
             with open(log_path, 'w', encoding='utf-8') as f:
                 f.write("Time,Ticker,Action,Price,Details\n")
@@ -1011,10 +1104,9 @@ class LiveAssistant:
         time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         try:
             with open(log_path, 'a', encoding='utf-8') as f:
-                # Dùng dấu nháy kép cho details để tránh lỗi dấu phẩy trong nội dung
                 f.write(f"{time_str},{ticker},{action},{price},\"{details}\"\n")
         except Exception as e:
-            print(f"[!] Lỗi ghi log: {e}")
+            print(f"[!] Lỗi ghi log {self.universe}: {e}")
 
     def _check_smart_money_distribution(self, ticker):
         """Quét xem Khối ngoại hoặc Tự doanh có đang âm thầm xả hàng không (Đã vá lỗi lệch pha)"""
@@ -1473,6 +1565,12 @@ class LiveAssistant:
             elif self.market_status == 'GREEN':
                 print(f"🌐 VĨ MÔ THUẬN LỢI (ĐÈN XANH): Tiền vào dứt khoát toàn TT. Cờ tới tay!")
 
+        if hasattr(self, 'market_net_active'):
+            if self.market_net_active > 0:
+                print(f"🔥 DÒNG TIỀN ĐANG VÀO {self.universe}: (+{self.market_net_active:.1f} Tỷ)")
+            elif self.market_net_active < 0:
+                print(f"🚨 DÒNG TIỀN ĐANG RÚT KHỎI {self.universe}: ({self.market_net_active:.1f} Tỷ)")
+
         # X-QUANG LỆNH TỪNG MÃ (MICROSTRUCTURE)
         if hasattr(self, 'intraday_dict') and ticker in self.intraday_dict:
             intra_data = self.intraday_dict[ticker]
@@ -1627,7 +1725,7 @@ class LiveAssistant:
         score_df = pd.DataFrame(score_candidates)
         if not score_df.empty:
             today_str = datetime.now().strftime('%d_%m_%Y')
-            output_path = self.live_dir / f"forecast_{today_str}.csv"
+            output_path = self.live_dir / f"forecast_{self.universe.lower()}_{today_str}.csv"
             score_df.to_csv(output_path, index=False, encoding='utf-8-sig')
             print(f"[OK] Đã phân tích xong {len(score_df)} mã. Kết quả lưu tại: {output_path}")
 

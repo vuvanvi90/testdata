@@ -16,7 +16,7 @@ warnings.filterwarnings('ignore', message=".*DataFrameGroupBy.apply.*")
 from vnstock_data import Listing, Company, Quote, Trading, Finance, Macro, CommodityPrice, Fund
 
 class VNStockDataPipeline:
-    def __init__(self, source='VCI', get_com=False, get_price=False, get_intra=False, get_board=False, get_fin=False, get_group=False, get_macro=False, get_foreign=False, get_prop=False, get_fund=False, get_share_group=False):
+    def __init__(self, source='VCI', get_com=False, get_price=False, get_intra=False, get_board=False, get_fin=False, get_group=False, get_macro=False, get_foreign=False, get_prop=False, get_fund=False, get_share_group=False, get_index=False):
         self.source = source.lower() if source else 'vci'
         self.get_com = get_com
         self.get_price = get_price
@@ -29,6 +29,7 @@ class VNStockDataPipeline:
         self.get_prop = get_prop
         self.get_fund = get_fund
         self.get_share_group = get_share_group
+        self.get_index = get_index
 
         # Cấu trúc thư mục lưu Parquet
         self.folders = {
@@ -927,6 +928,39 @@ class VNStockDataPipeline:
         except Exception as e:
             print(f" [!] Lỗi tải Quỹ trái phiếu: {e}")
 
+    def fetch_index_components(self):
+        print("\n" + "="*50)
+        print(" TẢI DANH SÁCH RỔ CHỈ SỐ (INDEX COMPONENTS)")
+        print("="*50)
+        
+        indices = ['HOSE', 'VN30', 'VNMidCap', 'VNSmallCap']
+        all_components = []
+        
+        for idx in indices:
+            try:
+                # Gọi API lấy danh sách mã theo nhóm
+                symbols_data = self.listing.symbols_by_group(group=idx)
+                
+                # Xử lý chuẩn hóa đầu ra (Series hoặc DataFrame)
+                if isinstance(symbols_data, pd.Series): 
+                    tickers = symbols_data.tolist()
+                else: 
+                    tickers = symbols_data['ticker'].tolist() if 'ticker' in symbols_data.columns else symbols_data.iloc[:, 0].tolist()
+                
+                if tickers:
+                    # Tạo DataFrame Map: Tickers <-> Index_Code
+                    df_idx = pd.DataFrame({'ticker': tickers, 'index_code': idx})
+                    all_components.append(df_idx)
+                    print(f" [OK] Đã tải rổ {idx:<10}: {len(tickers)} mã.")
+            except Exception as e:
+                print(f" [!] Lỗi tải rổ {idx}: {e}")
+
+        if all_components:
+            df_final = pd.concat(all_components, ignore_index=True)
+            out_path = self.folders['macro'] / 'index_components.parquet'
+            df_final.to_parquet(out_path, engine='pyarrow')
+            print(f" [OK] Đã lưu Bản đồ phân rổ vào: {out_path}")
+
     def is_macro_update_window(self):
         # Kiểm tra xem hôm nay có nằm trong cửa sổ cập nhật Vĩ mô không (Từ ngày 26 đến mùng 5).
         today = datetime.now().day
@@ -951,6 +985,10 @@ class VNStockDataPipeline:
                 self.fetch_macro_retail()
                 self.fetch_macro_fdi()
                 self.fetch_macro_ms()
+
+        # TẢI BẢN ĐỒ RỔ CHỈ SỐ (INDEX COMPONENTS)
+        if getattr(self, 'get_index', False):
+            self.fetch_index_components()
 
         # Tải ds mã theo nhóm ngành
         if self.get_share_group:
