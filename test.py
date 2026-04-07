@@ -24,6 +24,8 @@ class VN30DataPipeline:
         df_foreign = self._load_parquet(Path('data/parquet/macro/foreign_flow.parquet'))
         df_prop = self._load_parquet(Path('data/parquet/macro/prop_flow.parquet'))
         df_industry = self._load_parquet(Path('data/parquet/macro/groups_by_industries.parquet'))
+        df_index = self._load_parquet(Path('data/parquet/macro/index_components.parquet'))
+        df_fin = self._load_parquet(Path('data/parquet/financial/master_financial.parquet'))
 
         START_DATE = '2026-01-01'
         END_DATE = datetime.now().strftime('%Y-%m-%d')
@@ -150,6 +152,10 @@ class VN30DataPipeline:
         #     df_ind.to_json("groups_by_industries_new.json", orient='records', force_ascii=False, indent=4)
         # print(df_ind)
 
+        # ['HOSE', 'VN30', 'VNMidCap', 'VNSmallCap', 'VNAllShare', 'VN100', 'ETF', 'HNX', 'HNX30', 'HNXCon', 'HNXFin', 'HNXLCap', 'HNXMSCap', 'HNXMan', 'UPCOM', 'FU_INDEX', 'FU_BOND', 'BOND', 'CW'
+        # df_midcap = l.symbols_by_group(group='VNMidCap')
+        # print(df_midcap)
+
         # df_oil = self._load_parquet(Path('data/parquet') / 'macro/crude_oil.parquet')
         # if not df_oil.empty:
         #     print(df_oil.tail(5))
@@ -182,6 +188,13 @@ class VN30DataPipeline:
         #     # df_group = {ticker: group for ticker, group in df_foreign.groupby('ticker')}
         #     # print(df_group['VNM'].tail(10))
         #     df_foreign.to_json("foreign.json", orient='records', force_ascii=False, indent=4)
+
+        # if not df_index.empty:
+        #     print(df_index.tail(10))
+        #     df_index.to_json("df_index.json", orient='records', force_ascii=False, indent=4)
+
+        # if not df_fin.empty:
+        #     df_fin.to_json("df_fin.json", orient='records', force_ascii=False, indent=4)
 
     def _load_parquet(self, path):
         """Hàm đọc Parquet an toàn, tránh lỗi nếu file chưa tồn tại"""

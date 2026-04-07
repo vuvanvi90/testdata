@@ -13,7 +13,8 @@ from pathlib import Path
 # Giao dịch thỏa thuận: 9h00 – 15h00
 
 # from src.collector import VNStockDataPipeline
-# from src.run_bot import run_trading_system, run_cashflow_report, run_cashflow_group_report
+from src.run_bot import run_trading_system, run_vn30_trading_system, run_midcap_trading_system, run_smallcap_trading_system
+# from src.run_bot import run_cashflow_report, run_cashflow_group_report
 # from src.backtester import VectorizedBacktester
 # from src.validator import ValidatePipeline
 # from src.market_flow_by_unit import MarketFlowAnalyzer
@@ -31,10 +32,12 @@ def main():
     df_foreign = _load_parquet(Path('data/parquet/macro/foreign_flow.parquet'))
     df_prop = _load_parquet(Path('data/parquet/macro/prop_flow.parquet'))
     df_industry = _load_parquet(Path('data/parquet/macro/groups_by_industries.parquet'))
+    df_index = _load_parquet(Path('data/parquet/macro/index_components.parquet'))
 
     # pipeline = VNStockDataPipeline(source='VCI')
     # pipeline.get_group = 'HOSE'
     # # pipeline.get_macro = True
+    # # pipeline.get_index = True
     # # pipeline.get_com = True
     # pipeline.get_price = True
     # pipeline.get_intra = True
@@ -48,6 +51,9 @@ def main():
 
     # Chạy vào 14h15 hàng ngày là tốt nhất
     # run_trading_system()
+    # run_vn30_trading_system()
+    # run_midcap_trading_system()
+    run_smallcap_trading_system()
 
     # Test: Kiểm tra thị trường, thanh khoản và volume mà Cá Mập nắm giữ
     # analyzer = MarketFlowAnalyzer(df_price, df_foreign, df_prop)
