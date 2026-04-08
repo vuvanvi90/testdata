@@ -4,7 +4,7 @@ from datetime import datetime
 class SmartMoneyEngine:
     """
     Động cơ Phân tích Dòng tiền Thông minh (Smart Money) Đa Khung Thời Gian
-    Bản Nâng Cấp: Đồng bộ Mốc Thời Gian Chuẩn (True-Time Windows) để chống ảo giác dữ liệu.
+    Bản Nâng Cấp: Tra cứu Phiên gần nhất bằng Ngày Giao Dịch Tuyệt Đối (Absolute Timestamp).
     """
     def __init__(self, foreign_dict, prop_dict, out_shares_dict, price_dict=None):
         self.foreign_dict = foreign_dict
@@ -15,8 +15,6 @@ class SmartMoneyEngine:
         self.MAX_DELAY_DAYS = 15
 
     def analyze_ticker(self, ticker, board_info=None, target_date=None):
-        """Phân tích toàn diện và trả về Bản án định lượng cho 1 mã cổ phiếu"""
-        # Dùng target_date của kịch bản Backtest làm "Hiện tại"
         if target_date:
             current_date = pd.to_datetime(target_date).normalize()
         else:
@@ -38,43 +36,42 @@ class SmartMoneyEngine:
         shares_out = self.out_shares_dict.get(ticker, 0)
 
         # =====================================================================
-        # 🚀 BƯỚC 0: TẠO THƯỚC ĐO THỜI GIAN CHUẨN (TRUE-TIME WINDOWS)
+        # BƯỚC 0: TẠO THƯỚC ĐO THỜI GIAN CHUẨN (TRUE-TIME WINDOWS)
         # =====================================================================
-        # Khởi tạo mốc thời gian mặc định (Dùng Lịch thường nếu không có Dữ liệu Giá)
         cutoff_6m = current_date - pd.DateOffset(months=6)
         cutoff_1m = current_date - pd.Timedelta(days=30)
         cutoff_1w = current_date - pd.Timedelta(days=7)
         cutoff_3d = current_date - pd.Timedelta(days=4)
+        cutoff_10d = current_date - pd.Timedelta(days=14)
         
         total_liq_20d_bn = 0
+        latest_trading_date = current_date # Mặc định
 
-        # Nếu có df_price, ta sẽ ĐẾM LÙI CHÍNH XÁC SỐ PHIÊN GIAO DỊCH THỰC TẾ
         if df_price is not None and not df_price.empty:
             df_price_valid = df_price[df_price['time'] <= current_date]
             if not df_price_valid.empty:
-                trading_dates = df_price_valid['time'].sort_values().unique()
+                # Lấy CHÍNH XÁC ngày giao dịch gần nhất của thị trường
+                latest_trading_date = df_price_valid['time'].max()
                 
-                # Cắt chính xác mốc thời gian dựa trên lịch giao dịch
+                trading_dates = df_price_valid['time'].sort_values().unique()
                 if len(trading_dates) >= 130: cutoff_6m = trading_dates[-130]
                 if len(trading_dates) >= 20:  cutoff_1m = trading_dates[-20]
+                if len(trading_dates) >= 10:  cutoff_10d = trading_dates[-10]
                 if len(trading_dates) >= 5:   cutoff_1w = trading_dates[-5]
                 if len(trading_dates) >= 3:   cutoff_3d = trading_dates[-3]
                 
-                # Tính tổng thanh khoản 20 phiên thực tế
                 df_price_20d = df_price_valid[df_price_valid['time'] >= cutoff_1m]
                 total_liq_20d_bn = (df_price_20d['close'] * df_price_20d['volume']).sum() / 1_000_000_000
 
-        # Cắt DataFrame Dòng tiền sao cho không vượt qua current_date (Chống rò rỉ tương lai)
         df_f_valid = df_f[df_f['time'] <= current_date] if (df_f is not None and not df_f.empty) else pd.DataFrame()
         df_p_valid = df_p[df_p['time'] <= current_date] if (df_p is not None and not df_p.empty) else pd.DataFrame()
 
         # =====================================================================
-        # LỚP 1: TẦM NHÌN DÀI HẠN (STRUCTURAL VIEW - ĐÚNG 130 PHIÊN GẦN NHẤT)
+        # LỚP 1: TẦM NHÌN DÀI HẠN (130 PHIÊN GẦN NHẤT)
         # =====================================================================
         total_net_f_6m = total_net_p_6m = 0
         
         if not df_f_valid.empty:
-            # CHỈ LẤY CÁC LỆNH NẰM TRONG 6 THÁNG GẦN NHẤT
             df_f_6m = df_f_valid[df_f_valid['time'] >= cutoff_6m]
             col_vol_f = 'foreign_net_volume' if 'foreign_net_volume' in df_f_6m.columns else 'foreign_net_vol'
             total_net_f_6m = df_f_6m[col_vol_f].sum() if col_vol_f in df_f_6m.columns else 0
@@ -102,7 +99,7 @@ class SmartMoneyEngine:
                 result["sm_details"].append(f"Xả ròng 6M ({absorption_rate:.1f}%) (-10)")
 
         # =====================================================================
-        # LỚP 2 & 3: TẦM NHÌN TRUNG HẠN (20 PHIÊN) & NGẮN HẠN (5 PHIÊN)
+        # LỚP 2 & 3: TẦM NHÌN TRUNG HẠN (20D), NGẮN HẠN (5D) & PHIÊN CUỐI (T-1/T0)
         # =====================================================================
         foreign_base_positive, prop_base_positive = False, False
         foreign_base_negative, prop_base_negative = False, False
@@ -111,11 +108,9 @@ class SmartMoneyEngine:
         if not df_f_valid.empty:
             last_date_f = pd.to_datetime(df_f_valid['time'].max())
             
-            # CHỈ ĐÁNH GIÁ CHIẾN THUẬT NẾU LỆNH GẦN NHẤT < 15 NGÀY (CÒN HẠN SỬ DỤNG)
             if (current_date - last_date_f).days <= self.MAX_DELAY_DAYS:
                 result["valid_f"] = True
                 
-                # 🚀 Dùng màng lọc chuẩn 20 phiên thay vì .tail(20)
                 df_f_20d = df_f_valid[df_f_valid['time'] >= cutoff_1m]
                 net_val_f_20d_bn = df_f_20d['foreign_net_value'].sum() / 1_000_000_000 if 'foreign_net_value' in df_f_20d.columns else 0
                 f_footprint = (net_val_f_20d_bn / total_liq_20d_bn * 100) if total_liq_20d_bn > 0 else 0
@@ -123,7 +118,6 @@ class SmartMoneyEngine:
                 if f_footprint >= 5.0: foreign_base_positive = True
                 elif f_footprint <= -5.0: foreign_base_negative = True
 
-                # 🚀 Dùng màng lọc chuẩn 5 phiên
                 df_f_5d = df_f_valid[df_f_valid['time'] >= cutoff_1w]
                 net_val_f_5d_bn = df_f_5d['foreign_net_value'].sum() / 1_000_000_000 if 'foreign_net_value' in df_f_5d.columns else 0
                 
@@ -134,21 +128,30 @@ class SmartMoneyEngine:
                     result["total_sm_score"] -= 5
                     result["sm_details"].append(f"Tây táng mạnh 5D ({net_val_f_5d_bn:.1f} Tỷ) (-5)")
                     
-                # KIỂM TOÁN ĐỘNG LƯỢNG (MOMENTUM DECAY)
-                if foreign_base_positive:
-                    if net_val_f_5d_bn > (net_val_f_20d_bn * 0.5) and net_val_f_5d_bn > 10:
-                        result["total_sm_score"] += 10
-                        result["sm_details"].append("🔥 Gia tốc Tây gom TĂNG MẠNH (Tiền cực nóng) (+10)")
+                # Dùng latest_trading_date để ép lấy chuẩn xác dữ liệu phiên cuối
+                df_f_latest = df_f_valid[df_f_valid['time'] == latest_trading_date]
+                latest_f_val = df_f_latest['foreign_net_value'].sum() / 1_000_000_000 if ('foreign_net_value' in df_f_latest.columns and not df_f_latest.empty) else 0
+                
+                if latest_f_val > 10.0:
+                    result["total_sm_score"] += 5
+                    result["sm_details"].append(f"Tây gom đột biến phiên cuối (+{latest_f_val:.1f} Tỷ) (+5)")
+                elif latest_f_val < -10.0:
+                    # Lấy lực gom trung bình của 10 phiên giao dịch TRƯỚC ĐÓ (Bằng lưới thời gian, ko dùng tail)
+                    df_f_10d = df_f_valid[(df_f_valid['time'] >= cutoff_10d) & (df_f_valid['time'] < latest_trading_date)]
+                    if not df_f_10d.empty and 'foreign_net_value' in df_f_10d.columns:
+                        avg_buy_10d = df_f_10d[df_f_10d['foreign_net_value'] > 0]['foreign_net_value'].mean() / 1_000_000_000
+                    else:
+                        avg_buy_10d = 0
                         
-                    major_buys = df_f_20d[df_f_20d['foreign_net_value'] > 10_000_000_000] if 'foreign_net_value' in df_f_20d.columns else pd.DataFrame()
-                    if not major_buys.empty:
-                        last_big_buy_date = pd.to_datetime(major_buys['time'].max())
-                        days_since_big_buy = (current_date - last_big_buy_date).days
-                        if days_since_big_buy >= 10 and net_val_f_5d_bn <= 0:
-                            result["total_sm_score"] -= 10
-                            result["sm_details"].append(f"❄️ Tây ngừng gom > {days_since_big_buy} ngày (Dòng tiền nguội) (-10)")
+                    if pd.notna(avg_buy_10d) and avg_buy_10d > 0 and abs(latest_f_val) > (avg_buy_10d * 1.5):
+                        result["is_danger"] = True
+                        result["warnings"].append(f"Tây XẢ ĐỘT BIẾN phiên cuối ({latest_f_val:.1f} Tỷ)")
+                        result["last_trade_date"] = latest_trading_date
+                    else:
+                        result["total_sm_score"] -= 5
+                        result["sm_details"].append(f"Tây xả rát phiên cuối ({latest_f_val:.1f} Tỷ) (-5)")
 
-                # Cảnh báo Đỏ 3 Phiên chuẩn xác
+                # Cảnh báo Đỏ 3 Phiên (Xả rỉ rả)
                 df_f_3d = df_f_valid[df_f_valid['time'] >= cutoff_3d]
                 if not df_f_3d.empty and 'foreign_net_value' in df_f_3d.columns:
                     if (df_f_3d['foreign_net_value'].sum() / 1_000_000_000) < -50.0:
@@ -165,7 +168,6 @@ class SmartMoneyEngine:
             if (current_date - last_date_p).days <= self.MAX_DELAY_DAYS:
                 result["valid_p"] = True
                 
-                # 🚀 Dùng màng lọc chuẩn 20 phiên
                 df_p_20d = df_p_valid[df_p_valid['time'] >= cutoff_1m]
                 if 'prop_net_value' in df_p_20d.columns:
                     net_val_p_20d_bn = df_p_20d['prop_net_value'].sum() / 1_000_000_000
@@ -174,7 +176,6 @@ class SmartMoneyEngine:
                     if p_footprint >= 5.0: prop_base_positive = True
                     elif p_footprint <= -5.0: prop_base_negative = True
 
-                    # 🚀 Dùng màng lọc chuẩn 5 phiên
                     df_p_5d = df_p_valid[df_p_valid['time'] >= cutoff_1w]
                     net_val_p_5d_bn = df_p_5d['prop_net_value'].sum() / 1_000_000_000
                     
@@ -185,19 +186,29 @@ class SmartMoneyEngine:
                         result["total_sm_score"] -= 5
                         result["sm_details"].append(f"Tự doanh xả 5D ({net_val_p_5d_bn:.1f} Tỷ) (-5)")
                         
-                    # KIỂM TOÁN ĐỘNG LƯỢNG (MOMENTUM DECAY)
-                    if prop_base_positive:
-                        if net_val_p_5d_bn > (net_val_p_20d_bn * 0.5) and net_val_p_5d_bn > 8.0:
-                            result["total_sm_score"] += 10
-                            result["sm_details"].append("🔥 Gia tốc Tự doanh gom TĂNG MẠNH (Đánh hơi tin tức) (+10)")
+                    # Dùng latest_trading_date để ép lấy chuẩn xác dữ liệu phiên cuối
+                    df_p_latest = df_p_valid[df_p_valid['time'] == latest_trading_date]
+                    latest_p_val = df_p_latest['prop_net_value'].sum() / 1_000_000_000 if ('prop_net_value' in df_p_latest.columns and not df_p_latest.empty) else 0
+                    
+                    if latest_p_val > 5.0: 
+                        result["total_sm_score"] += 5
+                        result["sm_details"].append(f"Tự doanh gom đột biến phiên cuối (+{latest_p_val:.1f} Tỷ) (+5)")
+                    elif latest_p_val < -5.0:
+                        # Lấy lực gom trung bình 10 ngày trước đó
+                        df_p_10d = df_p_valid[(df_p_valid['time'] >= cutoff_10d) & (df_p_valid['time'] < latest_trading_date)]
+                        if not df_p_10d.empty and 'prop_net_value' in df_p_10d.columns:
+                            avg_buy_10d_p = df_p_10d[df_p_10d['prop_net_value'] > 0]['prop_net_value'].mean() / 1_000_000_000
+                        else:
+                            avg_buy_10d_p = 0
                             
-                        major_buys_p = df_p_20d[df_p_20d['prop_net_value'] > 8_000_000_000]
-                        if not major_buys_p.empty:
-                            last_big_buy_date_p = pd.to_datetime(major_buys_p['time'].max())
-                            days_since_big_buy_p = (current_date - last_big_buy_date_p).days
-                            if days_since_big_buy_p >= 10 and net_val_p_5d_bn <= 0:
-                                result["total_sm_score"] -= 10
-                                result["sm_details"].append(f"❄️ Tự doanh ngừng gom > {days_since_big_buy_p} ngày (Dòng tiền nguội) (-10)")
+                        if pd.notna(avg_buy_10d_p) and avg_buy_10d_p > 0 and abs(latest_p_val) > (avg_buy_10d_p * 1.5):
+                            result["is_danger"] = True
+                            result["warnings"].append(f"Tự doanh XẢ ĐỘT BIẾN phiên cuối ({latest_p_val:.1f} Tỷ)")
+                            if result["last_trade_date"] is None or result["last_trade_date"] < latest_trading_date:
+                                result["last_trade_date"] = latest_trading_date
+                        else:
+                            result["total_sm_score"] -= 5
+                            result["sm_details"].append(f"Tự doanh xả rát phiên cuối ({latest_p_val:.1f} Tỷ) (-5)")
 
                     # Cảnh báo Đỏ 3 Phiên
                     df_p_3d = df_p_valid[df_p_valid['time'] >= cutoff_3d]
@@ -221,7 +232,7 @@ class SmartMoneyEngine:
             if result["valid_f"] and result["valid_p"]:
                 result["is_danger"] = True
                 result["warnings"].append("Deadly Combo Xả")
-                result["last_trade_date"] = datetime.now()
+                result["last_trade_date"] = current_date
 
         # =====================================================================
         # LỚP 4: TẦM NHÌN TỨC THỜI (BẢNG ĐIỆN INTRADAY T0)
@@ -229,16 +240,15 @@ class SmartMoneyEngine:
         if board_info:
             net_f_intraday = board_info.get('net_foreign', 0)
             
-            # Bắt quả tang Tây xả lén trong phiên (Real-time Dump)
-            # Nếu Tây mang > 15 Tỷ ra táng thẳng tay ngay trong phiên, lập tức bật cờ Đỏ (Danger)!
+            # CHỈ GIỮ LẠI CHỨC NĂNG PHANH KHẨN CẤP (EMERGENCY BRAKE)
             if net_f_intraday < -15.0:
                 result["is_danger"] = True
                 result["warnings"].append(f"Tây tháo cống INTRADAY ({net_f_intraday:.1f} Tỷ)")
                 result["last_trade_date"] = current_date
             
             if net_f_intraday > 5.0: 
-                result["sm_details"].append(f"Tây Mua Tức Thời (+{net_f_intraday:.1f} Tỷ)")
+                result["sm_details"].append(f"Tây Mua Tức Thời T0 (+{net_f_intraday:.1f} Tỷ)")
             elif net_f_intraday < -5.0:
-                result["sm_details"].append(f"Tây Bán Tức Thời ({net_f_intraday:.1f} Tỷ)")
+                result["sm_details"].append(f"Tây Bán Tức Thời T0 ({net_f_intraday:.1f} Tỷ)")
 
         return result

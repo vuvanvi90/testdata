@@ -236,7 +236,8 @@ class MarketTracker:
             return None
             
         try:
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] Đang nạp và giải phẫu Order Flow Toàn Thị Trường...")
+            if self.verbose:
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] Đang nạp và giải phẫu Order Flow Toàn Thị Trường...")
             df = intraday_df
             
             col_type = 'match_type' 
@@ -246,13 +247,14 @@ class MarketTracker:
             if col_type not in df.columns:
                 print(f"[!] Dữ liệu Intraday thiếu cột phân loại lệnh ({col_type}). Cột hiện có: {df.columns.tolist()}")
                 return None
-                
+
             # Tính Giá trị mỗi lệnh (Tỷ VNĐ)
             df['trade_val_bn'] = (df[col_price] * df[col_vol]) / 1_000_000_000
             
-            # 🚀 Phân loại Mua/Bán chủ động bằng Vector (Bao phủ cả chữ 'Buy'/'Sell' và các mã viết tắt cũ)
+            # Phân loại chuẩn xác: Mua/Bán chủ động (Bỏ qua ATO/ATC/UNK để giữ tính tinh khiết của Flow)
             is_bu = df[col_type].isin(['Buy', 'BU', 'B'])
             is_sd = df[col_type].isin(['Sell', 'SD', 'S'])
+            # Các lệnh 'ATO', 'ATC', 'UNK' sẽ mặc định bị False ở cả is_bu và is_sd (Đúng bản chất Neutral)
             
             # 1. THỐNG KÊ VĨ MÔ TOÀN THỊ TRƯỜNG (MARKET-WIDE FLOW)
             total_bu_bn = df.loc[is_bu, 'trade_val_bn'].sum()
@@ -291,8 +293,8 @@ class MarketTracker:
             else:
                 if self.verbose:
                     print("  ⚪ TRẠNG THÁI CÂN BẰNG: Dòng tiền đang giằng co.")
+                    print("="*90)
                 market_status = "NEUTRAL"
-            print("="*90)
             
             if self.verbose:
                 print(f"[*] Đang đóng gói dữ liệu Order Flow cho từng mã cổ phiếu...")

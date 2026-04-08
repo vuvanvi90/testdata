@@ -60,7 +60,6 @@ class LiveAssistant:
 
         # Nạp Tổng khối lượng lưu hành để đo lường Cung/Cầu
         self.out_shares_dict = {}
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] Đang nạp Dữ liệu Doanh nghiệp (Company)...")
         df_comp = self._load_parquet_safe(self.parquet_dir / 'company/master_company.parquet')
         if not df_comp.empty and 'ticker' in df_comp.columns and 'issue_share' in df_comp.columns:
             # Tạo dictionary O(1) tra cứu siêu tốc: { 'FPT': 1200000000, ... }
@@ -89,7 +88,6 @@ class LiveAssistant:
         self._analyze_macro_conditions()
 
         # Khởi tạo Động cơ Smart Money
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] Khởi động Smart Money Engine...")
         self.sm_engine = SmartMoneyEngine(self.foreign_dict, self.prop_dict, self.out_shares_dict)
 
         # KHỞI ĐỘNG BỘ NÃO SĂN LÁI NỘI
@@ -628,7 +626,7 @@ class LiveAssistant:
             
         # print("-" * 65)
         print(f"   🎯 Điểm Mua (sau đánh giá): {self.buy_threshold}đ")
-        print(f"   💰 Tỷ trọng (sau đánh giá):   {self.risk_factor*100:.0f}%")
+        print(f"   💰 Tỷ trọng (sau đánh giá): {self.risk_factor*100:.0f}%")
         print("="*65)
 
     def _check_market_regime(self):
@@ -738,13 +736,25 @@ class LiveAssistant:
         # df_ticker = self.df_board[self.df_board['ticker'] == ticker]
         df_ticker = self.df_board[self.df_board['symbol'] == ticker]
         if df_ticker.empty: return None
-        
+
         row = df_ticker.iloc[0]
+        
+        # HÀM CHUYỂN ĐỔI AN TOÀN (CHỐNG CRASH TỪ CHUỖI "ATO", "ATC", DỮ LIỆU RỖNG)
+        def safe_float(val, default=0.0):
+            if pd.isna(val): return float(default)
+            val_str = str(val).strip().upper()
+            if val_str in ["", "ATO", "ATC", "NULL", "NONE"]:
+                return float(default)
+            try:
+                return float(val)
+            except ValueError:
+                return float(default)
+
         try:
-            bid_vol = float(row.get('bid_vol_1', 0)) + float(row.get('bid_vol_2', 0)) + float(row.get('bid_vol_3', 0))
-            ask_vol = float(row.get('ask_vol_1', 0)) + float(row.get('ask_vol_2', 0)) + float(row.get('ask_vol_3', 0))
-            foreign_net_vol = float(row.get('foreign_buy_volume', 0)) - float(row.get('foreign_sell_volume', 0))
-            foreign_net_value = float(row.get('average_price', 0)) * foreign_net_vol
+            bid_vol = safe_float(row.get('bid_vol_1', 0)) + safe_float(row.get('bid_vol_2', 0)) + safe_float(row.get('bid_vol_3', 0))
+            ask_vol = safe_float(row.get('ask_vol_1', 0)) + safe_float(row.get('ask_vol_2', 0)) + safe_float(row.get('ask_vol_3', 0))
+            foreign_net_vol = safe_float(row.get('foreign_buy_volume', 0)) - safe_float(row.get('foreign_sell_volume', 0))
+            foreign_net_value = safe_float(row.get('average_price', 0)) * foreign_net_vol
             net_foreign = 0
             if foreign_net_value > 0 or foreign_net_value < 0:
                 net_foreign = foreign_net_value / 1_000_000_000
@@ -755,12 +765,13 @@ class LiveAssistant:
                 "net_foreign_vol": foreign_net_vol,
                 "net_foreign_value": foreign_net_vol,
                 "net_foreign": net_foreign, # khối ngoại mua ròng theo tỷ
-                "best_bid": float(row.get('bid_price_1', row.get('close_price', 0))),  # Giá đang chờ mua cao nhất
-                "best_ask": float(row.get('ask_price_1', row.get('close_price', 0))),  # Giá đang chào bán rẻ nhất
-                "ceil": float(row.get('ceiling_price', row.get('high_price', 0))),
-                "floor": float(row.get('floor_price', row.get('low_price', 0)))
+                "best_bid": safe_float(row.get('bid_price_1', row.get('close_price', 0))),  # Giá đang chờ mua cao nhất
+                "best_ask": safe_float(row.get('ask_price_1', row.get('close_price', 0))),  # Giá đang chào bán rẻ nhất
+                "ceil": safe_float(row.get('ceiling_price', row.get('high_price', 0))),
+                "floor": safe_float(row.get('floor_price', row.get('low_price', 0)))
             }
         except Exception as e: 
+            print(f"_get_market_sentiment: Error -> {e}")
             return None
 
     def _calculate_poc(self, df_ticker_price, lookback_days=130):
