@@ -20,6 +20,7 @@ class VN30DataPipeline:
 
     def run_pipeline(self):
         df_price = self._load_parquet(Path('data/parquet/price/master_price.parquet'))
+        df_board = self._load_parquet(Path('data/parquet/board/master_board.parquet'))
         df_intra = self._load_parquet(Path('data/parquet/intraday/master_intraday.parquet'))
         df_foreign = self._load_parquet(Path('data/parquet/macro/foreign_flow.parquet'))
         df_prop = self._load_parquet(Path('data/parquet/macro/prop_flow.parquet'))
@@ -190,11 +191,17 @@ class VN30DataPipeline:
         #     df_foreign.to_json("foreign.json", orient='records', force_ascii=False, indent=4)
 
         # if not df_index.empty:
-        #     print(df_index.tail(10))
-        #     df_index.to_json("df_index.json", orient='records', force_ascii=False, indent=4)
+        #     vn30_tickers = df_index[df_index['index_code'] == 'VN30']['ticker'].tolist()
+        #     mid_tickers = df_index[df_index['index_code'] == 'VNMidCap']['ticker'].tolist()
+        #     small_tickers = df_index[df_index['index_code'] == 'VNSmallCap']['ticker'].tolist()
+        #     print(vn30_tickers)
+            # df_index.to_json("df_index.json", orient='records', force_ascii=False, indent=4)
 
         # if not df_fin.empty:
         #     df_fin.to_json("df_fin.json", orient='records', force_ascii=False, indent=4)
+
+        # if not df_board.empty:
+        #     df_board.to_json("df_board.json", orient='records', force_ascii=False, indent=4)
 
     def _load_parquet(self, path):
         """Hàm đọc Parquet an toàn, tránh lỗi nếu file chưa tồn tại"""

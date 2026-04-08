@@ -53,7 +53,7 @@ def main():
     # run_trading_system()
     # run_vn30_trading_system()
     # run_midcap_trading_system()
-    run_smallcap_trading_system()
+    # run_smallcap_trading_system()
 
     # Test: Kiểm tra thị trường, thanh khoản và volume mà Cá Mập nắm giữ
     # analyzer = MarketFlowAnalyzer(df_price, df_foreign, df_prop)
@@ -72,9 +72,11 @@ def main():
     #     print(analyzer.format_report(res))
 
     # # Test: Chạy test để lấy chỉ số config tối ưu nhất
-    # VN30 = ['ACB', 'BID', 'CTG', 'DGC', 'FPT', 'GAS', 'GVR', 'HDB', 'HPG', 'LPB', 'MBB', 'MSN', 'MWG', 'PLX', 'SAB', 'SHB', 'SSB', 'SSI', 'STB', 'TCB', 'TPB', 'VCB', 'VHM', 'VIB', 'VIC', 'VJC', 'VNM', 'VPB', 'VPL', 'VRE']
+    # vn30_tickers = df_index[df_index['index_code'] == 'VN30']['ticker'].tolist()
+    # mid_tickers = df_index[df_index['index_code'] == 'VNMidCap']['ticker'].tolist()
+    # small_tickers = df_index[df_index['index_code'] == 'VNSmallCap']['ticker'].tolist()
     # opt = QuantOptimizer()
-    # best_config = opt.run_optimization_pipeline(test_tickers=VN30)
+    # best_config = opt.run_optimization_pipeline(test_tickers=small_tickers)
 
     # # Test: Kiềm tra dòng tiền lớn ở các mã theo ngày
     # run_cashflow_report('day', df_foreign, df_prop, target_date='2026-03-20')
