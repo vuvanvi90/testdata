@@ -224,15 +224,21 @@ class SmartMoneyEngine:
                 result["last_trade_date"] = datetime.now()
 
         # =====================================================================
-        # LỚP 4: TẦM NHÌN TỨC THỜI (BẢNG ĐIỆN INTRADAY)
+        # LỚP 4: TẦM NHÌN TỨC THỜI (BẢNG ĐIỆN INTRADAY T0)
         # =====================================================================
         if board_info:
             net_f_intraday = board_info.get('net_foreign', 0)
+            
+            # Bắt quả tang Tây xả lén trong phiên (Real-time Dump)
+            # Nếu Tây mang > 15 Tỷ ra táng thẳng tay ngay trong phiên, lập tức bật cờ Đỏ (Danger)!
+            if net_f_intraday < -15.0:
+                result["is_danger"] = True
+                result["warnings"].append(f"Tây tháo cống INTRADAY ({net_f_intraday:.1f} Tỷ)")
+                result["last_trade_date"] = current_date
+            
             if net_f_intraday > 5.0: 
-                result["total_sm_score"] = min(result["total_sm_score"] + 10, 20)
-                result["sm_details"].append(f"Tây Mua Tức Thời (+{net_f_intraday:.1f} Tỷ) (+10)")
+                result["sm_details"].append(f"Tây Mua Tức Thời (+{net_f_intraday:.1f} Tỷ)")
             elif net_f_intraday < -5.0:
-                result["total_sm_score"] = max(result["total_sm_score"] - 10, -20)
-                result["sm_details"].append(f"Tây Bán Tức Thời ({net_f_intraday:.1f} Tỷ) (-10)")
+                result["sm_details"].append(f"Tây Bán Tức Thời ({net_f_intraday:.1f} Tỷ)")
 
         return result
