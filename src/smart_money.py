@@ -6,13 +6,39 @@ class SmartMoneyEngine:
     Động cơ Phân tích Dòng tiền Thông minh (Smart Money) Đa Khung Thời Gian
     Bản Nâng Cấp: Tra cứu Phiên gần nhất bằng Ngày Giao Dịch Tuyệt Đối (Absolute Timestamp).
     """
-    def __init__(self, foreign_dict, prop_dict, out_shares_dict, price_dict=None):
+    def __init__(self, foreign_dict, prop_dict, out_shares_dict, price_dict=None, universe="VN30"):
         self.foreign_dict = foreign_dict
         self.prop_dict = prop_dict
         self.out_shares_dict = out_shares_dict
         self.price_dict = price_dict
+        self.universe = universe
         
         self.MAX_DELAY_DAYS = 15
+        self.thresh = self._set_dynamic_thresholds()
+
+    def _set_dynamic_thresholds(self):
+        """Thiết lập các mốc Tiền (Tỷ VNĐ) tùy thuộc vào độ lớn của Rổ Cổ Phiếu"""
+        if self.universe == "VN30":
+            return {
+                "t1_spike": 40.0,         # Cú giật T-1 siêu mạnh (Gom/Xả đột biến)
+                "intraday_danger": -20.0, # Phanh khẩn cấp T0
+                "short_term_acc": 20.0,   # Gom 5D 
+                "dump_3d": -80.0          # Tháo cống 3D liên tục
+            }
+        elif self.universe == "VNMidCap":
+            return {
+                "t1_spike": 12.0,       
+                "intraday_danger": -10.0, 
+                "short_term_acc": 10.0,   
+                "dump_3d": -30.0          
+            }
+        else: # VNSmallCap / Penny
+            return {
+                "t1_spike": 3.0,        # Rất nhỏ nhưng bất thường với Penny
+                "intraday_danger": -3.0, 
+                "short_term_acc": 5.0,    
+                "dump_3d": -10.0          
+            }
 
     def analyze_ticker(self, ticker, board_info=None, target_date=None):
         if target_date:
@@ -107,117 +133,128 @@ class SmartMoneyEngine:
         # --- A. PHÂN TÍCH KHỐI NGOẠI ---
         if not df_f_valid.empty:
             last_date_f = pd.to_datetime(df_f_valid['time'].max())
-            
             if (current_date - last_date_f).days <= self.MAX_DELAY_DAYS:
                 result["valid_f"] = True
-                
-                df_f_20d = df_f_valid[df_f_valid['time'] >= cutoff_1m]
-                net_val_f_20d_bn = df_f_20d['foreign_net_value'].sum() / 1_000_000_000 if 'foreign_net_value' in df_f_20d.columns else 0
-                f_footprint = (net_val_f_20d_bn / total_liq_20d_bn * 100) if total_liq_20d_bn > 0 else 0
-                
-                if f_footprint >= 5.0: foreign_base_positive = True
-                elif f_footprint <= -5.0: foreign_base_negative = True
-
-                df_f_5d = df_f_valid[df_f_valid['time'] >= cutoff_1w]
-                net_val_f_5d_bn = df_f_5d['foreign_net_value'].sum() / 1_000_000_000 if 'foreign_net_value' in df_f_5d.columns else 0
-                
-                if net_val_f_5d_bn > 15.0:
-                    result["total_sm_score"] += 5
-                    result["sm_details"].append(f"Tây vồ mồi 5D (+{net_val_f_5d_bn:.1f} Tỷ) (+5)")
-                elif net_val_f_5d_bn < -15.0:
-                    result["total_sm_score"] -= 5
-                    result["sm_details"].append(f"Tây táng mạnh 5D ({net_val_f_5d_bn:.1f} Tỷ) (-5)")
+                try:
+                    df_f_20d = df_f_valid[df_f_valid['time'] >= cutoff_1m]
+                    net_val_f_20d_bn = df_f_20d['foreign_net_value'].sum() / 1_000_000_000 if 'foreign_net_value' in df_f_20d.columns else 0
+                    f_footprint = (net_val_f_20d_bn / total_liq_20d_bn * 100) if total_liq_20d_bn > 0 else 0
                     
-                # Dùng latest_trading_date để ép lấy chuẩn xác dữ liệu phiên cuối
-                df_f_latest = df_f_valid[df_f_valid['time'] == latest_trading_date]
-                latest_f_val = df_f_latest['foreign_net_value'].sum() / 1_000_000_000 if ('foreign_net_value' in df_f_latest.columns and not df_f_latest.empty) else 0
-                
-                if latest_f_val > 10.0:
-                    result["total_sm_score"] += 5
-                    result["sm_details"].append(f"Tây gom đột biến phiên cuối (+{latest_f_val:.1f} Tỷ) (+5)")
-                elif latest_f_val < -10.0:
-                    # Lấy lực gom trung bình của 10 phiên giao dịch TRƯỚC ĐÓ (Bằng lưới thời gian, ko dùng tail)
-                    df_f_10d = df_f_valid[(df_f_valid['time'] >= cutoff_10d) & (df_f_valid['time'] < latest_trading_date)]
-                    if not df_f_10d.empty and 'foreign_net_value' in df_f_10d.columns:
-                        avg_buy_10d = df_f_10d[df_f_10d['foreign_net_value'] > 0]['foreign_net_value'].mean() / 1_000_000_000
-                    else:
-                        avg_buy_10d = 0
-                        
-                    if pd.notna(avg_buy_10d) and avg_buy_10d > 0 and abs(latest_f_val) > (avg_buy_10d * 1.5):
-                        result["is_danger"] = True
-                        result["warnings"].append(f"Tây XẢ ĐỘT BIẾN phiên cuối ({latest_f_val:.1f} Tỷ)")
-                        result["last_trade_date"] = latest_trading_date
-                    else:
-                        result["total_sm_score"] -= 5
-                        result["sm_details"].append(f"Tây xả rát phiên cuối ({latest_f_val:.1f} Tỷ) (-5)")
+                    if f_footprint >= 5.0: foreign_base_positive = True
+                    elif f_footprint <= -5.0: foreign_base_negative = True
 
-                # Cảnh báo Đỏ 3 Phiên (Xả rỉ rả)
-                df_f_3d = df_f_valid[df_f_valid['time'] >= cutoff_3d]
-                if not df_f_3d.empty and 'foreign_net_value' in df_f_3d.columns:
-                    if (df_f_3d['foreign_net_value'].sum() / 1_000_000_000) < -50.0:
-                        result["is_danger"] = True
-                        result["warnings"].append("Tây tháo cống 3D")
-                        result["last_trade_date"] = df_f_3d['time'].iloc[-1]
+                    # =======================================================
+                    # 🚀 KÍNH HIỂN VI T-1: NHẬN DIỆN MẪU HÌNH THEO RỔ
+                    # =======================================================
+                    df_f_latest = df_f_valid[df_f_valid['time'] == latest_trading_date]
+                    latest_f_val = df_f_latest['foreign_net_value'].sum() / 1_000_000_000 if ('foreign_net_value' in df_f_latest.columns and not df_f_latest.empty) else 0
+                    
+                    # Tính tổng 3D và 130D để làm bối cảnh
+                    df_f_3d = df_f_valid[df_f_valid['time'] >= cutoff_3d]
+                    net_3d = (df_f_3d['foreign_net_value'].sum() / 1_000_000_000) if not df_f_3d.empty else 0
+                    
+                    # MẪU HÌNH 1: THE WASHOUT REVERSAL (RŨ BỎ KÉO CHỮ V)
+                    # Dấu hiệu: 3D xả rát (dưới mức âm T1), nhưng T-1 quay xe múc đột biến lấp lại toàn bộ
+                    if net_3d < -self.thresh['t1_spike'] and latest_f_val >= self.thresh['t1_spike']:
+                        if absorption_rate > 2.0: # Bối cảnh 130D đang gom
+                            result["total_sm_score"] += 25
+                            result["sm_details"].append(f"🔥 SIÊU MẪU HÌNH WASHOUT: Rũ bỏ xong kéo giật ngược (+{latest_f_val:.1f} Tỷ T-1). Nền 6M gom cực chặt! (+25)")
+                            result["is_danger"] = False # Gỡ mọi cờ đỏ nếu có
+                        else:
+                            result["total_sm_score"] += 5
+                            result["sm_details"].append(f"⚠️ T-1 kéo mạnh (+{latest_f_val:.1f} Tỷ) nhưng Nền 6M đang phân phối. Nghi ngờ Bull-trap (+5)")
+
+                    # MẪU HÌNH 2: STEALTH ACCUMULATION (GOM NGẦM - ĐẶC TRỊ MIDCAP)
+                    elif f_footprint >= 5.0 and latest_f_val > 0 and latest_f_val < self.thresh['t1_spike']:
+                        # Footprint 20D chiếm > 5% thanh khoản nhưng T-1 không có lệnh giật sốc -> Đang gom ngầm ém giá
+                        result["total_sm_score"] += 10
+                        result["sm_details"].append(f"🕵️ MẪU HÌNH STEALTH: Gom ngầm rỉ rả 20D (Footprint: {f_footprint:.1f}%). Chờ nổ SOS! (+10)")
+
+                    # MẪU HÌNH 3: INSIDER ANOMALY (BẤT THƯỜNG Ở PENNY)
+                    elif self.universe == "VNSmallCap" and latest_f_val >= self.thresh['t1_spike']:
+                        result["total_sm_score"] += 15
+                        result["sm_details"].append(f"🚨 INSIDER ANOMALY: Tây bất ngờ đổ {latest_f_val:.1f} Tỷ vào hàng Penny! Game M&A? (+15)")
+
+                    # LOGIC CẢNH BÁO TIÊU CHUẨN CÒN LẠI
+                    else:
+                        if latest_f_val >= self.thresh['t1_spike']:
+                            result["total_sm_score"] += 10
+                            result["sm_details"].append(f"Tây gom mạnh phiên T-1 (+{latest_f_val:.1f} Tỷ) (+10)")
+                        elif latest_f_val <= -self.thresh['t1_spike']:
+                            result["is_danger"] = True
+                            result["warnings"].append(f"Tây XẢ ĐỘT BIẾN T-1 ({latest_f_val:.1f} Tỷ)")
+                            result["last_trade_date"] = latest_trading_date
+                            
+                        if net_3d < self.thresh['dump_3d']:
+                            result["is_danger"] = True
+                            result["warnings"].append(f"Tây tháo cống 3D ({net_3d:.1f} Tỷ)")
+                            result["last_trade_date"] = latest_trading_date
+                except Exception as e:
+                    print(f"[!] Smart Money Lỗi phân tích Khối ngoại: {e}")
             else:
                 result["sm_details"].append(f"(Tây bỏ rơi mã này {(current_date - last_date_f).days} ngày)")
 
         # --- B. PHÂN TÍCH TỰ DOANH ---
         if not df_p_valid.empty:
             last_date_p = pd.to_datetime(df_p_valid['time'].max())
-            
             if (current_date - last_date_p).days <= self.MAX_DELAY_DAYS:
                 result["valid_p"] = True
-                
-                df_p_20d = df_p_valid[df_p_valid['time'] >= cutoff_1m]
-                if 'prop_net_value' in df_p_20d.columns:
-                    net_val_p_20d_bn = df_p_20d['prop_net_value'].sum() / 1_000_000_000
+                try:
+                    df_p_20d = df_p_valid[df_p_valid['time'] >= cutoff_1m]
+                    net_val_p_20d_bn = df_p_20d['prop_net_value'].sum() / 1_000_000_000 if 'prop_net_value' in df_p_20d.columns else 0
                     p_footprint = (net_val_p_20d_bn / total_liq_20d_bn * 100) if total_liq_20d_bn > 0 else 0
                     
                     if p_footprint >= 5.0: prop_base_positive = True
                     elif p_footprint <= -5.0: prop_base_negative = True
 
-                    df_p_5d = df_p_valid[df_p_valid['time'] >= cutoff_1w]
-                    net_val_p_5d_bn = df_p_5d['prop_net_value'].sum() / 1_000_000_000
-                    
-                    if net_val_p_5d_bn > 10.0:
-                        result["total_sm_score"] += 5
-                        result["sm_details"].append(f"Tự doanh gom 5D (+{net_val_p_5d_bn:.1f} Tỷ) (+5)")
-                    elif net_val_p_5d_bn < -10.0:
-                        result["total_sm_score"] -= 5
-                        result["sm_details"].append(f"Tự doanh xả 5D ({net_val_p_5d_bn:.1f} Tỷ) (-5)")
-                        
-                    # Dùng latest_trading_date để ép lấy chuẩn xác dữ liệu phiên cuối
+                    # =======================================================
+                    # 🚀 KÍNH HIỂN VI T-1: NHẬN DIỆN MẪU HÌNH THEO RỔ
+                    # =======================================================
                     df_p_latest = df_p_valid[df_p_valid['time'] == latest_trading_date]
                     latest_p_val = df_p_latest['prop_net_value'].sum() / 1_000_000_000 if ('prop_net_value' in df_p_latest.columns and not df_p_latest.empty) else 0
                     
-                    if latest_p_val > 5.0: 
-                        result["total_sm_score"] += 5
-                        result["sm_details"].append(f"Tự doanh gom đột biến phiên cuối (+{latest_p_val:.1f} Tỷ) (+5)")
-                    elif latest_p_val < -5.0:
-                        # Lấy lực gom trung bình 10 ngày trước đó
-                        df_p_10d = df_p_valid[(df_p_valid['time'] >= cutoff_10d) & (df_p_valid['time'] < latest_trading_date)]
-                        if not df_p_10d.empty and 'prop_net_value' in df_p_10d.columns:
-                            avg_buy_10d_p = df_p_10d[df_p_10d['prop_net_value'] > 0]['prop_net_value'].mean() / 1_000_000_000
-                        else:
-                            avg_buy_10d_p = 0
-                            
-                        if pd.notna(avg_buy_10d_p) and avg_buy_10d_p > 0 and abs(latest_p_val) > (avg_buy_10d_p * 1.5):
-                            result["is_danger"] = True
-                            result["warnings"].append(f"Tự doanh XẢ ĐỘT BIẾN phiên cuối ({latest_p_val:.1f} Tỷ)")
-                            if result["last_trade_date"] is None or result["last_trade_date"] < latest_trading_date:
-                                result["last_trade_date"] = latest_trading_date
-                        else:
-                            result["total_sm_score"] -= 5
-                            result["sm_details"].append(f"Tự doanh xả rát phiên cuối ({latest_p_val:.1f} Tỷ) (-5)")
-
-                    # Cảnh báo Đỏ 3 Phiên
+                    # Tính tổng 3D và 130D để làm bối cảnh
                     df_p_3d = df_p_valid[df_p_valid['time'] >= cutoff_3d]
-                    if not df_p_3d.empty and (df_p_3d['prop_net_value'].sum() / 1_000_000_000) < -30.0:
-                        result["is_danger"] = True
-                        result["warnings"].append("Tự doanh thoát hàng 3D")
-                        p_last_time = df_p_3d['time'].iloc[-1]
-                        if result["last_trade_date"] is None or result["last_trade_date"] < p_last_time:
-                            result["last_trade_date"] = p_last_time
+                    net_3d = (df_p_3d['prop_net_value'].sum() / 1_000_000_000) if not df_p_3d.empty else 0
+                    
+                    # MẪU HÌNH 1: THE WASHOUT REVERSAL (RŨ BỎ KÉO CHỮ V)
+                    # Dấu hiệu: 3D xả rát (dưới mức âm T1), nhưng T-1 quay xe múc đột biến lấp lại toàn bộ
+                    if net_3d < -self.thresh['t1_spike'] and latest_p_val >= self.thresh['t1_spike']:
+                        if absorption_rate > 2.0: # Bối cảnh 130D đang gom
+                            result["total_sm_score"] += 25
+                            result["sm_details"].append(f"🔥 SIÊU MẪU HÌNH WASHOUT: Rũ bỏ xong kéo giật ngược (+{latest_p_val:.1f} Tỷ T-1). Nền 6M gom cực chặt! (+25)")
+                            result["is_danger"] = False # Gỡ mọi cờ đỏ nếu có
+                        else:
+                            result["total_sm_score"] += 5
+                            result["sm_details"].append(f"⚠️ T-1 kéo mạnh (+{latest_p_val:.1f} Tỷ) nhưng Nền 6M đang phân phối. Nghi ngờ Bull-trap (+5)")
+
+                    # MẪU HÌNH 2: STEALTH ACCUMULATION (GOM NGẦM - ĐẶC TRỊ MIDCAP)
+                    elif p_footprint >= 5.0 and latest_p_val > 0 and latest_p_val < self.thresh['t1_spike']:
+                        # Footprint 20D chiếm > 5% thanh khoản nhưng T-1 không có lệnh giật sốc -> Đang gom ngầm ém giá
+                        result["total_sm_score"] += 10
+                        result["sm_details"].append(f"🕵️ MẪU HÌNH STEALTH: Gom ngầm rỉ rả 20D (Footprint: {p_footprint:.1f}%). Chờ nổ SOS! (+10)")
+
+                    # MẪU HÌNH 3: INSIDER ANOMALY (BẤT THƯỜNG Ở PENNY)
+                    elif self.universe == "VNSmallCap" and latest_p_val >= self.thresh['t1_spike']:
+                        result["total_sm_score"] += 15
+                        result["sm_details"].append(f"🚨 INSIDER ANOMALY: Tự doanh bất ngờ đổ {latest_p_val:.1f} Tỷ vào hàng Penny! Game M&A? (+15)")
+
+                    # LOGIC CẢNH BÁO TIÊU CHUẨN CÒN LẠI
+                    else:
+                        if latest_p_val >= self.thresh['t1_spike']:
+                            result["total_sm_score"] += 10
+                            result["sm_details"].append(f"Tự doanh gom mạnh phiên T-1 (+{latest_p_val:.1f} Tỷ) (+10)")
+                        elif latest_p_val <= -self.thresh['t1_spike']:
+                            result["is_danger"] = True
+                            result["warnings"].append(f"Tự doanh XẢ ĐỘT BIẾN T-1 ({latest_p_val:.1f} Tỷ)")
+                            result["last_trade_date"] = latest_trading_date
+                            
+                        if net_3d < self.thresh['dump_3d']:
+                            result["is_danger"] = True
+                            result["warnings"].append(f"Tự doanh tháo cống 3D ({net_3d:.1f} Tỷ)")
+                            result["last_trade_date"] = latest_trading_date
+                except Exception as e:
+                    print(f"[!] Smart Money Lỗi phân tích Tự doanh: {e}")
             else:
                 if not any("bỏ rơi" in text for text in result["sm_details"]): 
                     result["sm_details"].append(f"(Tự doanh bỏ rơi {(current_date - last_date_p).days} ngày)")
@@ -241,14 +278,14 @@ class SmartMoneyEngine:
             net_f_intraday = board_info.get('net_foreign', 0)
             
             # CHỈ GIỮ LẠI CHỨC NĂNG PHANH KHẨN CẤP (EMERGENCY BRAKE)
-            if net_f_intraday < -15.0:
+            if net_f_intraday <= self.thresh['intraday_danger']:
                 result["is_danger"] = True
                 result["warnings"].append(f"Tây tháo cống INTRADAY ({net_f_intraday:.1f} Tỷ)")
                 result["last_trade_date"] = current_date
             
-            if net_f_intraday > 5.0: 
+            if net_f_intraday >= (self.thresh['t1_spike'] * 0.5): # T0 mua = nửa cú giật T-1 là đáng kể
                 result["sm_details"].append(f"Tây Mua Tức Thời T0 (+{net_f_intraday:.1f} Tỷ)")
-            elif net_f_intraday < -5.0:
+            elif net_f_intraday <= -(self.thresh['t1_spike'] * 0.5):
                 result["sm_details"].append(f"Tây Bán Tức Thời T0 ({net_f_intraday:.1f} Tỷ)")
 
         return result

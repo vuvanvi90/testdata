@@ -16,6 +16,7 @@ from src.reporter_by_group import GroupCashFlowReporter
 from src.shadow_profiler import ShadowProfiler
 from src.portfolio import QuantPortfolioEngine
 from src.market_tracker import MarketTracker
+from src.blacklist_guard import BlacklistGuard
 
 # --- CẤU HÌNH RỦI RO CƠ BẢN ---
 RISK_PER_TRADE = 1000000
@@ -88,7 +89,16 @@ class LiveAssistant:
         self._analyze_macro_conditions()
 
         # Khởi tạo Động cơ Smart Money
-        self.sm_engine = SmartMoneyEngine(self.foreign_dict, self.prop_dict, self.out_shares_dict)
+        try:
+            self.sm_engine = SmartMoneyEngine(
+                foreign_dict=self.foreign_dict, 
+                prop_dict=self.prop_dict, 
+                out_shares_dict=self.out_shares_dict, 
+                price_dict=None, 
+                universe=self.universe
+            )
+        except Exception as e:
+            print(f"[!] Lỗi khởi động Smart Money: {e}")
 
         # KHỞI ĐỘNG BỘ NÃO SĂN LÁI NỘI
         try:
@@ -113,6 +123,12 @@ class LiveAssistant:
                 self.intraday_dict = intraday_result.get('intraday_dict', {})
         except Exception as e:
             print(f"[!] Lỗi khởi động Market Tracker: {e}")
+
+        # Khởi tạo Vệ binh
+        try:
+            self.blacklist_guard = BlacklistGuard(universe=self.universe, verbose=False)
+        except Exception as e:
+            print(f"[!] Lỗi khởi động Blacklist Guard: {e}")
 
     def _filter_universe(self):
         """Lọc Master Price theo Rổ cổ phiếu Chuẩn MECE (HOSE, VN30, VNMID, VNSMALL)"""
@@ -1041,7 +1057,7 @@ class LiveAssistant:
                 details.append(f"🔥 BREAKOUT UY TÍN: Khối ngoại đồng thuận đẩy giá T0 (+{today_foreign_net:.1f} Tỷ) (+15)")
             elif today_foreign_net > 0:
                 score += 5
-                details.append(f"✔️ Dòng tiền ngoại T0 ủng hộ nhẹ (+5)")
+                details.append(f"✔️ Dòng tiền ngoại ủng hộ nhẹ T0 (+{today_foreign_net:.1f} Tỷ) (+5)")
 
         return score, details
 
@@ -1083,26 +1099,6 @@ class LiveAssistant:
                 json.dump(wl_dict, f, indent=4, ensure_ascii=False)
         except Exception as e:
             print(f"[!] Lỗi khi lưu Watchlist {self.universe}: {e}")
-
-    def _load_blacklist(self):
-        """Đọc danh sách Đen từ File (Đã phân rổ)"""
-        bl_path = Path(f"data/live/blacklist_{self.universe.lower()}.json")
-        if not bl_path.exists(): return {}
-        try:
-            with open(bl_path, 'r', encoding='utf-8') as f: 
-                data = json.load(f)
-                return data if isinstance(data, dict) else {}
-        except: return {}
-
-    def _save_blacklist(self, bl_dict):
-        """Lưu danh sách Đen xuống File (Đã phân rổ)"""
-        bl_path = Path(f"data/live/blacklist_{self.universe.lower()}.json")
-        bl_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            with open(bl_path, 'w', encoding='utf-8') as f: 
-                json.dump(bl_dict, f, indent=4, ensure_ascii=False)
-        except Exception as e:
-            print(f"[!] Lỗi khi lưu Blacklist {self.universe}: {e}")
 
     def _log_trade(self, ticker, action, price, details=""):
         """Ghi nhận lịch sử giao dịch (Audit Trail) ra file CSV (Đã phân rổ)"""
@@ -1457,7 +1453,7 @@ class LiveAssistant:
         self._save_watchlist(next_watchlist)
         
         if not next_watchlist: print("[*] Hiện tại chưa có mã nào lọt vào Tầm ngắm sớm.")
-        else: print(f"[*] Phát hiện {len(next_watchlist)} mã vào Tầm ngắm sớm.")
+        else: print(f"[*] 🎯 Phát hiện {len(next_watchlist)} mã vào Tầm ngắm sớm.")
         print("="*65)
 
         # =====================================================================
@@ -1466,9 +1462,22 @@ class LiveAssistant:
         print("\n" + "="*65)
         print(" ☠️  RADAR DANH SÁCH ĐEN (SMART MONEY XẢ HÀNG)")
         print("="*65)
+
+        next_blacklist = self.blacklist_guard.load()
         
-        current_blacklist = self._load_blacklist()
-        next_blacklist = current_blacklist.copy()
+        # Gọi Vệ binh quét Ân Xá
+        current_date_str = getattr(self, 'run_date', None)
+        tickers_to_pardon = self.blacklist_guard.evaluate_pardons(
+            current_blacklist=next_blacklist,
+            board_info_dict=board_info_dict,
+            sm_info_dict=sm_info_dict,
+            foreign_dict=self.foreign_dict,
+            current_date_str=current_date_str
+        )
+        
+        # Thực thi gỡ mã
+        for t in tickers_to_pardon:
+            del next_blacklist[t]
         
         for _, row in report.iterrows():
             ticker = row['Ticker']
@@ -1479,29 +1488,18 @@ class LiveAssistant:
                 date_str = sm_result["last_trade_date"].strftime('%Y-%m-%d')
                 reasons_str = " + ".join(sm_result["warnings"])
                 
-                if ticker not in current_blacklist:
+                if ticker not in next_blacklist:
                     days_penalty = (datetime.now() - datetime.strptime(date_str, '%Y-%m-%d')).days
                     if days_penalty <= 5:
                         print(f"   🚨 PHÁT HIỆN: {ticker} ({reasons_str})")
                         next_blacklist[ticker] = {"date_added": date_str, "reason": reasons_str}
                 else:
-                    if current_blacklist[ticker]['date_added'] != date_str:
+                    if next_blacklist[ticker]['date_added'] != date_str:
                         print(f"   🚨 BỒI THÊM ÁN: {ticker} (Tiếp tục bị xả, reset mốc án treo)")
                         next_blacklist[ticker] = {"date_added": date_str, "reason": reasons_str}
 
-        # Rà soát & Ân xá
-        tickers_to_remove = []
-        for t, info in next_blacklist.items():
-            days_penalty = (datetime.now() - datetime.strptime(info['date_added'], '%Y-%m-%d')).days
-            if days_penalty > 5:
-                tickers_to_remove.append(t)
-
-        for t in tickers_to_remove:
-            del next_blacklist[t]
-            print(f"   🔓 Ân xá: {t} đã qua 5 ngày không bị xả, gỡ khỏi Blacklist.")
-
         # Lưu lại trí nhớ
-        self._save_blacklist(next_blacklist)
+        self.blacklist_guard.save(next_blacklist)
         
         if not next_blacklist: print("[*] 🛡️ Thị trường an toàn, Blacklist trống.")
         else: print(f"[*] 🛡️ Hệ thống đang duy trì Blacklist gồm {len(next_blacklist)} mã (Đang chịu án treo).")
@@ -1515,7 +1513,7 @@ class LiveAssistant:
 
         # 4. KHÓA TÍN HIỆU MUA NẾU THỊ TRƯỜNG XẤU
         print("\n" + "="*65)
-        print(f"[*] NGƯỠNG MUA ĐỘNG: {dynamic_threshold}đ | CHẾ ĐỘ: {self.macro_status}) ===")
+        print(f"[*] NGƯỠNG MUA ĐỘNG: {dynamic_threshold}đ | CHẾ ĐỘ: {self.macro_status})")
         print("="*65)
         if not is_uptrend:
             if market_breadth_pct > 50.0:
@@ -1585,7 +1583,7 @@ class LiveAssistant:
         # Tạo list lưu các mã đã vượt qua vòng chấm điểm và các mã đã được chấm điểm
         selected_candidates, score_candidates = [], []
         # Nạp lại blacklist để làm bộ lọc
-        active_blacklist = self._load_blacklist()
+        active_blacklist = self.blacklist_guard.load()
         # Nạp lại watchlist để làm bộ lọc
         active_watchlist = self._load_watchlist()
 
@@ -1636,7 +1634,10 @@ class LiveAssistant:
             # Lưu lại row này vào danh sách được chọn
             row_dict = row.to_dict()
             row_dict['Total_Score'] = total_score
-            selected_candidates.append(row_dict)
+
+            # chỉ đưa vào dự chi khi score > 30 điểm
+            if total_score > 30:
+                selected_candidates.append(row_dict)
 
             # Dynamic Risk Sizing (Quản trị vốn theo Quý)
             atr_multiplier = 3.0 if price > 100000 else 2.5
@@ -1693,7 +1694,7 @@ class LiveAssistant:
                 if total_score < dynamic_threshold:
                     print(f"   Đánh giá: scrore / threshold => {total_score} / {dynamic_threshold}")
                 if ticker in active_blacklist:
-                    print(f"   🚫 BỎ QUA MÃ {ticker}: vì nằm trong BLACKLIST.")
+                    print(f"   🚫 TỪ CHỐI MUA {ticker}: vì nằm trong BLACKLIST.")
                 # BỘ LỌC CHỐNG BẪY KÉO XẢ (Xử lý các case thao túng như HRC)
                 if mf_result.get('divergence') == "BEARISH_TRAP":
                     print(f"   🚫 TỪ CHỐI MUA {ticker}: Kéo xả ảo (Giá vốn tạo lập: {mf_result.get('sm_vwap', 0):,.0f}đ, Tồn kho đang bị xả!)")
