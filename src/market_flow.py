@@ -54,15 +54,17 @@ class MarketFlowAnalyzer:
         # =====================================================================
         if df_f is not None and not df_f.empty:
             df_f_valid = df_f[(df_f['time'] >= start_date) & (df_f['time'] <= target_date)]
-            df_flow = pd.merge(df_flow, df_f_valid[['time', 'foreign_net_volume']].rename(columns={'foreign_net_volume': 'f_net'}), on='time', how='left')
+            df_flow = pd.merge(df_flow, df_f_valid[['time', 'foreign_net_volume', 'foreign_net_value']].rename(columns={'foreign_net_volume': 'f_net'}), on='time', how='left')
         else:
             df_flow['f_net'] = 0
+            df_flow['foreign_net_value'] = 0
 
         if df_pr is not None and not df_pr.empty:
             df_pr_valid = df_pr[(df_pr['time'] >= start_date) & (df_pr['time'] <= target_date)]
-            df_flow = pd.merge(df_flow, df_pr_valid[['time', 'prop_net_volume']].rename(columns={'prop_net_volume': 'p_net'}), on='time', how='left')
+            df_flow = pd.merge(df_flow, df_pr_valid[['time', 'prop_net_volume', 'prop_net_value']].rename(columns={'prop_net_volume': 'p_net'}), on='time', how='left')
         else:
             df_flow['p_net'] = 0
+            df_flow['prop_net_value'] = 0
 
         df_flow.fillna(0, inplace=True)
         df_flow['sm_net'] = df_flow['f_net'] + df_flow['p_net']
@@ -85,18 +87,49 @@ class MarketFlowAnalyzer:
         result["anchor_date"] = anchor_date.strftime('%Y-%m-%d')
 
         # =====================================================================
-        # 4. TÍNH TỒN KHO & ĐỊNH GIÁ VWAP
+        # 4 & 5. KẾ TOÁN GIÁ VỐN LÁI (SMART MONEY COST BASIS ACCOUNTING)
         # =====================================================================
-        df_accum = df_flow[df_flow['time'] >= anchor_date].copy()
-        result["inventory"] = df_accum['sm_net'].sum()
+        df_flow['net_f'] = df_flow.get('f_net', 0)
+        df_flow['net_p'] = df_flow.get('p_net', 0)
+        df_flow['net_sm'] = df_flow.get('sm_net', 0)
 
-        df_buy_only = df_accum[df_accum['sm_net'] > 0]
-        if not df_buy_only.empty and result["inventory"] > 0:
-            result["sm_vwap"] = (df_buy_only['close'] * df_buy_only['sm_net']).sum() / df_buy_only['sm_net'].sum()
+        df_flow['val_f'] = df_flow.get('foreign_net_value', 0)
+        df_flow['val_p'] = df_flow.get('prop_net_value', 0)
+        df_flow['val_sm'] = df_flow['val_f'] + df_flow['val_p']
+        
+        # Để vẽ biểu đồ (Chart), chúng ta vẫn tính Cumsum
+        df_flow['cum_sm'] = df_flow['net_sm'].cumsum()
 
-        # =====================================================================
-        # 5. TÍNH CHỈ SỐ THANH LÝ (DTL - Days To Liquidate)
-        # =====================================================================
+        # 🚀 THUẬT TOÁN TÍNH VWAP THEO DÒNG CHẢY (FLOW-BASED VWAP)
+        inventory = 0
+        current_vwap = 0.0
+
+        for idx, row in df_flow.iterrows():
+            net_vol = row['net_sm']
+            net_val = row['val_sm']
+
+            if net_vol > 0:
+                # MUA RÒNG: Tính lại trung bình giá vốn
+                # Vốn cũ = tồn kho * giá vốn hiện tại. Vốn mới = vốn cũ + tiền vừa mua
+                total_cost = (inventory * current_vwap) + net_val
+                inventory += net_vol
+                current_vwap = total_cost / inventory if inventory > 0 else 0
+                
+            elif net_vol < 0:
+                # BÁN RÒNG: Giảm tồn kho, KHÔNG ĐỔI giá vốn của phần hàng còn lại
+                inventory += net_vol
+                if inventory <= 0:
+                    # Nếu Lái bán sạch sành sanh kho (Washout/Phân phối hết), Reset game!
+                    inventory = 0
+                    current_vwap = 0.0
+            
+            # Lưu lại giá vốn theo từng ngày (Dùng để tính phân kỳ nếu cần)
+            df_flow.at[idx, 'dynamic_vwap'] = current_vwap
+
+        # Trả kết quả cuối cùng ra ngoài
+        result["inventory"] = inventory
+        result["sm_vwap"] = current_vwap if inventory > 0 else -1.0
+
         if result["adv_20"] > 0 and result["inventory"] > 0:
             result["dtl_days"] = result["inventory"] / result["adv_20"]
 

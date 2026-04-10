@@ -1681,10 +1681,13 @@ class LiveAssistant:
             current_date = pd.to_datetime(self.run_date) if hasattr(self, 'run_date') else pd.to_datetime('today')
             shadow_memory = self._check_historical_shadow_profile(ticker, current_date, lookback_window=15)
 
+            # Lấy giá vốn Lái từ Market Flow
+            sm_vwap = mf_result.get('sm_vwap', 0)
+
             print("-" * 65)
             print(f"✅ MUA | {ticker} | Điểm: {total_score}/100 | Signal: {row['Signal']}")
             print(f"   Lý do: {', '.join(score_details)}")
-            print(f"   📊 X-Ray: Giá vốn Cá mập ~{mf_result.get('sm_vwap',0):,.0f}đ | Sức ép xả (DTL): {mf_result.get('dtl_days',0):.1f} ngày")
+            print(f"   📊 X-Ray: Giá vốn Cá mập ~{sm_vwap:,.0f}đ | Sức ép xả (DTL): {mf_result.get('dtl_days',0):.1f} ngày")
             print(f"   📊 Sổ lệnh hiện tại: Bán rẻ nhất {best_ask:,.0f} | Mua cao nhất {best_bid:,.0f}")
             print(f"   🎯 HÀNH ĐỘNG: {buy_strategy} {shares:,} cp quanh {suggested_buy:,.0f}đ")
             print(f"   🛑 Cắt lỗ: {stop_loss:,.0f}đ | Biên độ ngày: {floor_price:,.0f} - {ceil_price:,.0f}")
@@ -1697,7 +1700,11 @@ class LiveAssistant:
                     print(f"   🚫 TỪ CHỐI MUA {ticker}: vì nằm trong BLACKLIST.")
                 # BỘ LỌC CHỐNG BẪY KÉO XẢ (Xử lý các case thao túng như HRC)
                 if mf_result.get('divergence') == "BEARISH_TRAP":
-                    print(f"   🚫 TỪ CHỐI MUA {ticker}: Kéo xả ảo (Giá vốn tạo lập: {mf_result.get('sm_vwap', 0):,.0f}đ, Tồn kho đang bị xả!)")
+                    # Chỉ check bẫy Kéo Xả nếu thực sự đo lường được Giá vốn (> 0đ)
+                    if sm_vwap > 0:
+                        # Nếu giá hiện tại vọt lên quá 1.5% so với giá vốn, nhưng tồn kho đang xả
+                        if price > (sm_vwap * 1.015) and mf_result.get('divergence') == 'BEARISH_TRAP':
+                            print(f"   🚫 TỪ CHỐI MUA {ticker}: Kéo xả ảo (Giá vốn tạo lập: {sm_vwap:,.0f}đ, Tồn kho đang bị xả!)")
                 # Lệnh cấm tuyệt đối: Nến có đẹp đến mấy cũng loại ngay từ vòng gửi xe!
                 if dump_warnings:
                     print(f"   🚫 TỪ CHỐI MUA {ticker}: Khối ngoại/Tự doanh vừa có nhịp phân phối rát!")
