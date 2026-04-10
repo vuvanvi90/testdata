@@ -175,7 +175,8 @@ class VN30DataPipeline:
 
         # if not df_price.empty:
         #     df_group = {ticker: group for ticker, group in df_price.groupby('ticker')}
-        #     print(df_group['HRC'].tail(30))
+        #     # print(df_group['TCB'].tail(10))
+        #     df_group['TCB'].to_json("TCB_price.json", orient='records', force_ascii=False, indent=4)
 
         # if not df_industry.empty:
         #     # print(df_industry.tail(10))
@@ -186,9 +187,9 @@ class VN30DataPipeline:
         #     df_intra.to_json("intraday.json", orient='records', force_ascii=False, indent=4)
 
         # if not df_foreign.empty:
-        #     # df_group = {ticker: group for ticker, group in df_foreign.groupby('ticker')}
-        #     # print(df_group['VNM'].tail(10))
-        #     df_foreign.to_json("foreign.json", orient='records', force_ascii=False, indent=4)
+        #     df_group = {ticker: group for ticker, group in df_foreign.groupby('ticker')}
+        #     # print(df_group['TCB'].tail(10))
+        #     df_group['TCB'].to_json("TCB_foreign.json", orient='records', force_ascii=False, indent=4)
 
         # if not df_index.empty:
         #     vn30_tickers = df_index[df_index['index_code'] == 'VN30']['ticker'].tolist()

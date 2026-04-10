@@ -25,6 +25,7 @@ from src.run_bot import run_trading_system, run_vn30_trading_system, run_midcap_
 # from src.flow_tracker import SmartMoneyTracker
 # from src.shadow_profiler import ShadowProfiler
 # from src.market_tracker import MarketTracker
+from src.post_mortem import PostMortemAnalyzer
 
 def main():
     df_price = _load_parquet(Path('data/parquet/price/master_price.parquet'))
@@ -54,6 +55,25 @@ def main():
     # run_vn30_trading_system()
     # run_midcap_trading_system()
     # run_smallcap_trading_system()
+
+    # # Test: Kiểm tra mã tăng và signal trước đó
+    # analyzer = PostMortemAnalyzer()
+    # print("\n--- HƯỚNG DẪN SỬ DỤNG ---")
+    # print("Nhập mã cổ phiếu và ngày nó bắt đầu chạy mạnh mà Bot không báo.")
+    # print("Gõ 'q' để thoát.")
+    # while True:
+    #     ticker = input("\nNhập Mã Cổ Phiếu (VD: FPT): ").strip().upper()
+    #     if ticker == 'Q': break
+        
+    #     date_input = input("Nhập Ngày Nổ Điểm (Định dạng YYYY-MM-DD, VD: 2026-04-10): ").strip()
+    #     if date_input == 'Q': break
+        
+    #     try:
+    #         # Test tính hợp lệ của ngày
+    #         pd.to_datetime(date_input)
+    #         analyzer.analyze(ticker=ticker, target_date_str=date_input, lookback_days=15)
+    #     except Exception as e:
+    #         print(f"[!] Lỗi định dạng ngày hoặc dữ liệu: {e}. Vui lòng thử lại.")
 
     # Test: Kiểm tra thị trường, thanh khoản và volume mà Cá Mập nắm giữ
     # analyzer = MarketFlowAnalyzer(df_price, df_foreign, df_prop)
