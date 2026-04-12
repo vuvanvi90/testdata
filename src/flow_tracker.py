@@ -9,11 +9,12 @@ warnings.filterwarnings('ignore', category=DeprecationWarning)
 warnings.filterwarnings('ignore', message=".*DataFrameGroupBy.apply.*")
 
 class SmartMoneyTracker:
-    def __init__(self, df_price, df_foreign, df_prop):
+    def __init__(self, df_price, df_foreign, df_prop, df_indx):
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Đang nạp Sổ cái Dòng tiền & Lịch sử OHLCV...")
         self.df_price = df_price
         self.df_foreign = df_foreign
         self.df_prop = df_prop
+        self.df_indx = df_indx
         
         # Chuẩn hóa thời gian
         for df in [self.df_price, self.df_foreign, self.df_prop]:
@@ -29,12 +30,50 @@ class SmartMoneyTracker:
         self.foreign_dict = dict(tuple(self.df_foreign.groupby('ticker'))) if not self.df_foreign.empty else {}
         self.prop_dict = dict(tuple(self.df_prop.groupby('ticker'))) if not self.df_prop.empty else {}
 
+        self.ticker_universe_map = {}
+        try:
+            if not self.df_indx.empty:
+                for _, row in self.df_indx.iterrows():
+                    ticker = row['ticker']
+                    idx_code = row['index_code']
+                    # Ưu tiên ghi đè: VN30 -> VNMidCap -> VNSmallCap
+                    if ticker not in self.ticker_universe_map and idx_code in ['VN30', 'VNMidCap', 'VNSmallCap']:
+                        self.ticker_universe_map[ticker] = idx_code
+        except Exception as e:
+            print(f"[!] Lỗi nạp Index Components: {e}")
+
+    def _get_dynamic_thresholds(self, universe):
+        """Thiết lập Ngưỡng phân tích dựa trên đặc thù của từng Rổ"""
+        if universe == 'VN30':
+            return {
+                'dom_high': 20.0,      # Chi phối > 20% mới gọi là Tay To kiểm soát
+                'dom_low': 5.0,        # Dưới 5% là vắng mặt
+                'shadow_spike': 1.5,   # Lái nội nổ vol = 1.5x trung bình
+            }
+        elif universe == 'VNMidCap':
+            return {
+                'dom_high': 15.0,      # Midcap chỉ cần > 15% là uy tín
+                'dom_low': 3.0,
+                'shadow_spike': 2.0,   # Midcap hay bị lái nội thổi Vol x2
+            }
+        elif universe == 'VNSmallCap':
+            return {
+                'dom_high': 5.0,       # Penny mà Tây/TD cầm > 5% là CỰC KỲ BẤT THƯỜNG (Có biến)
+                'dom_low': 1.0,
+                'shadow_spike': 3.0,   # Penny Lái nội toàn thổi Vol x3 x4
+            }
+        else: # Default (HOSE)
+            return {'dom_high': 15.0, 'dom_low': 3.0, 'shadow_spike': 2.0}
+
     def track_ticker(self, ticker, target_date=None, start_date=None):
         """
         X-Quang Dòng tiền: Bóc tách Tồn kho Tay to, VWAP và Dòng tiền Ẩn
         """
+        universe = self.ticker_universe_map.get(ticker, 'HOSE (Unknown)')
+        thresh = self._get_dynamic_thresholds(universe)
+
         print("\n" + "="*135)
-        print(f" 🔍 X-QUANG DÒNG TIỀN ĐA CHIỀU (OHLCV + SMART MONEY + VWAP): Ticker [ {ticker} ]")
+        print(f" 🔍 DÒNG TIỀN (OHLCV + SMART MONEY + VWAP): Mã [ {ticker} ] - Thuộc rổ: {universe}")
         print("="*135)
 
         # Trích xuất O(1) từ Dictionary
@@ -114,14 +153,16 @@ class SmartMoneyTracker:
         print("-" * 135)
 
         shadow_spikes = 0 
+        avg_market_val = df_merged['market_val_bn'].mean()
 
         for _, row in df_merged.iterrows():
             date_str = row['time'].strftime('%d-%m-%Y')
             flag = ""
-            if row['sm_dominance_pct'] < 5.0 and row['market_val_bn'] > df_merged['market_val_bn'].mean() * 1.5:
+            # 🚀 ÁP DỤNG NGƯỠNG (THRESHOLDS) THEO RỔ CỔ PHIẾU
+            if row['sm_dominance_pct'] < thresh['dom_low'] and row['market_val_bn'] > avg_market_val * thresh['shadow_spike']:
                 flag = " ⚠️(Lái Nội)"
                 shadow_spikes += 1
-            elif row['sm_dominance_pct'] > 30.0:
+            elif row['sm_dominance_pct'] > thresh['dom_high']:
                 flag = " 🎯(Tay To)"
 
             print(f"{date_str:<12} | {row['close']:>10,.0f} | {row['market_val_bn']:>14.1f} | {row['total_net_bn']:>17.2f} | {row['shadow_flow_bn']:>15.1f} | {row['sm_dominance_pct']:>8.1f}% | {row['cum_total']:>13.2f} | {row['dynamic_vwap']:>10,.0f}{flag}")
@@ -139,7 +180,7 @@ class SmartMoneyTracker:
             vwap_status = f"(Tay to đang {'Lãi' if diff_pct > 0 else 'Lỗ'} {abs(diff_pct):.1f}%)"
 
         print("\n" + "="*135)
-        print(f" 🎯 TỔNG KẾT BÓC TÁCH DÒNG TIỀN ĐỐI VỚI [ {ticker} ]")
+        print(f" 🎯 TỔNG KẾT BÓC TÁCH DÒNG TIỀN [ {ticker} - {universe} ]")
         print(f"    Giai đoạn: {df_merged.iloc[0]['time'].strftime('%d/%m/%Y')} -> {final_row['time'].strftime('%d/%m/%Y')} ({len(df_merged)} phiên)")
         print("="*135)
         print(f" 🔹 TỔNG LƯỢNG TỒN KHO TAY TO : {final_row['cum_total']:>10.2f} Tỷ VNĐ")
@@ -148,12 +189,14 @@ class SmartMoneyTracker:
         print(f" 🔹 Số phiên 'Lái Nội' bùng nổ  : {shadow_spikes:>10} phiên")
         print("-" * 135)
         
-        if shadow_spikes >= 3 and final_row['cum_total'] <= 0:
-            print(" 🚨 KẾT LUẬN: Sóng Đầu Cơ Lái Nội! Tay to (Tây/Tự doanh) đứng ngoài hoặc đang xả hàng.")
-        elif final_row['cum_total'] > 0 and avg_dominance > 15.0:
-            print(" 🌟 KẾT LUẬN: Sóng Tổ Chức! Smart Money đang nắm quyền chi phối và thu gom hàng.")
-            if current_price < vwap:
-                print("    => CƠ HỘI VÀNG: Giá hiện tại đang RẺ HƠN giá vốn của Tay to!")
+        # 🚀 CHẨN ĐOÁN THEO RỔ
+        if universe == 'VNSmallCap' and avg_dominance > thresh['dom_high']:
+            print(f" 🚨 ĐỘT BIẾN LỚN: {ticker} là Penny nhưng Tây/Tự doanh chi phối tới {avg_dominance:.1f}%! Rất có thể có tin nội gián (M&A).")
+        elif shadow_spikes >= 3 and final_row['cum_total'] <= 0:
+            print(" 🚨 KẾT LUẬN: Sóng Đầu Cơ Lái Nội! Tay to (Tây/Tự doanh) đang xả hoặc không quan tâm.")
+        elif final_row['cum_total'] > 0 and avg_dominance >= thresh['dom_high']:
+            print(" 🌟 KẾT LUẬN: Sóng Tổ Chức! Smart Money đang nắm quyền kiểm soát.")
+            if current_price < vwap: print("    => CƠ HỘI VÀNG: Giá hiện tại đang RẺ HƠN giá vốn của Tay to!")
         else:
             print(" ⚖️ KẾT LUẬN: Dòng tiền giằng co, chưa rõ phe nào kiểm soát hoàn toàn.")
         print("="*135)
