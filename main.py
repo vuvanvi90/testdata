@@ -140,9 +140,9 @@ def main():
     # for ticker in manual_list:
     #     inspector.inspect_single_ticker(ticker=ticker)
 
-    # Bóc tách dòng tiền của 1 mã bất kỳ
-    tracker = SmartMoneyTracker(df_price, df_foreign, df_prop)
-    tracker.track_ticker(ticker='GMD', target_date=None, start_date='2026-03-01')
+    # # Bóc tách dòng tiền của 1 mã bất kỳ
+    # tracker = SmartMoneyTracker(df_price, df_foreign, df_prop, df_indx=df_index)
+    # tracker.track_ticker(ticker='VNM', target_date=None, start_date='2026-03-01')
 
     # # Kiểm soát vùng xám
     # profiler = ShadowProfiler(df_price)
