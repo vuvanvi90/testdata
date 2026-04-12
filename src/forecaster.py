@@ -14,8 +14,22 @@ LUNAR_NEW_YEARS = [
 ]
 
 class WyckoffForecaster:
-    def __init__(self, price_dir=None, output_dir=None, run_date=datetime.now(), verbose=True):
-        self.price_dir = Path(price_dir) if price_dir else Path('data/parquet/price/master_price.parquet')
+    # def __init__(self, price_dir=None, output_dir=None, run_date=datetime.now(), verbose=True):
+    def __init__(self, data_input=None, output_dir=None, run_date=datetime.now(), verbose=False, save_file=False):
+        # self.price_dir = Path(price_dir) if price_dir else Path('data/parquet/price/master_price.parquet')
+
+        if isinstance(data_input, pd.DataFrame):
+            self.price_df = data_input.copy()
+        elif isinstance(data_input, (str, Path)):
+            price_dir = Path(data_input)
+            if price_dir.exists():
+                self.price_df = pd.read_parquet(price_dir)
+            else:
+                print(f"[!] WyckoffForecaster Lỗi: Không tìm thấy file tại {price_dir}")
+                self.price_df = pd.DataFrame()
+        else:
+            raise ValueError("[!] WyckoffForecaster Yêu cầu đầu vào phải là DataFrame hoặc Đường dẫn File (Path/str).")
+
         self.output_dir = Path(output_dir) if output_dir else Path('data/forecast')
         self.output_dir.mkdir(parents=True, exist_ok=True)
         # Xử lý an toàn nếu settings chưa có LOOKBACK_TR
@@ -25,6 +39,7 @@ class WyckoffForecaster:
             self.lookback = 20 # Mặc định 20 phiên nếu config lỗi
         self.run_date = pd.to_datetime(run_date)
         self.verbose = verbose
+        self.save_file = save_file
         # Đổi mảng string sang datetime một lần duy nhất
         self.lunar_dates = pd.to_datetime(LUNAR_NEW_YEARS)
 
@@ -146,16 +161,18 @@ class WyckoffForecaster:
 
     def run_forecast(self):
         results = []
-        print(f"--- Bắt đầu dự báo Wyckoff: {self.run_date.strftime('%d/%m/%Y')} ---")
+        if self.verbose:
+            print(f"--- Bắt đầu dự báo Wyckoff: {self.run_date.strftime('%d/%m/%Y')} ---")
 
-        if not self.price_dir.exists():
-            print(f"[!] Không tìm thấy dữ liệu tại: {self.price_dir}")
-            return pd.DataFrame()
+        # if not self.price_dir.exists():
+        #     print(f"[!] Không tìm thấy dữ liệu tại: {self.price_dir}")
+        #     return pd.DataFrame()
 
         # Đọc toàn bộ dữ liệu thị trường chỉ với 1 dòng lệnh
         if self.verbose:
             print("Đang tải dữ liệu Parquet...")
-        df_master = pd.read_parquet(self.price_dir)
+        # df_master = pd.read_parquet(self.price_dir)
+        df_master = self.price_df
         df_master['time'] = pd.to_datetime(df_master['time']) # Đảm bảo time là datetime
         
         # Lọc dữ liệu tới ngày run_date (Phục vụ Backtest)
@@ -199,7 +216,7 @@ class WyckoffForecaster:
                 continue
 
         report_df = pd.DataFrame(results)
-        if not report_df.empty:
+        if not report_df.empty and getattr(self, 'save_file', False):
             # Xếp hạng ưu tiên
             priority_map = {
                 'SPRING': 1,      # Ưu tiên 1: Bắt đáy hoảng loạn (Rủi ro/Lợi nhuận tốt nhất)

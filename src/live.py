@@ -919,10 +919,13 @@ class LiveAssistant:
         print(f"[*] Đã thanh lọc: Giữ lại {len(tradable_tickers)}/{len(ticker_counts)} mã đạt chuẩn Tổ chức lớn.")
         # ==========================================================
 
-        # 4. LƯU RA 1 FILE DUY NHẤT ĐỂ FORECASTER ĐỌC
-        temp_price_path = self.temp_dir / "master_price_live.parquet"
-        df_price.to_parquet(temp_price_path, engine='pyarrow')
-        return temp_price_path
+        # # 4. LƯU RA 1 FILE DUY NHẤT ĐỂ FORECASTER ĐỌC
+        # temp_price_path = self.temp_dir / "master_price_live.parquet"
+        # df_price.to_parquet(temp_price_path, engine='pyarrow')
+        # return temp_price_path
+
+        # ko lưu mà trả về DataFrame trực tiếp để xử lý ngay trên RAM
+        return df_price
 
     def calculate_confluence_score(self, row, board_info, fund_info, sm_result, mf_result, poc_price):
         """Hệ thống chấm điểm """
@@ -1116,67 +1119,6 @@ class LiveAssistant:
         except Exception as e:
             print(f"[!] Lỗi ghi log {self.universe}: {e}")
 
-    # def _check_smart_money_distribution(self, ticker):
-    #     """Quét xem Khối ngoại hoặc Tự doanh có đang âm thầm xả hàng không (Đã vá lỗi lệch pha)"""
-    #     warnings = []
-        
-    #     # 1. ĐỒNG BỘ MỐC THỜI GIAN BACKTEST / LIVE
-    #     current_date = pd.to_datetime(self.run_date).normalize() if hasattr(self, 'run_date') else pd.Timestamp.now().normalize()
-    #     MAX_DELAY_DAYS = 15
-        
-    #     # 2. LẤY LƯỚI THỜI GIAN CHUẨN (TRUE-TIME WINDOW) TỪ BẢNG GIÁ
-    #     df_price = self.price_dict.get(ticker)
-    #     if df_price is None or df_price.empty: return warnings
-        
-    #     df_price_valid = df_price[df_price['time'] <= current_date]
-    #     if df_price_valid.empty: return warnings
-        
-    #     trading_dates = df_price_valid['time'].sort_values().unique()
-    #     cutoff_10d = trading_dates[-10] if len(trading_dates) >= 10 else trading_dates[0]
-    #     cutoff_3d = trading_dates[-3] if len(trading_dates) >= 3 else trading_dates[0]
-    #     latest_trading_date = trading_dates[-1] # Lấy chính xác ngày phiên giao dịch cuối cùng
-
-    #     # Hàm kiểm toán luồng tiền
-    #     def check_flow(df, net_col, actor_name):
-    #         if df is not None and not df.empty:
-    #             # Cắt đứt tương lai
-    #             df_valid = df[df['time'] <= current_date]
-    #             if df_valid.empty: return
-                
-    #             last_date = pd.to_datetime(df_valid['time'].max())
-                
-    #             # Kiểm tra hạn sử dụng của Dòng tiền
-    #             if (current_date - last_date).days <= MAX_DELAY_DAYS:
-                    
-    #                 # 3. ÉP BẢNG DÒNG TIỀN THEO LƯỚI THỜI GIAN THỰC TẾ
-    #                 df_10d = df_valid[df_valid['time'] >= cutoff_10d]
-    #                 df_3d = df_valid[df_valid['time'] >= cutoff_3d]
-                    
-    #                 # Quy tắc 1: Xả ròng 3 phiên liên tiếp (Xả rỉ rả)
-    #                 if not df_3d.empty and net_col in df_3d.columns:
-    #                     if len(df_3d[df_3d[net_col] < 0]) == 3:
-    #                         warnings.append(f"{actor_name} xả ròng 3 phiên liên tiếp")
-                        
-    #                 # Quy tắc 2: CÚ XẢ ĐỘT BIẾN (SUDDEN DUMP) TRONG CHÍNH PHIÊN HÔM NAY
-    #                 # Lấy chính xác dữ liệu của phiên đang xét (nếu không có giao dịch thì bỏ qua)
-    #                 df_today = df_valid[df_valid['time'] == latest_trading_date]
-    #                 if not df_today.empty and net_col in df_today.columns:
-    #                     today_val = df_today.iloc[-1][net_col]
-                        
-    #                     if today_val < 0: # Nếu chính phiên hôm nay là phiên Xả
-    #                         # Tính trung bình các phiên Gom trong 10 ngày qua
-    #                         avg_buy = df_10d[df_10d[net_col] > 0][net_col].mean()
-                            
-    #                         # Cú xả hôm nay lấp luôn 1.5 lần lực gom trung bình trước đó
-    #                         if pd.notna(avg_buy) and avg_buy > 0 and abs(today_val) > (avg_buy * 1.5):
-    #                             warnings.append(f"CÚ XẢ ĐỘT BIẾN từ {actor_name} (Xả 1 phiên lấp luôn lực gom)")
-
-    #     # Chạy kiểm tra chéo cho cả Tây và Tự doanh
-    #     check_flow(self.foreign_dict.get(ticker), 'foreign_net_value', 'Khối ngoại')
-    #     check_flow(self.prop_dict.get(ticker), 'prop_net_value', 'Tự doanh')
-                
-    #     return warnings
-
     def _get_inventory_metrics(self, ticker, lookback_days=130):
         """
         Đo lường Tồn kho Lũy kế (6 tháng) và Tỷ lệ chi phối (Phiên hiện tại)
@@ -1304,17 +1246,25 @@ class LiveAssistant:
         is_uptrend = self._check_market_regime()
 
         # 1. Chuẩn bị file dữ liệu tạm thời (temp_master_price.parquet)
-        temp_price_path = self.update_and_prepare_data(self.df_price, self.df_intra)
-        if not temp_price_path: return
+        # temp_price_path = self.update_and_prepare_data(self.df_price, self.df_intra)
+        # if not temp_price_path: return
 
-        # Nạp toàn bộ dữ liệu giá vào RAM cho X-Ray Engine
-        df_full_price = pd.read_parquet(temp_price_path)
-        
+        temp_price_df = self.update_and_prepare_data(self.df_price, self.df_intra)
+        if not temp_price_df.empty:
+            df_full_price = temp_price_df
+        else:
+            print(f"Lỗi Live.scan_opportunities: price DataFrame không có giá trị")
+            return None
+
+        # # Nạp toàn bộ dữ liệu giá vào RAM cho X-Ray Engine
+        # df_full_price = pd.read_parquet(temp_price_path)
+
         # Khởi tạo X-Ray Engine
         mf_analyzer = MarketFlowAnalyzer()
 
         # 2. Chạy Forecaster (Truyền đường dẫn file Parquet tạm vào)
-        forecaster = WyckoffForecaster(price_dir=temp_price_path, output_dir=self.temp_dir, run_date=datetime.now(), verbose=False)
+        # forecaster = WyckoffForecaster(price_dir=temp_price_path, output_dir=self.temp_dir, run_date=datetime.now(), verbose=False)
+        forecaster = WyckoffForecaster(data_input=df_full_price, output_dir=self.temp_dir, run_date=datetime.now(), verbose=False)
         report = forecaster.run_forecast()
 
         if report.empty: return

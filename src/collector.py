@@ -56,7 +56,7 @@ class VNStockDataPipeline:
         self.request_timestamps = deque()
         self.rate_lock = threading.Lock()
         self.total_requests_sent = 0
-        self.MAX_RPM = 290  # Ngưỡng an toàn tối đa (500 thay vì 600 để chừa hao phí cho thư viện)
+        self.MAX_RPM = 200  # Ngưỡng an toàn tối đa (500 thay vì 600 để chừa hao phí cho thư viện)
 
     def _load_master_data(self, folder_key, file_name):
         """Đọc file Parquet cũ và chia thành Dictionary theo Ticker để truy xuất O(1)"""
@@ -968,6 +968,25 @@ class VNStockDataPipeline:
             return True
         return False
 
+    def get_ticker_list(self):
+        index_path = self.folders['macro'] / 'index_components.parquet'
+        if index_path.exists():
+            try: 
+                df_idx = pd.read_parquet(index_path)
+                tickers = []
+                if self.get_group in ['VN30', 'VNMidCap', 'VNSmallCap']:
+                    tickers = df_idx[df_idx['index_code'] == self.get_group]['ticker'].tolist()
+                elif self.get_group == "HOSE":
+                    vn30_tickers = df_idx[df_idx['index_code'] == 'VN30']['ticker'].tolist()
+                    mid_tickers = df_idx[df_idx['index_code'] == 'VNMidCap']['ticker'].tolist()
+                    small_tickers = df_idx[df_idx['index_code'] == 'VNSmallCap']['ticker'].tolist()
+                    tickers = list(set(vn30_tickers + mid_tickers + small_tickers))
+                return tickers
+            except: 
+                print(f"Could NOT read {index_path}")
+                return []
+        return []
+
     # ==========================================
     # HÀM CHẠY CHÍNH (PIPELINE)
     # ==========================================
@@ -1028,21 +1047,12 @@ class VNStockDataPipeline:
             except Exception as e:
                 print(f" [!] Lỗi tải Danh sách theo ngành: {e}")
 
-
-        # Lấy danh sách mã
+        # Mặc định lấy từ danh sách có sẵn trong index_components.parquet
         print("\n" + "="*50)
-        print(f"     LẤY DANH SÁCH MÃ CHỨNG KHOÁN THEO GROUP: {self.get_group}")
+        print(f"     LẤY DANH SÁCH MÃ CHỨNG KHOÁN ĐỂ CHUẨN BỊ TẢI DỮ LIỆU")
         print("="*50)
-        try:
-            symbols_data = self.listing.symbols_by_group(group=self.get_group)
-            if isinstance(symbols_data, pd.Series): 
-                tickers = symbols_data.tolist()
-            else: 
-                tickers = symbols_data['ticker'].tolist() if 'ticker' in symbols_data.columns else symbols_data.iloc[:, 0].tolist()
-            print(f" [OK] Đã tải danh sách {len(tickers)} mã.")
-        except Exception as e:
-            print(f"[!] Lỗi lấy danh sách: {e}")
-            return
+        tickers = self.get_ticker_list()
+        print(f" [OK] Đã chuẩn bị danh sách {len(tickers)} mã.")
 
         # TẢI DANH SÁCH QUỸ TRÁI PHIẾU
         if self.get_fund:
