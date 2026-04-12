@@ -702,7 +702,7 @@ class VNStockDataPipeline:
         
         # Bổ sung lại các mã KHÔNG có sự thay đổi từ dữ liệu cũ
         for t, df_old in old_dict.items():
-            if t not in updated_tickers_set and t in tickers:
+            if t not in updated_tickers_set:
                 final_list.append(df_old)
                 
         if final_list:
@@ -974,13 +974,13 @@ class VNStockDataPipeline:
             try: 
                 df_idx = pd.read_parquet(index_path)
                 tickers = []
-                if self.get_group in ['VN30', 'VNMidCap', 'VNSmallCap']:
+                if self.get_group in ['HOSE', 'VN30', 'VNMidCap', 'VNSmallCap']:
                     tickers = df_idx[df_idx['index_code'] == self.get_group]['ticker'].tolist()
-                elif self.get_group == "HOSE":
-                    vn30_tickers = df_idx[df_idx['index_code'] == 'VN30']['ticker'].tolist()
-                    mid_tickers = df_idx[df_idx['index_code'] == 'VNMidCap']['ticker'].tolist()
-                    small_tickers = df_idx[df_idx['index_code'] == 'VNSmallCap']['ticker'].tolist()
-                    tickers = list(set(vn30_tickers + mid_tickers + small_tickers))
+                # elif self.get_group == "HOSE":
+                #     vn30_tickers = df_idx[df_idx['index_code'] == 'VN30']['ticker'].tolist()
+                #     mid_tickers = df_idx[df_idx['index_code'] == 'VNMidCap']['ticker'].tolist()
+                #     small_tickers = df_idx[df_idx['index_code'] == 'VNSmallCap']['ticker'].tolist()
+                #     tickers = list(set(vn30_tickers + mid_tickers + small_tickers))
                 return tickers
             except: 
                 print(f"Could NOT read {index_path}")
