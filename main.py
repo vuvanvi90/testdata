@@ -25,24 +25,35 @@ from src.run_bot import run_trading_system, run_vn30_trading_system, run_midcap_
 # from src.flow_tracker import SmartMoneyTracker
 # from src.shadow_profiler import ShadowProfiler
 # from src.market_tracker import MarketTracker
-from src.post_mortem import PostMortemAnalyzer
+# from src.post_mortem import PostMortemAnalyzer
 
 def main():
     df_price = _load_parquet(Path('data/parquet/price/master_price.parquet'))
     df_intra = _load_parquet(Path('data/parquet/intraday/master_intraday.parquet'))
     df_foreign = _load_parquet(Path('data/parquet/macro/foreign_flow.parquet'))
     df_prop = _load_parquet(Path('data/parquet/macro/prop_flow.parquet'))
+    df_comp = _load_parquet(Path('data/parquet/company/master_company.parquet'))
     df_industry = _load_parquet(Path('data/parquet/macro/groups_by_industries.parquet'))
     df_index = _load_parquet(Path('data/parquet/macro/index_components.parquet'))
 
+    price_dict = _load_data_dict(Path('data/parquet/price/master_price.parquet'))
+    foreign_dict = _load_data_dict(Path('data/parquet/macro/foreign_flow.parquet'))
+    prop_dict = _load_data_dict(Path('data/parquet/macro/prop_flow.parquet'))
+    out_shares_dict = {}
+    if not df_comp.empty and 'ticker' in df_comp.columns and 'issue_share' in df_comp.columns:
+        out_shares_dict = df_comp.set_index('ticker')['issue_share'].to_dict()
+
     # pipeline = VNStockDataPipeline(source='VCI')
-    # pipeline.get_group = 'HOSE'
+    # # pipeline.get_group = 'HOSE'
+    # # pipeline.get_group = 'VN30'
+    # # pipeline.get_group = 'VNMidCap'
+    # # pipeline.get_group = 'VNSmallCap'
     # # pipeline.get_macro = True
     # # pipeline.get_index = True
     # # pipeline.get_com = True
-    # pipeline.get_price = True
-    # pipeline.get_intra = True
-    # pipeline.get_board = True
+    # # pipeline.get_price = True
+    # # pipeline.get_intra = True
+    # # pipeline.get_board = True
     # # pipeline.get_fin = True
     # # pipeline.get_foreign = True
     # # pipeline.get_prop = True
@@ -67,11 +78,13 @@ def main():
         
     #     date_input = input("Nhập Ngày Nổ Điểm (Định dạng YYYY-MM-DD, VD: 2026-04-10): ").strip()
     #     if date_input == 'Q': break
+
+    #     lookback_input = input("Nhập Số Ngày lookback: ").strip()
+    #     if lookback_input == 'Q': break
         
     #     try:
-    #         # Test tính hợp lệ của ngày
     #         pd.to_datetime(date_input)
-    #         analyzer.analyze(ticker=ticker, target_date_str=date_input, lookback_days=15)
+    #         analyzer.analyze(ticker=ticker, target_date_str=date_input, lookback_days=int(lookback_input))
     #     except Exception as e:
     #         print(f"[!] Lỗi định dạng ngày hoặc dữ liệu: {e}. Vui lòng thử lại.")
 
@@ -109,24 +122,27 @@ def main():
     # run_cashflow_group_report('month', df_foreign, df_prop, df_industry, target_date='2026-03-13')
 
     # # Test: Kiềm tra quá khứ của các mã để phân tích nếu cần
-    # inspector = SignalInspector(df_price, df_foreign, df_prop, lookback_days=90)
+    # inspector = SignalInspector(
+    #     universe='VNMidCap', df_price=df_price, 
+    #     df_foreign=df_foreign, df_prop=df_prop, 
+    #     df_comp=df_comp, df_idx=df_index,lookback_days=30
+    # )
     # # Lấy Top 30 mã Win/Loss để chuẩn bị cho Giai đoạn 2
-    # winners, losers = inspector.scan_momentum(top_n=30, min_liquidity_bn=0.1)
+    # winners, losers = inspector.scan_momentum(top_n=10)
     # if winners is not None:
     #     audit_report = inspector.audit_winners(winners)
     # if losers is not None:
     #     audit_lose_report = inspector.audit_losers(losers)
     #     # Mang Tội đồ đi đối chất với Smart Money
     #     inspector.cross_audit_traps(audit_lose_report)
-
-    # # Soi mã anh muốn kiểm tra
-    # manual_list = ["DHM","NO1","VSI"]
+    # # Soi mã (đơn) muốn kiểm tra
+    # manual_list = ["DIG", "GMD"]
     # for ticker in manual_list:
     #     inspector.inspect_single_ticker(ticker=ticker)
 
-    # # Test: Bóc tách dòng tiền của 1 mã bất kỳ (Anh điền mã anh muốn soi vào đây)
-    # tracker = SmartMoneyTracker(df_price, df_foreign, df_prop)
-    # tracker.track_ticker(ticker='VNM', target_date=None, start_date='2025-12-01')
+    # Bóc tách dòng tiền của 1 mã bất kỳ
+    tracker = SmartMoneyTracker(df_price, df_foreign, df_prop)
+    tracker.track_ticker(ticker='GMD', target_date=None, start_date='2026-03-01')
 
     # # Kiểm soát vùng xám
     # profiler = ShadowProfiler(df_price)
@@ -182,6 +198,18 @@ def _load_watchlist(path):
             data = json.load(f)
             return data if isinstance(data, dict) else {}
     except: return {}
+
+def _load_data_dict(path):
+    df = _load_parquet(path)
+    if df.empty or 'ticker' not in df.columns:
+        return {}
+        
+    data_dict = {}
+    for ticker, group in df.groupby('ticker'):
+        group = group.sort_values('time')
+        data_dict[ticker] = group
+        
+    return data_dict
 
 if __name__ == "__main__":
     main()
