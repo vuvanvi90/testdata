@@ -790,30 +790,71 @@ class LiveAssistant:
             print(f"_get_market_sentiment: Error -> {e}")
             return None
 
-    def _calculate_poc(self, df_ticker_price, lookback_days=130):
+    # def _calculate_poc(self, df_ticker_price, lookback_days=130):
+    #     """
+    #     Tính toán Point of Control (POC) - Mức giá tập trung Khối lượng lớn nhất trong 6 tháng.
+    #     """
+    #     if df_ticker_price is None or df_ticker_price.empty:
+    #         return 0.0
+        
+    #     # Cắt lấy dữ liệu của 6 tháng gần nhất (khoảng 130 phiên)
+    #     df_recent = df_ticker_price.sort_values('time').tail(lookback_days).copy()
+    #     if df_recent.empty:
+    #         return 0.0
+            
+    #     # Gom nhóm theo mức giá (Làm tròn 1 chữ số thập phân để gộp các bước giá sát nhau)
+    #     df_recent['price_bin'] = df_recent['close'].round(1)
+        
+    #     # Tính tổng khối lượng cho từng mức giá
+    #     vol_profile = df_recent.groupby('price_bin')['volume'].sum()
+        
+    #     if vol_profile.empty:
+    #         return 0.0
+            
+    #     # Tìm mức giá có tổng khối lượng lớn nhất
+    #     poc_price = float(vol_profile.idxmax())
+    #     return poc_price
+
+    def _calculate_volume_profile(self, df_ticker_price, lookback_days=130):
         """
-        Tính toán Point of Control (POC) - Mức giá tập trung Khối lượng lớn nhất trong 6 tháng.
+        Tính POC, VAL (Value Area Low) và VAH (Value Area High).
         """
         if df_ticker_price is None or df_ticker_price.empty:
-            return 0.0
+            return 0.0, 0.0, 0.0
         
-        # Cắt lấy dữ liệu của 6 tháng gần nhất (khoảng 130 phiên)
         df_recent = df_ticker_price.sort_values('time').tail(lookback_days).copy()
         if df_recent.empty:
-            return 0.0
+            return 0.0, 0.0, 0.0
             
-        # Gom nhóm theo mức giá (Làm tròn 1 chữ số thập phân để gộp các bước giá sát nhau)
-        df_recent['price_bin'] = df_recent['close'].round(1)
+        # Gom nhóm theo mức giá (bin_size = 0.5% giá hiện tại để linh hoạt cho cả Bluechip & Penny)
+        current_p = df_recent['close'].iloc[-1]
+        bin_size = max(0.1, current_p * 0.005) 
+        df_recent['price_bin'] = (df_recent['close'] / bin_size).round() * bin_size
         
-        # Tính tổng khối lượng cho từng mức giá
-        vol_profile = df_recent.groupby('price_bin')['volume'].sum()
-        
+        vol_profile = df_recent.groupby('price_bin')['volume'].sum().sort_index()
         if vol_profile.empty:
-            return 0.0
+            return 0.0, 0.0, 0.0
             
-        # Tìm mức giá có tổng khối lượng lớn nhất
         poc_price = float(vol_profile.idxmax())
-        return poc_price
+        
+        # Tìm Value Area (70% Khối lượng)
+        total_vol = vol_profile.sum()
+        target_vol = total_vol * 0.70
+        
+        # Sắp xếp các mức giá theo khối lượng từ cao xuống thấp
+        sorted_profile = vol_profile.sort_values(ascending=False)
+        cum_vol = sorted_profile.cumsum()
+        
+        # Lọc ra các mức giá nằm trong 70% khối lượng lớn nhất
+        value_area_bins = cum_vol[cum_vol <= target_vol].index
+        
+        if len(value_area_bins) > 0:
+            val = float(min(value_area_bins))
+            vah = float(max(value_area_bins))
+        else:
+            val = vah = poc_price
+            
+        return poc_price, val, vah
 
     def update_and_prepare_data(self, df_price, df_intra):
         """Gộp dữ liệu Lịch sử Giá và Khớp lệnh Intraday thành 1 file duy nhất cho Forecaster"""
@@ -919,21 +960,18 @@ class LiveAssistant:
         print(f"[*] Đã thanh lọc: Giữ lại {len(tradable_tickers)}/{len(ticker_counts)} mã đạt chuẩn Tổ chức lớn.")
         # ==========================================================
 
-        # # 4. LƯU RA 1 FILE DUY NHẤT ĐỂ FORECASTER ĐỌC
-        # temp_price_path = self.temp_dir / "master_price_live.parquet"
-        # df_price.to_parquet(temp_price_path, engine='pyarrow')
-        # return temp_price_path
-
         # ko lưu mà trả về DataFrame trực tiếp để xử lý ngay trên RAM
         return df_price
 
-    def calculate_confluence_score(self, row, board_info, fund_info, sm_result, mf_result, poc_price):
+    # def calculate_confluence_score(self, row, board_info, fund_info, sm_result, mf_result, poc_price, val, vah):
+    def calculate_confluence_score(self, row, board_info, fund_info, sm_result, mf_result, vol_profile):
         """Hệ thống chấm điểm """
         score = 0
         details = []
         ticker = row['Ticker']
         signal = row['Signal']
         price = row['Price']
+        poc_price, val_p, vah_p = vol_profile
 
         # 1. CORE SIGNAL (Tối đa 40đ)
         if signal in ['SOS', 'SPRING', 'TEST_CUNG']:
@@ -954,6 +992,22 @@ class LiveAssistant:
                     details.append("Tín hiệu nhiễu! Nến giảm biên độ hẹp nhưng Volume cao -> Phân phối ngầm! (-10 điểm)")
             elif signal == 'SPRING' and row.get('VPA_Status') == 'Low':
                 score += 10; details.append("Vol Cạn (+10)")
+
+        # EFFORT VS RESULT (Định luật 3 Wyckoff)
+        spread = float(row.get('Spread', 0))
+        #   Biến spread_pct đo lường tỷ lệ biên độ nến so với thị giá 
+        #   (Giúp so sánh công bằng giữa Bluechip giá 100k và Penny giá 10k)
+        spread_pct = (spread / price) if price > 0 else 0
+        vol_z = float(row.get('Vol_Z_Score', 0))
+        if signal == 'SOS':
+            # Nỗ lực lớn (Volume đột biến > 1.5 StdDev) nhưng biên độ giá hẹp (< 1.5%)
+            if vol_z > 1.5 and spread_pct < 0.015:
+                score -= 15
+                details.append(f"⚠️ Bất thường: Khối lượng nổ lớn (Z: {vol_z:.1f}) nhưng nến hẹp (Spread: {spread_pct*100:.1f}%) -> Cung ngầm chặn trên (-15)")
+            # Nỗ lực lớn và Kết quả xứng đáng (Biên độ nến mở rộng > 3%)
+            elif vol_z > 1.5 and spread_pct >= 0.03:
+                score += 10
+                details.append(f"Đẩy giá dứt khoát (Z: {vol_z:.1f}, Spread: {spread_pct*100:.1f}%) (+10)")
 
         # 2. VĨ MÔ, CÂU CHUYỆN & MA TRẬN DÒNG TIỀN (FLOW DIVERGENCE MATRIX)
         # Chuyển string details của Smart Money thành 1 text để dễ dò từ khóa
@@ -1001,23 +1055,31 @@ class LiveAssistant:
             if fund_info['eps_change'] >= 0.15: score += 10; details.append("EPS Tăng Mạnh (+10)")
             if fund_info['roe'] >= 0.15: score += 10; details.append("ROE Xuất Sắc (+10)")
 
-        # 5. SMART MONEY FOOTPRINT (Tối đa +30đ, Thấp nhất -30đ)
+        # 5. SMART MONEY FOOTPRINT & INTRADAY T0 (Tối đa +30đ, Thấp nhất -30đ)
+        # Áp dụng hệ số từ kết quả Optimizer
+        base_sm_score = sm_result.get("total_sm_score", 0)
         if self.universe == "VN30":
-            # Áp dụng hệ số x1.0 từ kết quả Optimizer
-            sm_score_optimized = sm_result["total_sm_score"] * 1.0
+            base_sm_score = base_sm_score * 1.0
         elif self.universe == "VNMidCap":
-            # Áp dụng hệ số x1.5 từ kết quả Optimizer
-            sm_score_optimized = sm_result["total_sm_score"] * 1.5
+            base_sm_score = base_sm_score * 1.5
         elif self.universe == "VNSmallCap":
-            # Áp dụng hệ số x1.5 từ kết quả Optimizer
-            sm_score_optimized = sm_result["total_sm_score"] * 1.5
+            base_sm_score = base_sm_score * 1.5
         elif self.universe == "HOSE" or self.universe == "ALL":
-            # Áp dụng hệ số x1.5 từ kết quả Optimizer
-            sm_score_optimized = sm_result["total_sm_score"] * 1.5
+            base_sm_score = base_sm_score * 1.5
 
-        score += sm_score_optimized
-        if sm_result["sm_details"]:
-            details.append(" | ".join(sm_result["sm_details"]))
+        # Giới hạn điểm Smart Money tối đa không vượt quá 30 để tránh lấn át Wyckoff
+        sm_score_optimized = max(-30, min(30, base_sm_score)) 
+
+        # Đánh giá đồng thuận T0
+        today_foreign_net = board_info.get('net_foreign', 0) if board_info else 0 # Đơn vị: Tỷ VNĐ
+        if signal in ['SOS', 'SPRING', 'TEST_CUNG']:
+            if sm_result.get("is_danger", False):
+                score -= 30
+            else:
+                score += sm_score_optimized
+            
+            if sm_result["sm_details"]:
+                details.append(" | ".join(sm_result["sm_details"]))
 
         # 6. VŨ KHÍ BẮN TỈA: VOLUME PROFILE (POC) & GIÁ VỐN CÁ MẬP (VWAP)
         if poc_price > 0:
@@ -1043,24 +1105,41 @@ class LiveAssistant:
                         score += 20
                         details.append(f"🌟 HỢP LƯU TỐI THƯỢNG (POC + Giá vốn nhà cái) (+20)")
 
-        # 7. KIỂM ĐỊNH SỰ ĐỒNG THUẬN NGÀY BREAKOUT BẰNG DỮ LIỆU T0 (CHỐNG BULL TRAP)
-        # Lấy luồng tiền Khối ngoại trực tiếp từ Bảng điện Real-time (Không dùng Parquet T-1)
-        today_foreign_net = 0
-        if board_info:
-            today_foreign_net = board_info.get('net_foreign', 0) # Đơn vị: Tỷ VNĐ
-        
-        if signal in ['SOS', 'SPRING', 'TEST_CUNG']:
-            # Kịch bản Bẫy: Nổ tín hiệu đẹp nhưng Khối ngoại lại vác hàng ra táng rát ngay trong phiên
-            if today_foreign_net < -5.0: # Bán ròng > 5 tỷ T0
-                score -= 30 # Trừ điểm cực nặng để giết chết lệnh mua này
-                details.append(f"☠️ BẪY BREAKOUT: Nến {signal} nhưng Khối ngoại xả ròng T0 ({today_foreign_net:.1f} Tỷ) (-30)")
-            # Kịch bản Vàng: Nổ tín hiệu và Khối ngoại cũng đua lệnh Mua ròng phụ họa
-            elif today_foreign_net > 5.0: # Mua ròng > 5 tỷ T0
-                score += 15
-                details.append(f"🔥 BREAKOUT UY TÍN: Khối ngoại đồng thuận đẩy giá T0 (+{today_foreign_net:.1f} Tỷ) (+15)")
-            elif today_foreign_net > 0:
-                score += 5
-                details.append(f"✔️ Dòng tiền ngoại ủng hộ nhẹ T0 (+{today_foreign_net:.1f} Tỷ) (+5)")
+        # Lọc bằng VAL (Value Area Low) và VAH (Value Area High)
+        if val_p > 0 and price > 0 and vah_p > 0:
+            # Vùng giá rẻ, ưu tiên tìm SPRING
+            if price < val_p:
+                if signal == 'SPRING':
+                    details.append(f"Giá dưới Vùng giá rẻ (VAL): ưu tiên SPRING, nhớ kiểm tra lực xả")
+                else:
+                    score -= 10
+                    details.append(f"Giá dưới Vùng giá rẻ (VAL): Áp lực xả còn lớn (-10)")
+            
+            # Giữa VAL và VAH: Vùng tích lũy, ưu tiên tìm TEST_CUNG
+            if price >= val_p and price < vah_p:
+                if signal == 'TEST_CUNG':
+                    details.append(f"Vùng tích lũy VAL < Price < VAH: ưu tiên TEST_CUNG")
+
+            # Trên VAH: Vùng bứt phá, ưu tiên tìm SOS dứt khoát
+            # A: Xác nhận bứt phá "Blue Sky"
+            if vah_p > 0 and signal == 'SOS':
+                if price > vah_p:
+                    score += 15
+                    details.append(f"🚀 BLUE SKY: Bứt phá vùng giá trị (VAH). Phía trên là bầu trời! (+15)")
+                elif price < vah_p and (vah_p - price) / price < 0.02:
+                    score -= 10
+                    details.append(f"⚠️ ÁP LỰC TRẦN: Tín hiệu SOS nhưng chưa thoát được VAH (-10)")
+
+            # B: Bộ lọc Quá mua (Mean Reversion)
+            if vah_p > 0 and price > (vah_p * 1.05):
+                score -= 15
+                details.append(f"🚨 QUÁ XA VÙNG GIÁ TRỊ: Giá vượt VAH > 5%, rủi ro điều chỉnh về POC cao (-15)")
+
+            # C: Hợp lưu Đẩy giá (VAH làm bệ đỡ)
+            if vah_p > 0 and signal in ['TEST_CUNG', 'SPRING']:
+                if abs(price - vah_p) / vah_p <= 0.015:
+                    score += 10
+                    details.append(f"🛡️ RE-TEST VAH: Giá kiểm định lại trần cũ thành công (+10)")
 
         return score, details
 
@@ -1251,10 +1330,6 @@ class LiveAssistant:
         # 0. Gọi bộ lọc thị trường chung TRƯỚC TIÊN
         is_uptrend = self._check_market_regime()
 
-        # 1. Chuẩn bị file dữ liệu tạm thời (temp_master_price.parquet)
-        # temp_price_path = self.update_and_prepare_data(self.df_price, self.df_intra)
-        # if not temp_price_path: return
-
         temp_price_df = self.update_and_prepare_data(self.df_price, self.df_intra)
         if not temp_price_df.empty:
             df_full_price = temp_price_df
@@ -1262,14 +1337,10 @@ class LiveAssistant:
             print(f"Lỗi Live.scan_opportunities: price DataFrame không có giá trị")
             return None
 
-        # # Nạp toàn bộ dữ liệu giá vào RAM cho X-Ray Engine
-        # df_full_price = pd.read_parquet(temp_price_path)
-
         # Khởi tạo X-Ray Engine
         mf_analyzer = MarketFlowAnalyzer()
 
         # 2. Chạy Forecaster (Truyền đường dẫn file Parquet tạm vào)
-        # forecaster = WyckoffForecaster(price_dir=temp_price_path, output_dir=self.temp_dir, run_date=datetime.now(), verbose=False)
         forecaster = WyckoffForecaster(data_input=df_full_price, output_dir=self.temp_dir, run_date=datetime.now(), verbose=False)
         report = forecaster.run_forecast()
 
@@ -1554,7 +1625,9 @@ class LiveAssistant:
 
             # Tính toán POC cho mã cổ phiếu
             df_p_ticker = df_full_price[df_full_price['ticker'] == ticker]
-            poc_price = self._calculate_poc(df_p_ticker)    
+            # poc_price = self._calculate_poc(df_p_ticker) 
+            # poc_price, val, vah = self._calculate_volume_profile(df_p_ticker) 
+            vol_profile = self._calculate_volume_profile(df_p_ticker) 
 
             board_info = board_info_dict.get(ticker)
             fund_info = fund_info_dict.get(ticker)
@@ -1563,7 +1636,8 @@ class LiveAssistant:
             # KHIÊN CHỐNG ĐỔ VỎ (ĐỌC BẢN ÁN TRỰC TIẾP TỪ ENGINE O(1))
             dump_warnings = sm_result.get("warnings", [])
             
-            total_score, score_details = self.calculate_confluence_score(row, board_info, fund_info, sm_result, mf_result, poc_price)
+            # total_score, score_details = self.calculate_confluence_score(row, board_info, fund_info, sm_result, mf_result, poc_price, val, vah)
+            total_score, score_details = self.calculate_confluence_score(row, board_info, fund_info, sm_result, mf_result, vol_profile)
 
             score_candidates.append({
                 'Ticker': ticker,

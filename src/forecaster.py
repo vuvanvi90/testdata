@@ -14,9 +14,7 @@ LUNAR_NEW_YEARS = [
 ]
 
 class WyckoffForecaster:
-    # def __init__(self, price_dir=None, output_dir=None, run_date=datetime.now(), verbose=True):
     def __init__(self, data_input=None, output_dir=None, run_date=datetime.now(), verbose=False, save_file=False):
-        # self.price_dir = Path(price_dir) if price_dir else Path('data/parquet/price/master_price.parquet')
 
         if isinstance(data_input, pd.DataFrame):
             self.price_df = data_input.copy()
@@ -55,6 +53,11 @@ class WyckoffForecaster:
         df['vol_ma20'] = df['volume'].rolling(window=settings.VOL_MA_PERIOD).mean()
         df['rel_vol'] = df['volume'] / df['vol_ma20']
         
+        # Tính Z-Score Khối lượng
+        df['vol_std20'] = df['volume'].rolling(window=settings.VOL_MA_PERIOD).std()
+        df['vol_std20'] = df['vol_std20'].replace(0, np.nan) # Tránh lỗi chia cho 0
+        df['vol_z_score'] = ((df['volume'] - df['vol_ma20']) / df['vol_std20']).fillna(0)
+
         # 2. X-Quang Cấu trúc Nến (Spread & Close Position)
         df['spread'] = df['high'] - df['low']
         df['avg_spread'] = df['spread'].rolling(window=20).mean() # Biên độ trung bình 20 phiên
@@ -79,6 +82,7 @@ class WyckoffForecaster:
         df['vol_type'] = np.where(df['rel_vol'] > 2.0, 'Ultra High', 
                          np.where(df['rel_vol'] > 1.5, 'High', 
                          np.where(df['rel_vol'] < 0.6, 'Low', 'Normal')))
+
         return df
 
     def _detect_signals(self, df):
@@ -201,7 +205,11 @@ class WyckoffForecaster:
                 results.append({
                     'Ticker': ticker,
                     'Price': last_price,
-                    'ATR': round(curr['atr'], 2) if not pd.isna(curr['atr']) else 0, # Lưu ATR để Trading dùng
+                    'High': curr['high'],                                           # Giá cao nhất phiên
+                    'Low': curr['low'],                                             # Giá thấp nhất phiên
+                    'Volume': curr['volume'],                                       # Khối lượng phiên
+                    'Spread': curr['spread'],
+                    'ATR': round(curr['atr'], 2) if not pd.isna(curr['atr']) else 0,# Lưu ATR để Trading dùng
                     'EMA34': round(curr['ema34'], 2),
                     'EMA89': round(curr['ema89'], 2),
                     'Signal': signal,
@@ -210,6 +218,7 @@ class WyckoffForecaster:
                     'Dist_to_Support_%': round(dist_to_sup, 4),
                     'Dist_to_52W_High_%': round(dist_to_52w_high, 4),
                     'VPA_Status': curr.get('vol_type', 'Normal'),
+                    'Vol_Z_Score': round(curr.get('vol_z_score', 0), 2),
                     'Analysis': note
                 })
             except Exception as e:
