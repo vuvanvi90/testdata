@@ -19,12 +19,12 @@ from src.market_tracker import MarketTracker
 from src.blacklist_guard import BlacklistGuard
 
 # --- CẤU HÌNH RỦI RO CƠ BẢN ---
-RISK_PER_TRADE = 1000000
+RISK_PER_TRADE = 1_000_000
 MAX_POSITION_SIZE = 5000
 BASE_SCORE_THRESHOLD = 70
 
 # --- DANH SÁCH ĐEN (CÁC MÃ LỖI DỮ LIỆU / KHÔNG GIAO DỊCH) ---
-IGNORE_TICKERS = ['ABR', 'ACG', 'ADP', 'AFX', 'ANT', 'ACL', 'CTR', 'DSC', 'TCI', 'TDP']
+IGNORE_TICKERS = []
 
 # ==============================================================================
 
@@ -1064,9 +1064,9 @@ class LiveAssistant:
 
         return score, details
 
-    def load_investment(self):
-        """Đọc danh mục dưới dạng Dictionary (Đã phân rổ)"""
-        pf_path = Path(f"data/invest/current_{self.universe.lower()}.json")
+    def load_portfolio(self, p_type="paper"):
+        """Đọc danh mục: p_type có thể là 'paper' (Mô phỏng) hoặc 'real' (Thực chiến)"""
+        pf_path = Path(f"data/invest/{p_type}_{self.universe.lower()}.json")
         if not pf_path.exists(): return {} 
         try:
             with open(pf_path, 'r', encoding='utf-8') as f: 
@@ -1074,14 +1074,14 @@ class LiveAssistant:
                 return data if isinstance(data, dict) else {}
         except: return {}
 
-    def save_investment(self, portfolio):
-        pf_path = Path(f"data/invest/current_{self.universe.lower()}.json")
+    def save_portfolio(self, portfolio, p_type="paper"):
+        pf_path = Path(f"data/invest/{p_type}_{self.universe.lower()}.json")
         pf_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             with open(pf_path, 'w', encoding='utf-8') as f: 
                 json.dump(portfolio, f, indent=4, ensure_ascii=False)
         except Exception as e:
-            print(f"[!] Lỗi khi lưu danh mục {self.universe}: {e}")
+            print(f"[!] Lỗi khi lưu danh mục {p_type} {self.universe}: {e}")
 
     def _load_watchlist(self):
         """Đọc danh sách Tầm ngắm từ File (Đã phân rổ)"""
@@ -1161,21 +1161,21 @@ class LiveAssistant:
 
         return cum_inventory, dominance_pct, shadow_flow
 
-    def manage_investment(self, report, board_info_dict, sm_info_dict):
-        """Quản trị danh mục: Đã tích hợp nhạy cảm theo Quý"""
-        portfolio = self.load_investment()
-        if not portfolio: return {} # Trả về Dict rỗng
-
-        print("\n" + "="*65)
-        print(f" 💰 QUẢN TRỊ DANH MỤC (BÁO BÁN & TRAILING STOP)")
-        print("="*65)
-        active_portfolio = {} # Danh sách mã tiếp tục nắm giữ
+    def _run_portfolio_management_logic(self, portfolio, p_type_label, report, sm_info_dict):
+        """Hàm Lõi lõi xử lý Trailing Stop và Báo bán cho 1 danh mục cụ thể"""
+        if not portfolio: return {}
+        
+        print("\n" + "-"*65)
+        print(f" 🛡️ QUẢN TRỊ DANH MỤC: {p_type_label}")
+        print("-"*65)
+        
+        active_portfolio = {}
 
         for ticker, pos in portfolio.items():
             row_data = report[report['Ticker'] == ticker]
 
             if row_data.empty: 
-                active_portfolio[ticker] = pos # Giữ lại nếu không có data hôm nay
+                active_portfolio[ticker] = pos 
                 continue
             
             row = row_data.iloc[0]
@@ -1184,9 +1184,7 @@ class LiveAssistant:
             atr = float(row.get('ATR', current_price * 0.02))
             pnl_pct = (current_price - pos['entry_price']) / pos['entry_price'] * 100
             
-            # -----------------------------------------------------------------
-            # RADAR PHÁT HIỆN CÁ MẬP THÁO CHẠY
-            # -----------------------------------------------------------------
+            # --- RADAR CÁ MẬP ---
             sm_result = sm_info_dict.get(ticker, {})
             sm_warnings = sm_result.get("warnings", [])
             if sm_warnings:
@@ -1194,52 +1192,60 @@ class LiveAssistant:
                 print(f"      Lý do: {' | '.join(sm_warnings)}!")
                 print(f"      => HÀNH ĐỘNG: Smart Money đang thoát hàng. Cân nhắc hạ 50% tỷ trọng hoặc chốt lời NGAY LẬP TỨC để bảo toàn vốn!")
 
-            # --- CẬP NHẬT TRAILING STOP ---
+            # --- TRAILING STOP ---
             highest_price = float(pos.get('highest_price', pos.get('entry_price', current_price)))
             if current_price > highest_price:
                 pos['highest_price'] = current_price
                 new_sl = current_price - (atr * 2.5)
-                # Kéo SL lên nếu giá tạo đỉnh mới và ghi Lịch sử
                 old_sl = pos.get('sl_price', 0)
                 if new_sl > old_sl:
                     pos['sl_price'] = new_sl
-                    msg = f"Nâng chặn lãi (Trailing Stop) từ {old_sl:,.0f} lên {new_sl:,.0f}đ"
+                    msg = f"Nâng SL (Trailing) từ {old_sl:,.0f} -> {new_sl:,.0f}đ"
                     print(f"   {ticker}: 🔼 {msg}")
-                    # Ghi Log sự kiện Nâng SL
-                    self._log_trade(ticker, "UPDATE_SL", current_price, msg)
+                    # Chỉ ghi log nếu là danh mục THỰC CHIẾN
+                    if "REAL" in p_type_label:
+                        self._log_trade(ticker, "UPDATE_SL_REAL", current_price, msg)
 
             sell_reasons = []
             action = "HOLD"
             
-            # Kiểm tra Cắt lỗ / Trailing Stop
             if current_price <= pos.get('sl_price', 0):
-                sell_reasons.append(f"Chạm Cắt lỗ/Trailing Stop ({pos['sl_price']:,.0f})")
+                sell_reasons.append(f"Chạm SL/Trailing ({pos['sl_price']:,.0f})")
                 action = "SELL (STOP LOSS)"
 
-            # THEMATIC EXIT RULES: Giao dịch theo Quý
-            if self.season == "Q4_HARVEST":
-                # Q4: Chốt lãi sớm nếu tiệm cận target hoặc có dấu hiệu suy yếu nhẹ
-                if pnl_pct > 5 and signal in ['UT', 'SOW']:
-                    sell_reasons.append(f"Q4 Thu quân sớm: Tín hiệu {signal}")
-                    action = "SELL (Q4 HARVEST)"
+            if self.season == "Q4_HARVEST" and pnl_pct > 5 and signal in ['UT', 'SOW']:
+                sell_reasons.append(f"Q4 Thu quân: {signal}")
+                action = "SELL (Q4 HARVEST)"
             elif signal in ['UT', 'SOW', 'MA_BREAK']:
                 sell_reasons.append(f"Kỹ thuật Xấu: {signal}")
                 action = "SELL (WYCKOFF SIGNAL)"
 
             if action != "HOLD":
-                msg = f" {ticker}: 🔴 SELL | Lãi/Lỗ: {pnl_pct:+.2f}% | Lý do: {', '.join(sell_reasons)}"
-                print("-" * 50)
-                # Ghi Log sự kiện BÁN
-                self._log_trade(ticker, "SELL", current_price, f"PnL: {pnl_pct:+.2f}%. Lý do: {', '.join(sell_reasons)}")
-                # Lệnh bán thì KHÔNG đưa vào active_portfolio nữa
+                print(f"   {ticker}: 🔴 SELL | PnL: {pnl_pct:+.2f}% | Lý do: {', '.join(sell_reasons)}")
+                if "REAL" in p_type_label:
+                    self._log_trade(ticker, "SELL_REAL", current_price, f"PnL: {pnl_pct:+.2f}%. Lý do: {', '.join(sell_reasons)}")
             else:
-                print(f" {ticker}: 🟢 HOLD | PnL: {pnl_pct:+.2f}% | SL Hiện tại: {pos['sl_price']:,.0f}")
-                print("-" * 50)
-                active_portfolio[ticker] = pos # Tiếp tục giữ
+                print(f"   {ticker}: 🟢 HOLD | PnL: {pnl_pct:+.2f}% | SL: {pos['sl_price']:,.0f}")
+                active_portfolio[ticker] = pos 
+            print("  " + "-" * 50)
 
-        # Lưu lại trạng thái Trailing Stop mới
-        self.save_investment(active_portfolio)
         return active_portfolio
+
+    def manage_investment(self, report, sm_info_dict):
+        """Quản trị Song song 2 Danh mục"""
+        print("\n" + "="*65)
+        print(f" 💰 TỔNG QUẢN TRỊ DANH MỤC (PAPER & REAL)")
+        print("="*65)
+        
+        # 1. Chăm sóc Danh mục Mô phỏng (Của Bot)
+        paper_pf = self.load_portfolio("paper")
+        updated_paper = self._run_portfolio_management_logic(paper_pf, "💻 MÔ PHỎNG (PAPER TRADING)", report, sm_info_dict)
+        self.save_portfolio(updated_paper, "paper")
+
+        # 2. Chăm sóc Danh mục Thực chiến (Của User)
+        real_pf = self.load_portfolio("real")
+        updated_real = self._run_portfolio_management_logic(real_pf, "🔥 THỰC CHIẾN (REAL MONEY)", report, sm_info_dict)
+        self.save_portfolio(updated_real, "real")
 
     def scan_opportunities(self):
         # 0. Gọi bộ lọc thị trường chung TRƯỚC TIÊN
@@ -1457,7 +1463,7 @@ class LiveAssistant:
 
         # =====================================================================
         # 3. Quản trị Danh mục (Check Lệnh đang giữ)
-        self.manage_investment(report, board_info_dict, sm_info_dict)
+        self.manage_investment(report, sm_info_dict)
 
         dynamic_threshold = self.buy_threshold + self.macro_buy_threshold_adj
 
@@ -1471,15 +1477,15 @@ class LiveAssistant:
                 print("   => Cho phép mở vị thế Bắt đáy (SPRING) với quy mô vốn thăm dò.")
                 dynamic_threshold += 5 # Khó tính hơn một chút
                 self.macro_risk_factor *= 0.5     # Đánh 50% vốn
-                signals = report[report['Signal'].isin(['SOS', 'SPRING', 'TEST_CUNG'])].copy()
+                # signals = report[report['Signal'].isin(['SOS', 'SPRING', 'TEST_CUNG'])].copy()
             else:
                 print("\n[!] THỊ TRƯỜNG CHUNG DOWNTREND: Hủy bỏ toàn bộ tín hiệu SOS/SPRING/TEST_CUNG.")
-                signals = pd.DataFrame() 
+                # signals = pd.DataFrame() 
 
                 # --- KÍCH HOẠT LÁ CHẮN FMARKET ---
                 # Chỉ gửi cảnh báo nếu hôm nay có cổ phiếu bị bán (Vừa thu tiền mặt về) 
                 # hoặc danh mục đang trống trơn (Full tiền mặt)
-                active_portfolio = self.load_investment()
+                active_portfolio = self.load_portfolio("paper")
                 if len(active_portfolio) < 2: # Đang cầm quá ít mã (Nhiều tiền mặt)
                     safe_funds = self.get_top_bond_funds(top_n=2)
                     if safe_funds:
@@ -1487,10 +1493,10 @@ class LiveAssistant:
                         print("Thị trường chung rủi ro. Khuyến nghị luân chuyển Tiền mặt nhàn rỗi sang Quỹ Trái Phiếu để hưởng lãi suất kép an toàn:")
                         for f in safe_funds:
                             print(f"🔹 Quỹ {f['fund_name']} - Lợi nhuận kỳ vọng: {f['expected_yield']:.1f}%/năm")
-        else:
-            signals = report[report['Signal'].isin(['SOS', 'SPRING', 'TEST_CUNG'])].copy()
+        # else:
+        #     signals = report[report['Signal'].isin(['SOS', 'SPRING', 'TEST_CUNG'])].copy()
 
-        # Test
+        # Mặc định kiềm tra signal
         signals = report[report['Signal'].isin(['SOS', 'SPRING', 'TEST_CUNG'])].copy()
 
         if signals.empty:
@@ -1585,8 +1591,8 @@ class LiveAssistant:
             row_dict = row.to_dict()
             row_dict['Total_Score'] = total_score
 
-            # chỉ đưa vào dự chi khi score > 30 điểm
-            if total_score > 30:
+            # chỉ đưa vào mô phỏng giao dịch khi score >= 60 điểm
+            if total_score >= 60:
                 selected_candidates.append(row_dict)
 
             # Dynamic Risk Sizing (Quản trị vốn theo Quý)
@@ -1685,7 +1691,7 @@ class LiveAssistant:
 
         # Kiểm tra xem có mã nào được chọn không
         if not selected_candidates:
-            print("\nKhông có mã nào đủ tiêu chuẩn giải ngân hôm nay.")
+            print("\nKhông có mã nào đủ tiêu chuẩn Mô Phỏng Giải Ngân hôm nay.")
             self._cleanup()
             return
 
@@ -1694,7 +1700,7 @@ class LiveAssistant:
         df_selected = pd.DataFrame(selected_candidates)
         
         # Gọi danh mục đang cầm hiện tại ra
-        active_portfolio = self.load_investment()
+        active_portfolio = self.load_portfolio("paper")
         has_new_buy = False
         
         try:
@@ -1728,7 +1734,7 @@ class LiveAssistant:
                             self._log_trade(t, "BUY", price, f"Phân bổ {w*100:.1f}%")
                 
                 # Cập nhật sổ cái
-                self.save_investment(active_portfolio)
+                self.save_portfolio(active_portfolio, "paper")
                 
         except ImportError as e:
             print(f"[!] Bỏ qua Quant Max-Sharpe (không load được thư viện scipy): {e}")
@@ -1740,7 +1746,6 @@ class LiveAssistant:
     def _cleanup(self):
         try: 
             shutil.rmtree(self.temp_dir)
-            # print("OK")
         except: pass
 
 class DualLogger(object):
