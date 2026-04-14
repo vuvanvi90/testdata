@@ -1701,7 +1701,6 @@ class LiveAssistant:
         
         # Gọi danh mục đang cầm hiện tại ra
         active_portfolio = self.load_portfolio("paper")
-        has_new_buy = False
         
         try:
             engine_quant = QuantPortfolioEngine(price_dir=self.parquet_dir / 'price', output_dir=self.temp_dir)
@@ -1711,7 +1710,7 @@ class LiveAssistant:
                     if w >= 0.01:
                         # CHỐNG MUA TRÙNG: Nếu đã có trong danh mục thì bỏ qua (Không nhồi lệnh)
                         if t in active_portfolio:
-                            print(f"[*] Mã {t} đã có trong danh mục. Bỏ qua mua mới.")
+                            print(f"[*] Mã {t} đã có trong PAPER. Bỏ qua.")
                             continue
 
                         # Trích xuất thông tin mã được mua từ selected_candidates
@@ -1730,8 +1729,8 @@ class LiveAssistant:
                                 'date_bought': datetime.now().strftime('%Y-%m-%d')
                             }
 
-                            # Ghi Log sự kiện MUA
-                            self._log_trade(t, "BUY", price, f"Phân bổ {w*100:.1f}%")
+                            # Ghi Log Mô phỏng
+                            self._log_trade(t, "BUY_PAPER", price, f"Mô phỏng Phân bổ {w*100:.1f}%")
                 
                 # Cập nhật sổ cái
                 self.save_portfolio(active_portfolio, "paper")
