@@ -46,6 +46,7 @@ def main():
     # pipeline = VNStockDataPipeline(source='VCI')
     # # pipeline.get_group = 'HOSE'
     # # pipeline.get_group = 'VN30'
+    # # pipeline.get_group = 'VN100'
     # # pipeline.get_group = 'VNMidCap'
     # # pipeline.get_group = 'VNSmallCap'
     # # pipeline.get_macro = True
