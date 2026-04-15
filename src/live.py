@@ -94,7 +94,7 @@ class LiveAssistant:
                 foreign_dict=self.foreign_dict, 
                 prop_dict=self.prop_dict, 
                 out_shares_dict=self.out_shares_dict, 
-                price_dict=None, 
+                price_dict=self.price_dict, 
                 universe=self.universe
             )
         except Exception as e:
@@ -790,31 +790,6 @@ class LiveAssistant:
             print(f"_get_market_sentiment: Error -> {e}")
             return None
 
-    # def _calculate_poc(self, df_ticker_price, lookback_days=130):
-    #     """
-    #     Tính toán Point of Control (POC) - Mức giá tập trung Khối lượng lớn nhất trong 6 tháng.
-    #     """
-    #     if df_ticker_price is None or df_ticker_price.empty:
-    #         return 0.0
-        
-    #     # Cắt lấy dữ liệu của 6 tháng gần nhất (khoảng 130 phiên)
-    #     df_recent = df_ticker_price.sort_values('time').tail(lookback_days).copy()
-    #     if df_recent.empty:
-    #         return 0.0
-            
-    #     # Gom nhóm theo mức giá (Làm tròn 1 chữ số thập phân để gộp các bước giá sát nhau)
-    #     df_recent['price_bin'] = df_recent['close'].round(1)
-        
-    #     # Tính tổng khối lượng cho từng mức giá
-    #     vol_profile = df_recent.groupby('price_bin')['volume'].sum()
-        
-    #     if vol_profile.empty:
-    #         return 0.0
-            
-    #     # Tìm mức giá có tổng khối lượng lớn nhất
-    #     poc_price = float(vol_profile.idxmax())
-    #     return poc_price
-
     def _calculate_volume_profile(self, df_ticker_price, lookback_days=130):
         """
         Tính POC, VAL (Value Area Low) và VAH (Value Area High).
@@ -963,7 +938,6 @@ class LiveAssistant:
         # ko lưu mà trả về DataFrame trực tiếp để xử lý ngay trên RAM
         return df_price
 
-    # def calculate_confluence_score(self, row, board_info, fund_info, sm_result, mf_result, poc_price, val, vah):
     def calculate_confluence_score(self, row, board_info, fund_info, sm_result, mf_result, vol_profile):
         """Hệ thống chấm điểm """
         score = 0
@@ -1625,8 +1599,6 @@ class LiveAssistant:
 
             # Tính toán POC cho mã cổ phiếu
             df_p_ticker = df_full_price[df_full_price['ticker'] == ticker]
-            # poc_price = self._calculate_poc(df_p_ticker) 
-            # poc_price, val, vah = self._calculate_volume_profile(df_p_ticker) 
             vol_profile = self._calculate_volume_profile(df_p_ticker) 
 
             board_info = board_info_dict.get(ticker)
@@ -1636,7 +1608,6 @@ class LiveAssistant:
             # KHIÊN CHỐNG ĐỔ VỎ (ĐỌC BẢN ÁN TRỰC TIẾP TỪ ENGINE O(1))
             dump_warnings = sm_result.get("warnings", [])
             
-            # total_score, score_details = self.calculate_confluence_score(row, board_info, fund_info, sm_result, mf_result, poc_price, val, vah)
             total_score, score_details = self.calculate_confluence_score(row, board_info, fund_info, sm_result, mf_result, vol_profile)
 
             score_candidates.append({
@@ -1714,11 +1685,14 @@ class LiveAssistant:
             # Lấy giá vốn Lái từ Market Flow
             sm_vwap = mf_result.get('sm_vwap', 0)
 
+            poc_price, val, vah = vol_profile
+
             print("-" * 65)
             print(f"✅ MUA | {ticker} | Điểm: {total_score}/100 | Signal: {row['Signal']}")
             print(f"   Lý do: {', '.join(score_details)}")
             print(f"   📊 X-Ray: Giá vốn Cá mập ~{sm_vwap:,.0f}đ | Sức ép xả (DTL): {mf_result.get('dtl_days',0):.1f} ngày")
             print(f"   📊 Sổ lệnh hiện tại: Bán rẻ nhất {best_ask:,.0f} | Mua cao nhất {best_bid:,.0f}")
+            print(f"   📊 Price: {price:,.0f} | VAL: {val:,.0f} | VAH {vah:,.0f}")
             print(f"   🎯 HÀNH ĐỘNG: {buy_strategy} {shares:,} cp quanh {suggested_buy:,.0f}đ")
             print(f"   🛑 Cắt lỗ: {stop_loss:,.0f}đ | Biên độ ngày: {floor_price:,.0f} - {ceil_price:,.0f}")
             if (total_score < dynamic_threshold or ticker in active_blacklist or mf_result.get('divergence') == "BEARISH_TRAP" or dump_warnings):
