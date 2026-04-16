@@ -45,13 +45,13 @@ class SignalInspector:
 
         # 2. Lọc dữ liệu
         if not self.df_price.empty and 'ticker' in self.df_price.columns:
-            self.df_price = self.df_price[self.df_price['ticker'].isin(valid_tickers)]
+            self.df_price = self.df_price[self.df_price['ticker'].isin(valid_tickers)].copy()
 
         if not self.df_foreign.empty and 'ticker' in self.df_foreign.columns:
-            self.df_foreign = self.df_foreign[self.df_foreign['ticker'].isin(valid_tickers)]
+            self.df_foreign = self.df_foreign[self.df_foreign['ticker'].isin(valid_tickers)].copy()
             
         if not self.df_prop.empty and 'ticker' in self.df_prop.columns:
-            self.df_prop = self.df_prop[self.df_prop['ticker'].isin(valid_tickers)]
+            self.df_prop = self.df_prop[self.df_prop['ticker'].isin(valid_tickers)].copy()
 
         # Chuẩn hóa thời gian
         for df in [self.df_price, self.df_foreign, self.df_prop]:

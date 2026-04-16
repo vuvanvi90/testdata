@@ -90,7 +90,7 @@ class SmartMoneyTracker:
         df_price_t['market_val_bn'] = (df_price_t['close'] * df_price_t['volume']) / DIVISOR
 
         # Hợp nhất Dữ liệu
-        df_merged = pd.merge(df_price_t[['time', 'close', 'market_val_bn']], df_f_t, on='time', how='left')
+        df_merged = pd.merge(df_price_t[['time', 'close', 'market_val_bn']], df_f_t, on='time', how='left').fillna(0)
         df_merged = pd.merge(df_merged, df_p_t, on='time', how='left').fillna(0)
         df_merged = df_merged.sort_values('time').reset_index(drop=True)
 
@@ -118,15 +118,19 @@ class SmartMoneyTracker:
         )
 
         # 🚀 TÍNH TOÁN LŨY KẾ & GIÁ VỐN LIÊN HOÀN (DYNAMIC VWAP)
-        inventory_bn = 0
+        inventory_bn, f_inv_bn, p_inv_bn = 0, 0, 0
         current_vwap = 0.0
         
         for idx, row in df_merged.iterrows():
             net_val = row['total_net_bn']
+            f_net_val = row['f_net_bn']
+            p_net_val = row['p_net_bn']
             close_p = row['close']
             
             # Cập nhật tồn kho (Tiền)
             inventory_bn += net_val
+            f_inv_bn += f_net_val
+            p_inv_bn += p_net_val
             
             # Tính VWAP
             if net_val > 0:
@@ -144,12 +148,19 @@ class SmartMoneyTracker:
                 if inventory_bn <= 0:
                     inventory_bn = 0
                     current_vwap = 0.0
+                if f_inv_bn <= 0:
+                    f_inv_bn = 0
+                if p_inv_bn <= 0:
+                    p_inv_bn = 0
                     
             df_merged.at[idx, 'cum_total'] = inventory_bn
+            df_merged.at[idx, 'cum_f_total'] = f_inv_bn
+            df_merged.at[idx, 'cum_p_total'] = p_inv_bn
             df_merged.at[idx, 'dynamic_vwap'] = current_vwap
 
         # IN KẾT QUẢ
-        print(f"{'NGÀY':<12} | {'GIÁ ĐÓNG':>10} | {'TỔNG TT (TỶ)':>14} | {'TAY TO NET (TỶ)':>17} | {'ẨN/LÁI (TỶ)':>15} | {'CHI PHỐI':>10} | {'LŨY KẾ (TỶ)':>13} | {'VWAP LÁI':>10}")
+        # print(f"{'NGÀY':<10} | {'GIÁ ĐÓNG':>10} | {'TỔNG TT (TỶ)':>12} | {'TAY TO NET (TỶ)':>15} | {'NGOẠI (TỶ)':>10} | {'NỘI (TỶ)':>10} | {'ẨN/LÁI (TỶ)':>11} | {'CHI PHỐI':>8} | {'LŨY KẾ (TỶ)':>11} | {'VWAP LÁI':>10}")
+        print(f"{'NGÀY':<10} | {'GIÁ ĐÓNG':>10} | {'TỔNG TT (TỶ)':>12} | {'NGOẠI (TỶ)':>10} | {'NỘI (TỶ)':>10} | {'ẨN/LÁI (TỶ)':>11} | {'CHI PHỐI':>8} | {'LŨY KẾ (TỶ)':>11} | {'VWAP LÁI':>10}")
         print("-" * 135)
 
         shadow_spikes = 0 
@@ -165,7 +176,10 @@ class SmartMoneyTracker:
             elif row['sm_dominance_pct'] > thresh['dom_high']:
                 flag = " 🎯(Tay To)"
 
-            print(f"{date_str:<12} | {row['close']:>10,.0f} | {row['market_val_bn']:>14.1f} | {row['total_net_bn']:>17.2f} | {row['shadow_flow_bn']:>15.1f} | {row['sm_dominance_pct']:>8.1f}% | {row['cum_total']:>13.2f} | {row['dynamic_vwap']:>10,.0f}{flag}")
+            if row['sm_dominance_pct'] > 100:
+                flag = " ⚠️GD Thỏa thuận (Sang tay ngầm)"
+
+            print(f"{date_str:<10} | {row['close']:>10,.0f} | {row['market_val_bn']:>12.1f} | {row['f_net_bn']:>10.2f} | {row['p_net_bn']:>10.2f} | {row['shadow_flow_bn']:>11.1f} | {row['sm_dominance_pct']:>7.1f}% | {row['cum_total']:>11.2f} | {row['dynamic_vwap']:>10,.0f}{flag}")
 
         # TỔNG KẾT
         final_row = df_merged.iloc[-1]
@@ -183,10 +197,12 @@ class SmartMoneyTracker:
         print(f" 🎯 TỔNG KẾT BÓC TÁCH DÒNG TIỀN [ {ticker} - {universe} ]")
         print(f"    Giai đoạn: {df_merged.iloc[0]['time'].strftime('%d/%m/%Y')} -> {final_row['time'].strftime('%d/%m/%Y')} ({len(df_merged)} phiên)")
         print("="*135)
-        print(f" 🔹 TỔNG LƯỢNG TỒN KHO TAY TO : {final_row['cum_total']:>10.2f} Tỷ VNĐ")
-        print(f" 🔹 GIÁ VỐN TRUNG BÌNH (VWAP) : {vwap:>10,.0f} đ {vwap_status}")
-        print(f" 🔹 Tỷ lệ Chi phối Trung bình   : {avg_dominance:>10.1f}% (Quyền lực của Smart Money)")
-        print(f" 🔹 Số phiên 'Lái Nội' bùng nổ  : {shadow_spikes:>10} phiên")
+        print(f" 🔹 TỔNG LƯỢNG TỒN KHO TAY TO  : {final_row['cum_total']:>10.2f} Tỷ VNĐ")
+        print(f" 🔹 TỔNG LƯỢNG TỒN KHO NGOẠI   : {final_row['cum_f_total']:>10.2f} Tỷ VNĐ")
+        print(f" 🔹 TỔNG LƯỢNG TỒN KHO NỘI     : {final_row['cum_p_total']:>10.2f} Tỷ VNĐ")
+        print(f" 🔹 GIÁ VỐN TRUNG BÌNH (VWAP)  : {vwap:>10,.0f} đ {vwap_status}")
+        print(f" 🔹 Tỷ lệ Chi phối Trung bình  : {avg_dominance:>10.1f}% (Quyền lực của Smart Money)")
+        print(f" 🔹 Số phiên 'Lái Nội' bùng nổ : {shadow_spikes:>10} phiên")
         print("-" * 135)
         
         # 🚀 CHẨN ĐOÁN THEO RỔ
