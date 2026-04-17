@@ -17,6 +17,7 @@ from src.shadow_profiler import ShadowProfiler
 from src.portfolio import QuantPortfolioEngine
 from src.market_tracker import MarketTracker
 from src.blacklist_guard import BlacklistGuard
+from src.omni_matrix import OmniFlowMatrix
 
 # --- CẤU HÌNH RỦI RO CƠ BẢN ---
 RISK_PER_TRADE = 1_000_000
@@ -129,6 +130,22 @@ class LiveAssistant:
             self.blacklist_guard = BlacklistGuard(universe=self.universe, verbose=False)
         except Exception as e:
             print(f"[!] Lỗi khởi động Blacklist Guard: {e}")
+
+        # KHỞI ĐỘNG HỆ THỐNG X-QUANG ĐA CHIỀU (OMNI-MATRIX)
+        try:
+            data_frames = {
+                'price': self.df_price,
+                'foreign': self.df_foreign,
+                'prop': self.df_prop,
+                'comp': df_comp,
+                'idx': self._load_parquet_safe(self.parquet_dir / 'macro/index_components.parquet'),
+                'board': self.df_board,
+                'intra': self.df_intra
+            }
+            self.omni_matrix = OmniFlowMatrix(data_frames, lookback_days=30)
+        except Exception as e:
+            print(f"[!] Lỗi khởi động OmniFlowMatrix: {e}")
+            self.omni_matrix = None
 
     def _filter_universe(self):
         """Lọc Master Price theo Rổ cổ phiếu Chuẩn MECE (HOSE, VN30, VNMID, VNSMALL)"""
@@ -938,7 +955,7 @@ class LiveAssistant:
         # ko lưu mà trả về DataFrame trực tiếp để xử lý ngay trên RAM
         return df_price
 
-    def calculate_confluence_score(self, row, board_info, fund_info, sm_result, mf_result, vol_profile):
+    def calculate_confluence_score(self, row, board_info, fund_info, sm_result, mf_result, vol_profile, omni_result=None):
         """Hệ thống chấm điểm """
         score = 0
         details = []
@@ -1114,6 +1131,25 @@ class LiveAssistant:
                 if abs(price - vah_p) / vah_p <= 0.015:
                     score += 10
                     details.append(f"🛡️ RE-TEST VAH: Giá kiểm định lại trần cũ thành công (+10)")
+
+        # OMNI-MATRIX T0 PREDICTION (VŨ KHÍ TỐI THƯỢNG)
+        if omni_result and "error" not in omni_result:
+            verdict = omni_result.get('verdict', '')
+            details_str = omni_result.get('details', '')
+            short_detail = details_str.split(' | ')[0] # Chỉ lấy ý chính cho ngắn gọn
+            
+            if "BULLISH" in verdict and "TILT" not in verdict:
+                score += 15
+                details.append(f"X-Quang T0: BULLISH (+15) ({short_detail})")
+            elif "BEARISH" in verdict and "TILT" not in verdict:
+                score -= 20
+                details.append(f"X-Quang T0: BEARISH (-20) (Bị xả trong phiên, rủi ro Bull-trap!)")
+            elif "RŨ BỎ" in verdict:
+                score += 5
+                details.append(f"X-Quang T0: Đè gom rũ bỏ (+5)")
+            elif "TILT BULL" in verdict:
+                score += 5
+                details.append(f"X-Quang T0: Cầu chủ động nghiêng Mua (+5)")
 
         return score, details
 
@@ -1605,10 +1641,16 @@ class LiveAssistant:
             fund_info = fund_info_dict.get(ticker)
             sm_result = sm_info_dict.get(ticker)
 
+            # OMNI-MATRIX KIỂM DUYỆT T0
+            omni_now = {}
+            if hasattr(self, 'omni_matrix') and self.omni_matrix:
+                past_ctx = self.omni_matrix.explain_past_movement(ticker, lookback_days=10)
+                omni_now = self.omni_matrix.predict_t0_action(ticker, past_context=past_ctx)
+
             # KHIÊN CHỐNG ĐỔ VỎ (ĐỌC BẢN ÁN TRỰC TIẾP TỪ ENGINE O(1))
             dump_warnings = sm_result.get("warnings", [])
             
-            total_score, score_details = self.calculate_confluence_score(row, board_info, fund_info, sm_result, mf_result, vol_profile)
+            total_score, score_details = self.calculate_confluence_score(row, board_info, fund_info, sm_result, mf_result, vol_profile, omni_now)
 
             score_candidates.append({
                 'Ticker': ticker,
@@ -1691,6 +1733,8 @@ class LiveAssistant:
             print(f"✅ MUA | {ticker} | Điểm: {total_score}/100 | Signal: {row['Signal']}")
             print(f"   Lý do: {', '.join(score_details)}")
             print(f"   📊 X-Ray: Giá vốn Cá mập ~{sm_vwap:,.0f}đ | Sức ép xả (DTL): {mf_result.get('dtl_days',0):.1f} ngày")
+            if omni_now and "error" not in omni_now:
+                print(f"   ⚡ X-Ray T0: {omni_now['verdict']} | Khớp chủ động: {omni_now['net_active_bn']:+.1f} Tỷ")
             print(f"   📊 Sổ lệnh hiện tại: Bán rẻ nhất {best_ask:,.0f} | Mua cao nhất {best_bid:,.0f}")
             print(f"   📊 Price: {price:,.0f} | VAL: {val:,.0f} | VAH {vah:,.0f}")
             print(f"   🎯 HÀNH ĐỘNG: {buy_strategy} {shares:,} cp quanh {suggested_buy:,.0f}đ")
