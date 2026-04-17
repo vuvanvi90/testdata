@@ -10,6 +10,8 @@ from pathlib import Path
 
 # from vnstock_data.explorer.vci import Quote, Trading
 
+# from src.omni_matrix import OmniFlowMatrix
+
 class VN30DataPipeline:
     def __init__(self):
         self.source = 'vci'
@@ -27,6 +29,16 @@ class VN30DataPipeline:
         df_industry = self._load_parquet(Path('data/parquet/macro/groups_by_industries.parquet'))
         df_index = self._load_parquet(Path('data/parquet/macro/index_components.parquet'))
         df_fin = self._load_parquet(Path('data/parquet/financial/master_financial.parquet'))
+
+        data_frames = {
+            'price': df_price,
+            'foreign': df_foreign,
+            'prop': df_prop,
+            'comp': df_industry,
+            'idx': df_index,
+            'board': df_board,
+            'intra': df_intra
+        }
 
         START_DATE = '2026-01-01'
         END_DATE = datetime.now().strftime('%Y-%m-%d')
@@ -183,8 +195,9 @@ class VN30DataPipeline:
         #     df_industry.to_json("groups_by_industries_new.json", orient='records', force_ascii=False, indent=4)
 
         # if not df_intra.empty:
-        #     print(df_intra.tail(10))
-        #     df_intra.to_json("intraday.json", orient='records', force_ascii=False, indent=4)
+        #     df_group = {ticker: group for ticker, group in df_intra.groupby('ticker')}
+        #     print(df_group['GMD'].tail(10))
+        #     # df_intra.to_json("intraday.json", orient='records', force_ascii=False, indent=4)
 
         # if not df_foreign.empty:
         #     df_group = {ticker: group for ticker, group in df_foreign.groupby('ticker')}
@@ -203,6 +216,39 @@ class VN30DataPipeline:
 
         # if not df_board.empty:
         #     df_board.to_json("df_board.json", orient='records', force_ascii=False, indent=4)
+
+        # omni = OmniFlowMatrix(data_frames, lookback_days=30)
+        # test_tickers = ['VHM', 'VIC', 'HPG', 'DIG', 'GMD'] # Thử với VN30, MidCap và SmallCap
+        # # test_tickers = ['GMD'] # Thử với VN30, MidCap và SmallCap
+    
+        # for ticker in test_tickers:
+        #     print("\n" + "="*95)
+        #     print(f" 🎯 OMNI-MATRIX REPORT: MÃ [ {ticker} ] - RỔ: {omni.ticker_to_universe.get(ticker, 'N/A')}")
+        #     print("="*95)
+            
+        #     # 1. HỒ SƠ QUÁ KHỨ (10 Ngày qua)
+        #     past = omni.explain_past_movement(ticker, lookback_days=10)
+        #     if "error" not in past:
+        #         print(f" 🕰️ GIẢI MÃ QUÁ KHỨ (10 Phiên):")
+        #         print(f"    - Xu hướng     : {past['trend']} ({past['change_pct']:+.2f}%)")
+        #         print(f"    - Dòng tiền 10D: Thể chế {past['sm_net']:+.1f} Tỷ | Ẩn/Lái {past['shadow']:+.1f} Tỷ")
+        #         print(f"    - Chẩn đoán    : 🧠 {past['verdict']}")
+        #     else:
+        #         print(f"    [!] {past['error']}")
+
+        #     print("-" * 95)
+            
+        #     # 2. BỨC TRANH T0 (NGAY LÚC NÀY)
+        #     now = omni.predict_t0_action(ticker, past_context=past)
+        #     if "error" not in now:
+        #         print(f" ⚡ DỰ BÁO HIỆN TẠI (PHIÊN T0): Giá {now['last_price']:,.0f}đ")
+        #         print(f"    - Mua/Bán C.Động : {now['net_active_bn']:+.1f} Tỷ (Từ lệnh Khớp Intraday)")
+        #         print(f"    - Ngoại T0       : {now['f_net_t0']:+.1f} Tỷ (Từ Bảng điện Real-time)")
+        #         print(f"    - Sổ lệnh (Bid)  : Mất cân bằng {now['imbalance']:+.2f} (Dương = Kê mua, Âm = Chặn bán)")
+        #         print(f"    - KẾT LUẬN       : 🎯 {now['verdict']}")
+        #         print(f"    - Tín hiệu phụ   : {now['details']}")
+        #     else:
+        #         print(f"    [!] {now['error']}")
 
     def _load_parquet(self, path):
         """Hàm đọc Parquet an toàn, tránh lỗi nếu file chưa tồn tại"""
