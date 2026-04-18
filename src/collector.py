@@ -110,19 +110,25 @@ class VNStockDataPipeline:
 
     def _validate_schema(self, df, required_cols, item_name=""):
         """
-        Trạm kiểm lâm: Kiểm tra xem DataFrame có đủ các cột bắt buộc hay không.
-        Trả về True nếu dữ liệu SẠCH và ĐỦ. Trả về False nếu là RÁC.
+        Trạm kiểm lâm: Kiểm tra, làm sạch cột trùng lặp và xác thực Schema.
+        Trả về DataFrame (đã làm sạch) nếu hợp lệ. Trả về None nếu là RÁC.
         """
         if df is None or df.empty:
-            return False
+            return None
+
+        dup_cols = df.columns[df.columns.duplicated()].unique()
+        if len(dup_cols) > 0:
+            print(f"   [!] CẢNH BÁO [{item_name}]: Lỗi trùng cột {list(dup_cols)}. Đang tự động gọt bỏ...")
+            # Lọc giữ lại cột xuất hiện đầu tiên, vứt bỏ các cột duplicate phía sau
+            df = df.loc[:, ~df.columns.duplicated()].copy()
             
         missing_cols = [col for col in required_cols if col not in df.columns]
         if missing_cols:
             # Ghi log rõ ràng để anh biết API đang bị lỗi ở cột nào
             print(f"   [!] LỖI DỮ LIỆU [{item_name}]: Thiếu cột {missing_cols}. Đã tự động chặn!")
-            return False
+            return None
             
-        return True
+        return df
 
     # ==========================================
     # CÁC HÀM WORKER CHO ĐA LUỒNG (MULTI-THREADING)
@@ -232,8 +238,8 @@ class VNStockDataPipeline:
                     df = df[df['name'].str.contains("trung tâm", na=False, case=False)]
 
                 required_cols = ['time', 'name', 'value']
-                if not self._validate_schema(df, required_cols, item_name=f"FX USD/VND"):
-                    return None
+                df = self._validate_schema(df, required_cols, item_name=f"FX USD/VND")
+                if df is None: return None
             return df
             
         _update_macro_file(fetch_fx, "usd_vnd.parquet")
@@ -250,8 +256,8 @@ class VNStockDataPipeline:
                     df = df.rename(columns={'date': 'time'})
 
                 required_cols = ['time', 'open', 'high', 'low', 'close', 'volume']
-                if not self._validate_schema(df, required_cols, item_name=f"CRUDE OIL"):
-                    return None
+                df = self._validate_schema(df, required_cols, item_name=f"CRUDE OIL")
+                if df is None: return None
             return df
             
         _update_macro_file(fetch_oil, "crude_oil.parquet")
@@ -261,8 +267,8 @@ class VNStockDataPipeline:
             quote = Quote(symbol='VNINDEX', source='vci')
             df = quote.history(start=start, end=end, interval='1D')
             required_cols = ['time', 'open', 'high', 'low', 'close', 'volume']
-            if not self._validate_schema(df, required_cols, item_name=f"VNINDEX"):
-                return None
+            df = self._validate_schema(df, required_cols, item_name=f"VNINDEX")
+            if df is None: return None
             if df is not None and not df.empty:
                 # Kiểm tra nếu time đang là index thì hạ xuống thành cột
                 if 'time' not in df.columns and df.index.name == 'time':
@@ -311,8 +317,8 @@ class VNStockDataPipeline:
             df_new = df_new.rename(columns={'report_time': 'time'})
 
         required_cols = ['time', 'value', 'name', 'source', 'last_updated']
-        if not self._validate_schema(df_new, required_cols, item_name=f"GSO Macro - {file_name}"):
-            return
+        df_new = self._validate_schema(df_new, required_cols, item_name=f"GSO Macro - {file_name}")
+        if df_new is None: return
 
         # 2. CHUẨN HÓA THỜI GIAN
         if 'time' in df_new.columns:
@@ -487,8 +493,8 @@ class VNStockDataPipeline:
                 trading = Trading(symbol=ticker, source='vci')
                 df_foreign = trading.foreign_trade(start=start_str, end=current_date_str)
                 required_cols = ['trading_date', 'fr_buy_volume_total', 'fr_buy_value_total', 'fr_sell_volume_total', 'fr_sell_value_total', 'fr_net_volume_total', 'fr_net_value_total']
-                if not self._validate_schema(df_foreign, required_cols, item_name=f"Foreign Flow - {ticker}"):
-                    return None
+                df_foreign = self._validate_schema(df_foreign, required_cols, item_name=f"Foreign Flow - {ticker}")
+                if df_foreign is None: return None
                 if df_foreign is not None and not df_foreign.empty:
                     df_foreign['ticker'] = ticker
                     return df_foreign
@@ -583,8 +589,8 @@ class VNStockDataPipeline:
                 trading = Trading(symbol=ticker, source='vci')
                 df_prop = trading.prop_trade(start=start_str, end=current_date_str)
                 required_cols = ['trading_date', 'total_buy_trade_volume', 'total_buy_trade_value', 'total_sell_trade_volume', 'total_sell_trade_value', 'total_trade_net_volume', 'total_trade_net_value']
-                if not self._validate_schema(df_prop, required_cols, item_name=f"Foreign Flow - {ticker}"):
-                    return None
+                df_prop = self._validate_schema(df_prop, required_cols, item_name=f"Prop Flow - {ticker}")
+                if df_prop is None: return None
                 if df_prop is not None and not df_prop.empty:
                     df_prop['ticker'] = ticker
                     return df_prop
@@ -735,8 +741,8 @@ class VNStockDataPipeline:
                 quote = Quote(symbol=ticker, source=self.source)
                 new_df = quote.history(start=start_date, end=today_str, interval='1D')
                 required_cols = ['time', 'open', 'high', 'low', 'close', 'volume']
-                if not self._validate_schema(new_df, required_cols, item_name=f"OHLCV - {ticker}"):
-                    return None # Từ chối lưu dữ liệu này
+                new_df = self._validate_schema(new_df, required_cols, item_name=f"OHLCV - {ticker}")
+                if new_df is None: return None
                 if new_df is not None and not new_df.empty:
                     new_df['ticker'] = ticker
                     for col in ['open', 'high', 'low', 'close']:
@@ -788,8 +794,8 @@ class VNStockDataPipeline:
                 new_df = quote.intraday()
                 
                 required_cols = ['time', 'price', 'volume', 'match_type', 'id']
-                if not self._validate_schema(new_df, required_cols, item_name=f"INTRADAY - {ticker}"):
-                    return None
+                new_df = self._validate_schema(new_df, required_cols, item_name=f"INTRADAY - {ticker}")
+                if new_df is None: return None
 
                 if new_df is not None and not new_df.empty:
                     new_df['ticker'] = ticker
@@ -862,8 +868,8 @@ class VNStockDataPipeline:
                         # ==================================================
                         # Lớp 1: Kiểm tra Cấu trúc Cột cơ bản (Schema Validation)
                         required_cols = ['item', 'item_id'] 
-                        if not self._validate_schema(df, required_cols, item_name=f"Finance Structure - {ticker}"):
-                            return None
+                        df = self._validate_schema(df, required_cols, item_name=f"Finance Structure - {ticker}")
+                        if df is None: return None
                             
                         # Lớp 2: Kiểm tra Nội dung Dòng (Data Values Validation)
                         # Soi vào cột 'item_id' xem có đủ các "chỉ số sống còn" của CANSLIM không
@@ -1019,7 +1025,9 @@ class VNStockDataPipeline:
                 # KIỂM DUYỆT DANH SÁCH SÓNG NGÀNH (CẤU TRÚC MỚI)
                 # Bắt theo đúng cấu trúc Long Format của vnstock_data mới
                 required_cols = ['symbol', 'icb_level', 'icb_name'] 
-                if not self._validate_schema(df_ind_raw, required_cols, item_name="Industry Groups"):
+                df_ind_raw = self._validate_schema(df_ind_raw, required_cols, item_name="Industry Groups")
+                
+                if df_ind_raw is None:
                     print("   [-] Dữ liệu Ngành bị lỗi cấu trúc. Giữ nguyên file cũ.")
                 else:
                     # ADAPTER: Chuyển đổi từ Dọc (Long) sang Ngang (Wide)
