@@ -52,6 +52,8 @@ class VNStockDataPipeline:
         # NẠP SẴN DỮ LIỆU CŨ VÀO RAM ĐỂ MERGE
         self.old_prices = self._load_master_data('price', 'master_price.parquet')
         self.old_intraday = self._load_master_data('intraday', 'master_intraday.parquet')
+        self.old_fins = self._load_master_data('financial', 'master_financial.parquet')
+        self.old_coms = self._load_master_data('company', 'master_company.parquet')
         # BỘ ĐẾM RATE LIMITER THÔNG MINH
         self.request_timestamps = deque()
         self.rate_lock = threading.Lock()
@@ -671,7 +673,8 @@ class VNStockDataPipeline:
         print("\n" + "="*50)
         print(" 🔄 TẢI GIA TĂNG THÔNG TIN DOANH NGHIỆP (MULTI-THREADING)")
         print("="*50)
-        all_companies = []
+        # all_companies = []
+        updated_companies, updated_company_tickers = [], set()
         chunk_size = 100
         ticker_chunks = [tickers[i:i + chunk_size] for i in range(0, len(tickers), chunk_size)]
 
@@ -691,17 +694,22 @@ class VNStockDataPipeline:
             print(f">>> Đang xử lý Chunk {chunk_idx + 1}/{len(ticker_chunks)} ({len(chunk)} mã)...")
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                 res_list = self._run_throttled_tasks(executor, _fetch_company_worker, chunk)
-                all_companies.extend(res_list)
+                # all_companies.extend(res_list)
+                for res in res_list:
+                    updated_companies.append(res)
+                    updated_company_tickers.add(res['ticker'].iloc[0])
 
             # Nghỉ ngơi giữa các chunk
             if chunk_idx < len(ticker_chunks) - 1:
                 print("   [Zzz] Nghỉ 2 giây trước khi qua chunk mới...")
                 time.sleep(2)
 
-        if not all_companies:
+        if not updated_companies:
             return
 
-        self.save_parquet(all_companies, 'company', "master_company.parquet")
+        # self.save_parquet(all_companies, 'company', "master_company.parquet")
+        self.merge_and_save(updated_companies, updated_company_tickers, tickers, self.old_coms, 'company', "master_company.parquet")
+
     
     def merge_and_save(self, updated_list, updated_tickers_set, tickers, old_dict, folder_key, file_name):
         final_list = list(updated_list) # Copy các mã đã cập nhật
@@ -848,76 +856,71 @@ class VNStockDataPipeline:
         print("\n" + "="*50)
         print(" 🔄 TẢI GIA TĂNG BÁO CÁO TÀI CHÍNH (MULTI-THREADING)")
         print("="*50)
-        all_fin = []
+        # all_fin = []
+        updated_fins, updated_fin_tickers = [], set()
         chunk_size = 100
         ticker_chunks = [tickers[i:i + chunk_size] for i in range(0, len(tickers), chunk_size)]
 
         def _fetch_finance_worker(ticker):
             if len(ticker) > 3: return None # Bỏ qua quỹ ETF
             
-            max_retries = 3
-            for attempt in range(max_retries):
-                try:                
-                    # Ép dùng nguồn 'kbs' riêng cho Báo cáo tài chính
-                    fin = Finance(symbol=ticker, source='kbs') 
-                    df = fin.ratio(period='quarter')
+            try:                
+                # Ép dùng nguồn 'kbs' riêng cho Báo cáo tài chính
+                fin = Finance(symbol=ticker, source='kbs') 
+                df = fin.ratio(period='quarter')
+                
+                if df is not None and not df.empty:
+                    # ==================================================
+                    # 🛡️ KIỂM DUYỆT BÁO CÁO TÀI CHÍNH (TRẠM 2 LỚP)
+                    # ==================================================
+                    # Lớp 1: Kiểm tra Cấu trúc Cột cơ bản (Schema Validation)
+                    required_cols = ['item', 'item_id'] 
+                    df = self._validate_schema(df, required_cols, item_name=f"Finance Structure - {ticker}")
+                    if df is None: return None
+                        
+                    # Lớp 2: Kiểm tra Nội dung Dòng (Data Values Validation)
+                    # Soi vào cột 'item_id' xem có đủ các "chỉ số sống còn" của CANSLIM không
+                    # Dựa theo file JSON mẫu của anh, tên các chỉ số là 'roe', 'roa', 'p_e', 'p_b'
+                    required_metrics = ['roe', 'roa', 'p_e', 'p_b', 'trailing_eps']
                     
-                    if df is not None and not df.empty:
-                        # ==================================================
-                        # 🛡️ KIỂM DUYỆT BÁO CÁO TÀI CHÍNH (TRẠM 2 LỚP)
-                        # ==================================================
-                        # Lớp 1: Kiểm tra Cấu trúc Cột cơ bản (Schema Validation)
-                        required_cols = ['item', 'item_id'] 
-                        df = self._validate_schema(df, required_cols, item_name=f"Finance Structure - {ticker}")
-                        if df is None: return None
-                            
-                        # Lớp 2: Kiểm tra Nội dung Dòng (Data Values Validation)
-                        # Soi vào cột 'item_id' xem có đủ các "chỉ số sống còn" của CANSLIM không
-                        # Dựa theo file JSON mẫu của anh, tên các chỉ số là 'roe', 'roa', 'p_e', 'p_b'
-                        required_metrics = ['roe', 'roa', 'p_e', 'p_b', 'trailing_eps']
-                        
-                        # Lấy danh sách các chỉ số mà API thực tế trả về
-                        available_metrics = df['item_id'].tolist()
-                        
-                        missing_metrics = [m for m in required_metrics if m not in available_metrics]
-                        
-                        if missing_metrics:
-                            print(f"   [!] LỖI DỮ LIỆU [Finance - {ticker}]: API trả thiếu chỉ số {missing_metrics}. Đã chặn!")
-                            return None # Rác/Thiếu -> Bỏ qua mã này, không merge vào Parquet
-                        # ==================================================
-                        
-                        df['ticker'] = ticker
-                        return df
+                    # Lấy danh sách các chỉ số mà API thực tế trả về
+                    available_metrics = df['item_id'].tolist()
                     
-                    # Nếu chạy thành công mà dữ liệu rỗng (mã này chưa có BCTC) thì thoát vòng lặp
-                    break 
+                    missing_metrics = [m for m in required_metrics if m not in available_metrics]
                     
-                except Exception as e:
-                    error_msg = str(e).lower()
-                    # Chỉ thử lại nếu là lỗi mạng / Max retries
-                    if "max retries" in error_msg or "connection" in error_msg or "timeout" in error_msg:
-                        print(f"   [!] Lỗi mạng BCTC {ticker} (Thử lại {attempt+1}/{max_retries})...")
-                        time.sleep(5) # Phạt nghỉ 5 giây trước khi thử lại
-                    else:
-                        # Lỗi khác (ví dụ sai mã) thì bỏ qua
-                        print(f"   [!] Bỏ qua Finance {ticker}: {e}")
-                        break
-                        
-            return None
+                    if missing_metrics:
+                        print(f"   [!] LỖI DỮ LIỆU [Finance - {ticker}]: API trả thiếu chỉ số {missing_metrics}. Đã chặn!")
+                        return None # Rác/Thiếu -> Bỏ qua mã này, không merge vào Parquet
+                    # ==================================================
+                    
+                    df['ticker'] = ticker
+                    return df
+                
+                if df is None: return None
+            except Exception as e:
+                print(f"   [!] Bỏ qua Finance {ticker}: {e}")
+                return None
 
         print(f"[*] Đang khởi động {max_workers} luồng tải song song")
         for chunk_idx, chunk in enumerate(ticker_chunks):
             print(f">>> Đang xử lý Chunk {chunk_idx + 1}/{len(ticker_chunks)} ({len(chunk)} mã)...")
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                 res_list = self._run_throttled_tasks(executor, _fetch_finance_worker, chunk)
-                all_fin.extend(res_list)
+                # all_fin.extend(res_list)
+                for res in res_list:
+                    updated_fins.append(res)
+                    updated_fin_tickers.add(res['ticker'].iloc[0])
 
             # Nghỉ ngơi giữa các chunk
             if chunk_idx < len(ticker_chunks) - 1:
                 print("   [Zzz] Nghỉ 2 giây trước khi qua chunk mới...")
                 time.sleep(2)
 
-        self.save_parquet(all_fin, 'financial', "master_financial.parquet")
+        if not updated_fins:
+            return
+
+        # self.save_parquet(all_fin, 'financial', "master_financial.parquet")
+        self.merge_and_save(updated_fins, updated_fin_tickers, tickers, self.old_fins, 'financial', "master_financial.parquet")
 
     def fetch_funds(self):
         try:

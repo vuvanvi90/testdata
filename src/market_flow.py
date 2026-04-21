@@ -31,20 +31,20 @@ class MarketFlowAnalyzer:
         df_p = df_p[df_p['time'] <= target_date].sort_values('time').copy()
         if df_p.empty: return result
 
-        # 🚀 CHẶN ĐỨNG LỖI "ZOMBIE STOCK"
+        # CHẶN ĐỨNG LỖI "ZOMBIE STOCK"
         last_price_date = df_p['time'].iloc[-1]
         if (target_date - last_price_date).days > self.MAX_DELAY_DAYS:
             result["status"] = "OUTDATED_DATA"
             return result
 
-        # 🚀 CẮT ĐÚNG N PHIÊN GIAO DỊCH THỰC TẾ (Mặc định 130 phiên ~ 6 tháng)
+        # CẮT ĐÚNG N PHIÊN GIAO DỊCH THỰC TẾ (Mặc định 130 phiên ~ 6 tháng)
         df_p = df_p.tail(lookback_sessions).copy()
         if len(df_p) < 20:
             result["status"] = "INSUFFICIENT_DATA"
             return result
             
         result["adv_20"] = df_p.tail(20)['volume'].mean()
-        df_flow = df_p[['time', 'close', 'volume']].copy()
+        df_flow = df_p[['time', 'open', 'high', 'low', 'close', 'volume']].copy()
         
         # Lấy ngày bắt đầu chính xác từ tập df_p đã cắt để khớp với Dòng tiền
         start_date = df_flow['time'].iloc[0] 
@@ -97,10 +97,36 @@ class MarketFlowAnalyzer:
         df_flow['val_p'] = df_flow.get('prop_net_value', 0)
         df_flow['val_sm'] = df_flow['val_f'] + df_flow['val_p']
         
+        # BỘ LỌC SANG TAY (PUT-THROUGH NEUTRALIZER)
+        df_flow['total_val_bn'] = (df_flow['close'] * df_flow['volume']) / 1_000_000_000
+        df_flow['vol_ma20'] = df_flow['volume'].rolling(20, min_periods=1).mean()
+        df_flow['price_spread_pct'] = (df_flow['high'] - df_flow['low']) / df_flow['low'] * 100
+
+        cond_on_book = (df_flow['volume'] > df_flow['vol_ma20'] * 3) & (df_flow['price_spread_pct'] < 2.0)
+        cond_off_book_f = ((df_flow['val_f'].abs()) / 1_000_000_000) > (df_flow['total_val_bn'] * 0.8)
+        cond_off_book_p = ((df_flow['val_p'].abs()) / 1_000_000_000) > (df_flow['total_val_bn'] * 0.8)
+
+        df_flow['is_pt_f'] = np.where(cond_on_book | cond_off_book_f, True, False)
+        df_flow['is_pt_p'] = np.where(cond_on_book | cond_off_book_p, True, False)
+
+        # # Nếu là Sang tay -> Ép Dòng tiền Thể chế về 0 để không làm méo VWAP
+        # df_flow['net_sm'] = np.where(df_flow['is_put_through'], 0, df_flow.get('sm_net', 0))
+        # df_flow['val_sm'] = np.where(df_flow['is_put_through'], 0, df_flow['val_f'] + df_flow['val_p'])
+
+        # Điều chỉnh độc lập
+        df_flow['net_f_adj'] = np.where(df_flow['is_pt_f'], 0, df_flow.get('f_net', 0))
+        df_flow['net_p_adj'] = np.where(df_flow['is_pt_p'], 0, df_flow.get('p_net', 0))
+        
+        df_flow['val_f_adj'] = np.where(df_flow['is_pt_f'], 0, df_flow['val_f'])
+        df_flow['val_p_adj'] = np.where(df_flow['is_pt_p'], 0, df_flow['val_p'])
+
+        df_flow['net_sm'] = df_flow['net_f_adj'] + df_flow['net_p_adj']
+        df_flow['val_sm'] = df_flow['val_f_adj'] + df_flow['val_p_adj']
+
         # Để vẽ biểu đồ (Chart), chúng ta vẫn tính Cumsum
         df_flow['cum_sm'] = df_flow['net_sm'].cumsum()
 
-        # 🚀 THUẬT TOÁN TÍNH VWAP THEO DÒNG CHẢY (FLOW-BASED VWAP)
+        # THUẬT TOÁN TÍNH VWAP THEO DÒNG CHẢY (FLOW-BASED VWAP)
         inventory = 0
         current_vwap = 0.0
 

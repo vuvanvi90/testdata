@@ -61,6 +61,10 @@ class SmartMoneyEngine:
         df_price = self.price_dict.get(ticker) if self.price_dict else None
         shares_out = self.out_shares_dict.get(ticker, 0)
 
+        # TẠO BẢN SAO ĐỂ KHÔNG LÀM ẢNH HƯỞNG DATA GỐC TRÊN RAM
+        df_f_valid = df_f[df_f['time'] <= current_date].copy() if (df_f is not None and not df_f.empty) else pd.DataFrame()
+        df_p_valid = df_p[df_p['time'] <= current_date].copy() if (df_p is not None and not df_p.empty) else pd.DataFrame()
+
         # =====================================================================
         # BƯỚC 0: TẠO THƯỚC ĐO THỜI GIAN CHUẨN (TRUE-TIME WINDOWS)
         # =====================================================================
@@ -74,7 +78,7 @@ class SmartMoneyEngine:
         latest_trading_date = current_date # Mặc định
 
         if df_price is not None and not df_price.empty:
-            df_price_valid = df_price[df_price['time'] <= current_date]
+            df_price_valid = df_price[df_price['time'] <= current_date].copy()
             if not df_price_valid.empty:
                 # Lấy CHÍNH XÁC ngày giao dịch gần nhất của thị trường
                 latest_trading_date = df_price_valid['time'].max()
@@ -89,8 +93,31 @@ class SmartMoneyEngine:
                 df_price_20d = df_price_valid[df_price_valid['time'] >= cutoff_1m]
                 total_liq_20d_bn = (df_price_20d['close'] * df_price_20d['volume']).sum() / 1_000_000_000
 
-        df_f_valid = df_f[df_f['time'] <= current_date] if (df_f is not None and not df_f.empty) else pd.DataFrame()
-        df_p_valid = df_p[df_p['time'] <= current_date] if (df_p is not None and not df_p.empty) else pd.DataFrame()
+                # BỘ LỌC SANG TAY: LÀM SẠCH df_f_valid VÀ df_p_valid NGAY TỪ ĐẦU
+                df_price_valid['total_val_bn'] = (df_price_valid['close'] * df_price_valid['volume']) / 1_000_000_000
+                df_price_valid['vol_ma20'] = df_price_valid['volume'].rolling(20, min_periods=1).mean()
+                df_price_valid['price_spread_pct'] = (df_price_valid['high'] - df_price_valid['low']) / df_price_valid['low'] * 100
+                
+                # Nối tạm dòng tiền để kiểm tra off-book
+                temp_f = df_f_valid[['time', 'foreign_net_value']] if not df_f_valid.empty else pd.DataFrame(columns=['time', 'foreign_net_value'])
+                temp_p = df_p_valid[['time', 'prop_net_value']] if not df_p_valid.empty else pd.DataFrame(columns=['time', 'prop_net_value'])
+                
+                temp_merge = pd.merge(df_price_valid[['time', 'total_val_bn', 'volume', 'vol_ma20', 'price_spread_pct']], temp_f, on='time', how='left')
+                temp_merge = pd.merge(temp_merge, temp_p, on='time', how='left').fillna(0)
+
+                cond_on = (temp_merge['volume'] > temp_merge['vol_ma20'] * 3) & (temp_merge['price_spread_pct'] < 2.0)
+                cond_off_f = (temp_merge['foreign_net_value'].abs() / 1_000_000_000) > (temp_merge['total_val_bn'] * 0.8)
+                cond_off_p = (temp_merge['prop_net_value'].abs() / 1_000_000_000) > (temp_merge['total_val_bn'] * 0.8)
+                
+                # Tách list ngày bị nhiễu
+                pt_f_dates = temp_merge[cond_on | cond_off_f]['time'].tolist()
+                pt_p_dates = temp_merge[cond_on | cond_off_p]['time'].tolist()
+                
+                # Ép dòng tiền về 0 một cách ĐỘC LẬP
+                if pt_f_dates and not df_f_valid.empty:
+                    df_f_valid.loc[df_f_valid['time'].isin(pt_f_dates), ['foreign_net_volume', 'foreign_net_value', 'foreign_net_vol']] = 0
+                if pt_p_dates and not df_p_valid.empty:
+                    df_p_valid.loc[df_p_valid['time'].isin(pt_p_dates), ['prop_net_volume', 'prop_net_value', 'prop_net_vol']] = 0
 
         # =====================================================================
         # LỚP 1: TẦM NHÌN DÀI HẠN (130 PHIÊN GẦN NHẤT)

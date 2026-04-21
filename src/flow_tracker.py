@@ -67,14 +67,14 @@ class SmartMoneyTracker:
 
     def track_ticker(self, ticker, target_date=None, start_date=None):
         """
-        X-Quang Dòng tiền: Bóc tách Tồn kho Tay to, VWAP và Dòng tiền Ẩn
+        X-Quang Dòng tiền: Bóc tách Tồn kho Tay to, VWAP và Dòng tiền Ẩn (ĐÃ TÍCH HỢP LỌC SANG TAY KÉP)
         """
         universe = self.ticker_universe_map.get(ticker, 'HOSE (Unknown)')
         thresh = self._get_dynamic_thresholds(universe)
 
-        print("\n" + "="*135)
+        print("\n" + "="*145)
         print(f" 🔍 DÒNG TIỀN (OHLCV + SMART MONEY + VWAP): Mã [ {ticker} ] - Thuộc rổ: {universe}")
-        print("="*135)
+        print("="*145)
 
         # Trích xuất O(1) từ Dictionary
         df_price_t = self.price_dict.get(ticker)
@@ -89,8 +89,8 @@ class SmartMoneyTracker:
         df_price_t = df_price_t.copy()
         df_price_t['market_val_bn'] = (df_price_t['close'] * df_price_t['volume']) / DIVISOR
 
-        # Hợp nhất Dữ liệu
-        df_merged = pd.merge(df_price_t[['time', 'close', 'market_val_bn']], df_f_t, on='time', how='left').fillna(0)
+        # 🚀 LẤY THÊM OPEN, HIGH, LOW, VOLUME ĐỂ PHỤC VỤ BỘ LỌC SANG TAY
+        df_merged = pd.merge(df_price_t[['time', 'open', 'high', 'low', 'close', 'volume', 'market_val_bn']], df_f_t, on='time', how='left').fillna(0)
         df_merged = pd.merge(df_merged, df_p_t, on='time', how='left').fillna(0)
         df_merged = df_merged.sort_values('time').reset_index(drop=True)
 
@@ -101,16 +101,35 @@ class SmartMoneyTracker:
             print(f"[*] Không có giao dịch nào trong khoảng thời gian được chọn.")
             return
 
-        # 🚀 TÍNH TOÁN DÒNG TIỀN ẨN (SHADOW FLOW)
+        # 🚀 TÍNH TOÁN CÁC CHỈ SỐ THÔ
         df_merged['f_net_bn'] = df_merged['foreign_net_value'] / DIVISOR
         df_merged['p_net_bn'] = df_merged['prop_net_value'] / DIVISOR
-        df_merged['total_net_bn'] = df_merged['f_net_bn'] + df_merged['p_net_bn']
-
+        
         df_merged['f_gross_bn'] = (df_merged['foreign_buy_value'] + df_merged['foreign_sell_value']) / DIVISOR
         df_merged['p_gross_bn'] = (df_merged['prop_buy_value'] + df_merged['prop_sell_value']) / DIVISOR
-        df_merged['sm_participation_bn'] = (df_merged['f_gross_bn'] + df_merged['p_gross_bn']) / 2
 
-        df_merged['shadow_flow_bn'] = (df_merged['market_val_bn'] - df_merged['sm_participation_bn']).clip(lower=0)
+        # 🚀 BỘ LỌC SANG TAY KÉP (DUAL PUT-THROUGH FILTER)
+        df_merged['vol_ma20'] = df_merged['volume'].rolling(20, min_periods=1).mean()
+        df_merged['price_spread_pct'] = (df_merged['high'] - df_merged['low']) / df_merged['low'] * 100
+        
+        cond_on_book = (df_merged['volume'] > df_merged['vol_ma20'] * 3) & (df_merged['price_spread_pct'] < 2.0)
+        cond_off_book_f = df_merged['f_net_bn'].abs() > (df_merged['market_val_bn'] * 0.8)
+        cond_off_book_p = df_merged['p_net_bn'].abs() > (df_merged['market_val_bn'] * 0.8)
+        
+        df_merged['is_pt_f'] = np.where(cond_on_book | cond_off_book_f, True, False)
+        df_merged['is_pt_p'] = np.where(cond_on_book | cond_off_book_p, True, False)
+        
+        # 🚀 LÀM SẠCH DỮ LIỆU ĐỘC LẬP
+        df_merged['f_net_adj'] = np.where(df_merged['is_pt_f'], 0, df_merged['f_net_bn'])
+        df_merged['p_net_adj'] = np.where(df_merged['is_pt_p'], 0, df_merged['p_net_bn'])
+        df_merged['total_net_adj'] = df_merged['f_net_adj'] + df_merged['p_net_adj']
+
+        df_merged['f_gross_adj'] = np.where(df_merged['is_pt_f'], 0, df_merged['f_gross_bn'])
+        df_merged['p_gross_adj'] = np.where(df_merged['is_pt_p'], 0, df_merged['p_gross_bn'])
+
+        # 🚀 TÍNH TOÁN DÒNG TIỀN ẨN TRÊN DỮ LIỆU SẠCH
+        df_merged['sm_participation_bn'] = (df_merged['f_gross_adj'] + df_merged['p_gross_adj']) / 2
+        df_merged['shadow_flow_bn'] = (df_merged['market_val_bn'] - df_merged['f_net_adj'].abs() - df_merged['p_net_adj'].abs()).clip(lower=0)
 
         df_merged['sm_dominance_pct'] = np.where(
             df_merged['market_val_bn'] > 0,
@@ -122,9 +141,10 @@ class SmartMoneyTracker:
         current_vwap = 0.0
         
         for idx, row in df_merged.iterrows():
-            net_val = row['total_net_bn']
-            f_net_val = row['f_net_bn']
-            p_net_val = row['p_net_bn']
+            # SỬ DỤNG DỮ LIỆU ĐÃ LÀM SẠCH (ADJUSTED) ĐỂ TÍNH VWAP
+            net_val = row['total_net_adj']
+            f_net_val = row['f_net_adj']
+            p_net_val = row['p_net_adj']
             close_p = row['close']
             
             # Cập nhật tồn kho (Tiền)
@@ -134,9 +154,6 @@ class SmartMoneyTracker:
             
             # Tính VWAP
             if net_val > 0:
-                # Mua vào -> Tính lại trung bình giá
-                # (Lưu ý: Để đơn giản hóa trong X-Quang, ta dùng Tổng Giá trị mua chia đều. 
-                # Cách chuẩn xác nhất là quy đổi ra Volume cổ phiếu, nhưng dùng Tiền vẫn ra xu hướng đúng)
                 if inventory_bn > 0:
                     old_weight = (inventory_bn - net_val) / inventory_bn
                     new_weight = net_val / inventory_bn
@@ -144,14 +161,11 @@ class SmartMoneyTracker:
                 else:
                     current_vwap = close_p
             elif net_val < 0:
-                # Bán ra -> Giữ nguyên VWAP, chỉ giảm Inventory
                 if inventory_bn <= 0:
                     inventory_bn = 0
                     current_vwap = 0.0
-                if f_inv_bn <= 0:
-                    f_inv_bn = 0
-                if p_inv_bn <= 0:
-                    p_inv_bn = 0
+                if f_inv_bn <= 0: f_inv_bn = 0
+                if p_inv_bn <= 0: p_inv_bn = 0
                     
             df_merged.at[idx, 'cum_total'] = inventory_bn
             df_merged.at[idx, 'cum_f_total'] = f_inv_bn
@@ -159,9 +173,8 @@ class SmartMoneyTracker:
             df_merged.at[idx, 'dynamic_vwap'] = current_vwap
 
         # IN KẾT QUẢ
-        # print(f"{'NGÀY':<10} | {'GIÁ ĐÓNG':>10} | {'TỔNG TT (TỶ)':>12} | {'TAY TO NET (TỶ)':>15} | {'NGOẠI (TỶ)':>10} | {'NỘI (TỶ)':>10} | {'ẨN/LÁI (TỶ)':>11} | {'CHI PHỐI':>8} | {'LŨY KẾ (TỶ)':>11} | {'VWAP LÁI':>10}")
         print(f"{'NGÀY':<10} | {'GIÁ ĐÓNG':>10} | {'TỔNG TT (TỶ)':>12} | {'NGOẠI (TỶ)':>10} | {'NỘI (TỶ)':>10} | {'ẨN/LÁI (TỶ)':>11} | {'CHI PHỐI':>8} | {'LŨY KẾ (TỶ)':>11} | {'VWAP LÁI':>10}")
-        print("-" * 135)
+        print("-" * 145)
 
         shadow_spikes = 0 
         avg_market_val = df_merged['market_val_bn'].mean()
@@ -169,23 +182,29 @@ class SmartMoneyTracker:
         for _, row in df_merged.iterrows():
             date_str = row['time'].strftime('%d-%m-%Y')
             flag = ""
-            # 🚀 ÁP DỤNG NGƯỠNG (THRESHOLDS) THEO RỔ CỔ PHIẾU
-            if row['sm_dominance_pct'] < thresh['dom_low'] and row['market_val_bn'] > avg_market_val * thresh['shadow_spike']:
-                flag = " ⚠️(Lái Nội)"
-                shadow_spikes += 1
-            elif row['sm_dominance_pct'] > thresh['dom_high']:
-                flag = " 🎯(Tay To)"
+            
+            # 🚀 GẮN CỜ SANG TAY NẾU CÓ
+            if row['is_pt_f'] and row['is_pt_p']:
+                flag += " ⚠️[SANG TAY NGOẠI & NỘI]"
+            elif row['is_pt_f']:
+                flag += " ⚠️[SANG TAY NGOẠI]"
+            elif row['is_pt_p']:
+                flag += " ⚠️[SANG TAY NỘI]"
+            else:
+                # Nếu không sang tay, xét tiếp cờ chi phối bình thường
+                if row['sm_dominance_pct'] < thresh['dom_low'] and row['market_val_bn'] > avg_market_val * thresh['shadow_spike']:
+                    flag = " ⚠️(Lái Nội)"
+                    shadow_spikes += 1
+                elif row['sm_dominance_pct'] > thresh['dom_high']:
+                    flag = " 🎯(Tay To)"
 
-            if row['sm_dominance_pct'] > 100:
-                flag = " ⚠️GD Thỏa thuận (Sang tay ngầm)"
-
-            print(f"{date_str:<10} | {row['close']:>10,.0f} | {row['market_val_bn']:>12.1f} | {row['f_net_bn']:>10.2f} | {row['p_net_bn']:>10.2f} | {row['shadow_flow_bn']:>11.1f} | {row['sm_dominance_pct']:>7.1f}% | {row['cum_total']:>11.2f} | {row['dynamic_vwap']:>10,.0f}{flag}")
+            # IN BẰNG CỘT DỮ LIỆU ĐÃ LỌC (adj)
+            print(f"{date_str:<10} | {row['close']:>10,.0f} | {row['market_val_bn']:>12.1f} | {row['f_net_adj']:>10.2f} | {row['p_net_adj']:>10.2f} | {row['shadow_flow_bn']:>11.1f} | {row['sm_dominance_pct']:>7.1f}% | {row['cum_total']:>11.2f} | {row['dynamic_vwap']:>10,.0f}{flag}")
 
         # TỔNG KẾT
         final_row = df_merged.iloc[-1]
         avg_dominance = df_merged['sm_dominance_pct'].mean()
         
-        # Đánh giá xem Giá Hiện Tại đang Cao hay Thấp hơn Giá Vốn Tay To
         vwap = final_row['dynamic_vwap']
         current_price = final_row['close']
         vwap_status = ""
@@ -193,17 +212,17 @@ class SmartMoneyTracker:
             diff_pct = (current_price - vwap) / vwap * 100
             vwap_status = f"(Tay to đang {'Lãi' if diff_pct > 0 else 'Lỗ'} {abs(diff_pct):.1f}%)"
 
-        print("\n" + "="*135)
-        print(f" 🎯 TỔNG KẾT BÓC TÁCH DÒNG TIỀN [ {ticker} - {universe} ]")
+        print("\n" + "="*145)
+        print(f" 🎯 TỔNG KẾT BÓC TÁCH DÒNG TIỀN (SAU KHI LỌC SANG TAY) [ {ticker} - {universe} ]")
         print(f"    Giai đoạn: {df_merged.iloc[0]['time'].strftime('%d/%m/%Y')} -> {final_row['time'].strftime('%d/%m/%Y')} ({len(df_merged)} phiên)")
-        print("="*135)
+        print("="*145)
         print(f" 🔹 TỔNG LƯỢNG TỒN KHO TAY TO  : {final_row['cum_total']:>10.2f} Tỷ VNĐ")
         print(f" 🔹 TỔNG LƯỢNG TỒN KHO NGOẠI   : {final_row['cum_f_total']:>10.2f} Tỷ VNĐ")
         print(f" 🔹 TỔNG LƯỢNG TỒN KHO NỘI     : {final_row['cum_p_total']:>10.2f} Tỷ VNĐ")
         print(f" 🔹 GIÁ VỐN TRUNG BÌNH (VWAP)  : {vwap:>10,.0f} đ {vwap_status}")
         print(f" 🔹 Tỷ lệ Chi phối Trung bình  : {avg_dominance:>10.1f}% (Quyền lực của Smart Money)")
         print(f" 🔹 Số phiên 'Lái Nội' bùng nổ : {shadow_spikes:>10} phiên")
-        print("-" * 135)
+        print("-" * 145)
         
         # 🚀 CHẨN ĐOÁN THEO RỔ
         if universe == 'VNSmallCap' and avg_dominance > thresh['dom_high']:
@@ -215,7 +234,7 @@ class SmartMoneyTracker:
             if current_price < vwap: print("    => CƠ HỘI VÀNG: Giá hiện tại đang RẺ HƠN giá vốn của Tay to!")
         else:
             print(" ⚖️ KẾT LUẬN: Dòng tiền giằng co, chưa rõ phe nào kiểm soát hoàn toàn.")
-        print("="*135)
+        print("="*145)
 
         return df_merged
 

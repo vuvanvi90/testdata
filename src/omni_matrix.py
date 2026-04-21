@@ -146,21 +146,29 @@ class OmniFlowMatrix:
         cube['f_net_bn'] = cube['foreign_net_value'] / self.DIVISOR
         cube['p_net_bn'] = cube['prop_net_value'] / self.DIVISOR
         cube['sm_net_bn'] = cube['f_net_bn'] + cube['p_net_bn']
-        
-        # Shadow Flow (Dòng tiền Ẩn/Lái nội) = Tổng thanh khoản - |Ngoại| - |Nội|
-        # (Lấy trị tuyệt đối vì Lái có thể tham gia vào cả bên bán của Tây hoặc bên mua của Tây)
-        cube['shadow_flow_bn'] = (cube['total_val_bn'] - cube['f_net_bn'].abs() - cube['p_net_bn'].abs()).clip(lower=0)
-        
-        # 5. NHẬN DIỆN SANG TAY (PUT-THROUGH ANOMALY)
-        # Tính MA20 của Volume (Cần groupby)
+
+        # 5. NHẬN DIỆN SANG TAY ĐỘC LẬP (INDEPENDENT PUT-THROUGH FILTER)
         cube['vol_ma20'] = cube.groupby('ticker')['volume'].transform(lambda x: x.rolling(20, min_periods=1).mean())
         cube['price_spread_pct'] = (cube['high'] - cube['low']) / cube['low'] * 100
         
-        # Điều kiện Sang tay: Vol > 300% MA20 NHƯNG Biên độ giá < 2%
-        cube['is_put_through'] = np.where(
-            (cube['volume'] > cube['vol_ma20'] * 3) & (cube['price_spread_pct'] < 2.0),
-            True, False
-        )
+        # Điều kiện On-book (Đột biến khối lượng nhưng giá đứng im -> Áp dụng chung)
+        cond_on_book = (cube['volume'] > cube['vol_ma20'] * 3) & (cube['price_spread_pct'] < 2.0)
+        
+        # Điều kiện Off-book (Tách riêng Khối ngoại và Tự doanh)
+        cond_off_book_f = cube['f_net_bn'].abs() > (cube['total_val_bn'] * 0.8)
+        cond_off_book_p = cube['p_net_bn'].abs() > (cube['total_val_bn'] * 0.8)
+        
+        # Cắm cờ riêng biệt
+        cube['is_pt_f'] = np.where(cond_on_book | cond_off_book_f, True, False)
+        cube['is_pt_p'] = np.where(cond_on_book | cond_off_book_p, True, False)
+        
+        # ÉP VỀ 0 ĐỘC LẬP: Thằng nào sang tay thì thằng đó bị ép về 0, giữ lại data thật
+        cube['f_net_adj'] = np.where(cube['is_pt_f'], 0, cube['f_net_bn'])
+        cube['p_net_adj'] = np.where(cube['is_pt_p'], 0, cube['p_net_bn'])
+        
+        # Tính Smart Money và Shadow Flow dựa trên dòng tiền đã được làm sạch
+        cube['sm_net_adj'] = cube['f_net_adj'] + cube['p_net_adj']
+        cube['shadow_flow_bn'] = (cube['total_val_bn'] - cube['f_net_adj'].abs() - cube['p_net_adj'].abs()).clip(lower=0)
 
         # 6. GẮN MÁC RỔ & NGÀNH
         cube['universe'] = cube['ticker'].map(lambda x: self.ticker_to_universe.get(x, 'HOSE'))
@@ -210,14 +218,16 @@ class OmniFlowMatrix:
         end_price = df_t['close'].iloc[-1]
         price_change_pct = (end_price - start_price) / start_price * 100
 
-        # 2. Tổng hợp Dòng tiền trong kỳ
-        total_sm_net = df_t['sm_net_bn'].sum()
-        total_f_net = df_t['f_net_bn'].sum()
+        # 2. TỔNG HỢP DÒNG TIỀN TRONG KỲ (SỬ DỤNG DỮ LIỆU ĐÃ LÀM SẠCH)
+        # Thay thế _bn bằng _adj để không bị nhiễu bởi các cục sang tay ngàn tỷ
+        total_sm_net = df_t['sm_net_adj'].sum()
+        total_f_net = df_t['f_net_adj'].sum()
         total_shadow = df_t['shadow_flow_bn'].sum()
         total_val = df_t['total_val_bn'].sum()
 
-        # 3. Quét các ngày Sang tay (Put-through)
-        put_through_days = df_t[df_t['is_put_through']]['time'].dt.strftime('%d/%m').tolist()
+        # 3. QUÉT CÁC NGÀY SANG TAY ĐỘC LẬP (NGOẠI VÀ NỘI)
+        pt_f_days = df_t[df_t['is_pt_f']]['time'].dt.strftime('%d/%m').tolist()
+        pt_p_days = df_t[df_t['is_pt_p']]['time'].dt.strftime('%d/%m').tolist()
 
         # 4. CHẨN ĐOÁN (HEURISTIC RULES)
         diagnosis = []
@@ -248,8 +258,12 @@ class OmniFlowMatrix:
             else:
                 diagnosis.append("Siết nền (Base Building): Thanh khoản cạn, chờ gió đông.")
 
-        if put_through_days:
-            diagnosis.append(f"⚠️ Sang tay ngầm (Trao kho) vào: {', '.join(put_through_days)}.")
+        # GHI CHÚ SANG TAY CHI TIẾT
+        if pt_f_days or pt_p_days:
+            msgs = []
+            if pt_f_days: msgs.append(f"Ngoại ({', '.join(pt_f_days)})")
+            if pt_p_days: msgs.append(f"Nội ({', '.join(pt_p_days)})")
+            diagnosis.append(f"⚠️ Sang tay ngầm (Trao kho) vào: {' & '.join(msgs)}.")
 
         return {
             "trend": trend,
