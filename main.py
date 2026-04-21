@@ -26,6 +26,7 @@ from src.run_bot import run_trading_system, run_vn30_trading_system, run_midcap_
 # from src.shadow_profiler import ShadowProfiler
 # from src.market_tracker import MarketTracker
 # from src.post_mortem import PostMortemAnalyzer
+# from src.sniper import TargetSniper
 
 def main():
     df_price = _load_parquet(Path('data/parquet/price/master_price.parquet'))
@@ -68,30 +69,18 @@ def main():
     # run_midcap_trading_system()
     # run_smallcap_trading_system()
 
+    # watch_list = ["SHB","GMD","FPT","VHM","VIC"]
+    # for ticker in watch_list:
+    #     sniper = TargetSniper(ticker=ticker)
+    #     sniper.analyze()
+
     # # Test: Kiểm tra mã tăng và signal trước đó
     # analyzer = PostMortemAnalyzer()
-    # print("\n--- HƯỚNG DẪN SỬ DỤNG ---")
-    # print("Nhập mã cổ phiếu và ngày nó bắt đầu chạy mạnh mà Bot không báo.")
-    # print("Gõ 'q' để thoát.")
-    # while True:
-    #     ticker = input("\nNhập Mã Cổ Phiếu (VD: FPT): ").strip().upper()
-    #     if ticker == 'Q': break
-        
-    #     date_input = input("Nhập Ngày Nổ Điểm (Định dạng YYYY-MM-DD, VD: 2026-04-10): ").strip()
-    #     if date_input == 'Q': break
+    # analyzer.analyze(ticker="GMD", target_date_str='2026-04-20', lookback_days=30)
 
-    #     lookback_input = input("Nhập Số Ngày lookback: ").strip()
-    #     if lookback_input == 'Q': break
-        
-    #     try:
-    #         pd.to_datetime(date_input)
-    #         analyzer.analyze(ticker=ticker, target_date_str=date_input, lookback_days=int(lookback_input))
-    #     except Exception as e:
-    #         print(f"[!] Lỗi định dạng ngày hoặc dữ liệu: {e}. Vui lòng thử lại.")
-
-    # Test: Kiểm tra thị trường, thanh khoản và volume mà Cá Mập nắm giữ
+    # # Test: Kiểm tra thị trường, thanh khoản và volume mà Cá Mập nắm giữ
     # analyzer = MarketFlowAnalyzer(df_price, df_foreign, df_prop)
-    # res = analyzer.analyze_flow("VNM", target_date_str=None)
+    # res = analyzer.analyze_flow("VHM", target_date_str=None)
     # print(analyzer.format_report(res))
 
     # watch_list = _load_watchlist(Path("data/live/watchlist.json"))
@@ -113,9 +102,9 @@ def main():
     # best_config = opt.run_optimization_pipeline(test_tickers=small_tickers)
 
     # # Test: Kiềm tra dòng tiền lớn ở các mã theo ngày
-    # run_cashflow_report('day', df_foreign, df_prop, target_date='2026-03-20')
-    # run_cashflow_report('week', df_foreign, df_prop, target_date='2026-03-20')
-    # run_cashflow_report('month', df_foreign, df_prop, target_date='2026-03-13')
+    # run_cashflow_report('day', df_foreign, df_prop, target_date='2026-04-17')
+    # run_cashflow_report('week', df_foreign, df_prop, target_date='2026-04-17')
+    # run_cashflow_report('month', df_foreign, df_prop, target_date='2026-04-17')
 
     # # Test: Kiềm tra dòng tiền lớn ở các mã theo ngày và theo ngành
     # run_cashflow_group_report('day', df_foreign, df_prop, df_industry, target_date='2026-03-20')
@@ -143,7 +132,7 @@ def main():
 
     # # Bóc tách dòng tiền của 1 mã bất kỳ
     # tracker = SmartMoneyTracker(df_price, df_foreign, df_prop, df_indx=df_index)
-    # tracker.track_ticker(ticker='VNM', target_date=None, start_date='2026-03-01')
+    # tracker.track_ticker(ticker='SHB', target_date=None, start_date='2026-03-01')
 
     # # Kiểm soát vùng xám
     # profiler = ShadowProfiler(df_price)
