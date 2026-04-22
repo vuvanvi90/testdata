@@ -821,7 +821,7 @@ class VNStockDataPipeline:
                         combined = pd.concat([old_df, new_df])
                         
                         # 2. Xóa lệnh trùng (Giữ an toàn khi chạy Bot nhiều lần trong 1 ngày)
-                        subset_cols = [c for c in ['time', 'price', 'volume', 'match_type'] if c in combined.columns]
+                        subset_cols = [c for c in ['time', 'price', 'volume', 'match_type', 'id'] if c in combined.columns]
                         combined = combined.drop_duplicates(subset=subset_cols, keep='last')
                         
                         combined = combined.sort_values('time')
