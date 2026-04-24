@@ -10,6 +10,8 @@ from pathlib import Path
 
 # from vnstock_data.explorer.vci import Quote, Trading
 
+# from vnstock_data import show_api, Reference, Market
+
 # from src.omni_matrix import OmniFlowMatrix
 
 class VN30DataPipeline:
@@ -45,6 +47,13 @@ class VN30DataPipeline:
         tickers = ['ACB', 'BID', 'CTG', 'DGC', 'FPT', 'GAS', 'GVR', 'HDB', 'HPG', 'LPB', 'MBB', 'MSN', 'MWG', 'PLX', 'SAB', 'SHB', 'SSB', 'SSI', 'STB', 'TCB', 'TPB', 'VCB', 'VHM', 'VIB', 'VIC', 'VJC', 'VNM', 'VPB', 'VPL', 'VRE']
         ticker = ['VCB']
 
+        # show_api(Reference())
+        # show_api(Market())
+
+        # ref = Reference()
+        # df_profile = ref.company("ACB").info()
+        # print(df_profile)
+
         # company = Company(symbol='ACB', source='KBS')
         # com_df = company.overview()
         # print(com_df)
@@ -56,6 +65,12 @@ class VN30DataPipeline:
         # data_df = trading.prop_trade(start=START_DATE, end=END_DATE, resolution='1D')
         # data_df = trading.insider_deal(lang='vi')
         # print(data_df) 
+
+        # # Truy xuất dữ liệu giao dịch thỏa thuận (put-through)
+        # trading = Trading(source='VCI')
+        # df_pt = trading.put_through()
+        # if not df_pt.empty:
+        #     df_pt.to_json("put_through.json", orient='records', force_ascii=False, indent=4)
 
         # trading = Trading(symbol='ACB', source='cafef')
         # data_df = trading.price_history(start=START_DATE, end=END_DATE)
@@ -221,34 +236,26 @@ class VN30DataPipeline:
         # test_tickers = ['VHM', 'VIC', 'HPG', 'DIG', 'GMD'] # Thử với VN30, MidCap và SmallCap
         # # test_tickers = ['GMD'] # Thử với VN30, MidCap và SmallCap
     
-        # for ticker in test_tickers:
-        #     print("\n" + "="*95)
-        #     print(f" 🎯 OMNI-MATRIX REPORT: MÃ [ {ticker} ] - RỔ: {omni.ticker_to_universe.get(ticker, 'N/A')}")
-        #     print("="*95)
-            
-        #     # 1. HỒ SƠ QUÁ KHỨ (10 Ngày qua)
-        #     past = omni.explain_past_movement(ticker, lookback_days=10)
-        #     if "error" not in past:
-        #         print(f" 🕰️ GIẢI MÃ QUÁ KHỨ (10 Phiên):")
-        #         print(f"    - Xu hướng     : {past['trend']} ({past['change_pct']:+.2f}%)")
-        #         print(f"    - Dòng tiền 10D: Thể chế {past['sm_net']:+.1f} Tỷ | Ẩn/Lái {past['shadow']:+.1f} Tỷ")
-        #         print(f"    - Chẩn đoán    : 🧠 {past['verdict']}")
-        #     else:
-        #         print(f"    [!] {past['error']}")
+        
+        # js_prod = self.load_json(Path('ps_sales_production.json'))
+        # js_stag = self.load_json(Path('ps_sales_staging.json'))
 
-        #     print("-" * 95)
-            
-        #     # 2. BỨC TRANH T0 (NGAY LÚC NÀY)
-        #     now = omni.predict_t0_action(ticker, past_context=past)
-        #     if "error" not in now:
-        #         print(f" ⚡ DỰ BÁO HIỆN TẠI (PHIÊN T0): Giá {now['last_price']:,.0f}đ")
-        #         print(f"    - Mua/Bán C.Động : {now['net_active_bn']:+.1f} Tỷ (Từ lệnh Khớp Intraday)")
-        #         print(f"    - Ngoại T0       : {now['f_net_t0']:+.1f} Tỷ (Từ Bảng điện Real-time)")
-        #         print(f"    - Sổ lệnh (Bid)  : Mất cân bằng {now['imbalance']:+.2f} (Dương = Kê mua, Âm = Chặn bán)")
-        #         print(f"    - KẾT LUẬN       : 🎯 {now['verdict']}")
-        #         print(f"    - Tín hiệu phụ   : {now['details']}")
-        #     else:
-        #         print(f"    [!] {now['error']}")
+        # l_prod, l_stag = set(), set()
+        # for i in js_prod:
+        #     l_prod.add(i['rowguid'])
+
+        # for i in js_stag:
+        #     l_stag.add(i['rowguid'])
+
+        # l_prod = list(l_prod)
+        # l_stag = list(l_stag)
+
+        # # pd.DataFrame(l_prod).to_csv("sales_production.csv", orient='records', force_ascii=False, indent=4)
+        # # pd.DataFrame(l_stag).to_csv("sales_staging.csv", orient='records', force_ascii=False, indent=4)
+
+        # pd.DataFrame(l_prod).to_csv("sales_production.csv")
+        # pd.DataFrame(l_stag).to_csv("sales_staging.csv")
+
 
     def _load_parquet(self, path):
         """Hàm đọc Parquet an toàn, tránh lỗi nếu file chưa tồn tại"""
@@ -259,6 +266,17 @@ class VN30DataPipeline:
                 print(f"Could NOT read {path}")
                 return pd.DataFrame()
         return pd.DataFrame()
+
+    def load_json(self, path):
+        if path.exists():
+            try:
+                with open(path, 'r', encoding='utf-8') as f: 
+                    data = json.load(f)
+                    # return data if isinstance(data, dict) else {}
+                    return data
+            except: 
+                return {}
+        return {}
 
 if __name__ == "__main__":
     pipeline = VN30DataPipeline()

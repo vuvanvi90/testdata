@@ -22,11 +22,11 @@ from src.run_bot import run_trading_system, run_vn30_trading_system, run_midcap_
 # from src.reporter import CashFlowReporter 
 # from src.notifier import send_telegram_alert 
 # from src.inspector import SignalInspector 
-# from src.flow_tracker import SmartMoneyTracker
+from src.flow_tracker import SmartMoneyTracker
 # from src.shadow_profiler import ShadowProfiler
 # from src.market_tracker import MarketTracker
 # from src.post_mortem import PostMortemAnalyzer
-# from src.sniper import TargetSniper
+from src.sniper import TargetSniper
 
 def main():
     df_price = _load_parquet(Path('data/parquet/price/master_price.parquet'))
@@ -55,6 +55,7 @@ def main():
     # # pipeline.get_com = True
     # # pipeline.get_price = True
     # # pipeline.get_intra = True
+    # # pipeline.get_pt = True
     # # pipeline.get_board = True
     # # pipeline.get_fin = True
     # # pipeline.get_foreign = True
@@ -69,7 +70,8 @@ def main():
     # run_midcap_trading_system()
     # run_smallcap_trading_system()
 
-    # watch_list = ["SHB","GMD","FPT","VHM","VIC"]
+    # # watch_list = ["SHB","GMD","FPT","VHM","VIC"]
+    # watch_list = ["SHB","GMD"]
     # for ticker in watch_list:
     #     sniper = TargetSniper(ticker=ticker)
     #     sniper.analyze()
