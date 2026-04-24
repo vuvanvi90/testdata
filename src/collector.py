@@ -16,7 +16,7 @@ warnings.filterwarnings('ignore', message=".*DataFrameGroupBy.apply.*")
 from vnstock_data import Listing, Company, Quote, Trading, Finance, Macro, CommodityPrice, Fund
 
 class VNStockDataPipeline:
-    def __init__(self, source='VCI', get_com=False, get_price=False, get_intra=False, get_board=False, get_fin=False, get_group=False, get_macro=False, get_foreign=False, get_prop=False, get_fund=False, get_share_group=False, get_index=False):
+    def __init__(self, source='VCI', get_com=False, get_price=False, get_intra=False, get_board=False, get_fin=False, get_group=False, get_macro=False, get_foreign=False, get_prop=False, get_fund=False, get_share_group=False, get_index=False, get_pt=False):
         self.source = source.lower() if source else 'vci'
         self.get_com = get_com
         self.get_price = get_price
@@ -30,6 +30,7 @@ class VNStockDataPipeline:
         self.get_fund = get_fund
         self.get_share_group = get_share_group
         self.get_index = get_index
+        self.get_pt = get_pt
 
         # Cấu trúc thư mục lưu Parquet
         self.folders = {
@@ -1000,6 +1001,37 @@ class VNStockDataPipeline:
                 return []
         return []
 
+    def fetch_put_through(self):
+        print("\n" + "="*50)
+        print("     TẢI DỮ LIỆU GIAO DỊCH THỎA THUẬN (PUT-THROUGH)")
+        print("="*50)
+        try:
+            trading = Trading(source='VCI')
+            df_pt = trading.put_through()
+            required_cols = ['time', 'symbol', 'price', 'volume', 'match_value', 'change_percent']
+            df_pt = self._validate_schema(df_pt, required_cols, item_name="Put-Through")
+
+            if df_pt is not None and not df_pt.empty:
+                # Chuẩn hóa thời gian từ mili-giây
+                if pd.api.types.is_numeric_dtype(df_pt['time']):
+                    df_pt['time'] = pd.to_datetime(df_pt['time'], unit='ms').dt.normalize()
+                else:
+                    df_pt['time'] = pd.to_datetime(df_pt['time']).dt.normalize()
+
+                pt_path = self.folders['intraday'] / "master_put_through.parquet"
+                if pt_path.exists():
+                    old_df = pd.read_parquet(pt_path)
+                    combined = pd.concat([old_df, df_pt], ignore_index=True)
+                    # Xóa trùng lặp theo Ngày, Mã, Giá và Khối lượng
+                    combined = combined.drop_duplicates(subset=['time', 'symbol', 'price', 'volume', 'change', 'change_percent', 'match_value'], keep='last')
+                else:
+                    combined = df_pt
+
+                combined.to_parquet(pt_path, engine='pyarrow')
+                print(f" [OK] Đã lưu {len(df_pt)} dòng vào master_put_through.parquet")
+        except Exception as e:
+            print(f" [!] Lỗi tải Giao dịch Thỏa thuận: {e}")
+
     # ==========================================
     # HÀM CHẠY CHÍNH (PIPELINE)
     # ==========================================
@@ -1087,6 +1119,10 @@ class VNStockDataPipeline:
                     print(f" [OK] Đã lưu bảng giá {len(board_df)} mã.")
             except Exception as e:
                 print(f" [!] Lỗi tải Bảng giá: {e}")
+
+        # TẢI DỮ LIỆU GIAO DỊCH THỎA THUẬN (PUT-THROUGH)
+        if self.get_pt:
+            self.fetch_put_through()
 
         # TẢI DỮ LIỆU CÔNG TY & CHẠY ĐA LUỒNG RIÊNG
         if self.get_com:

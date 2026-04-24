@@ -35,6 +35,7 @@ class TargetSniper:
         df_prop_raw = self._load_parquet_safe(self.data_dir / 'macro/prop_flow.parquet')
         df_intra_raw = self._load_parquet_safe(self.data_dir / 'intraday/master_intraday.parquet')
         df_board_raw = self._load_parquet_safe(self.data_dir / 'board/master_board.parquet')
+        df_pt_raw = self._load_parquet_safe(self.data_dir / 'board/master_put_through.parquet')
         
         self.df_comp = self._load_parquet_safe(self.data_dir / 'company/master_company.parquet')
         self.df_idx = self._load_parquet_safe(self.data_dir / 'macro/index_components.parquet')
@@ -44,6 +45,7 @@ class TargetSniper:
         self.df_foreign = df_foreign_raw[df_foreign_raw['ticker'] == self.ticker].copy() if not df_foreign_raw.empty else pd.DataFrame()
         self.df_prop = df_prop_raw[df_prop_raw['ticker'] == self.ticker].copy() if not df_prop_raw.empty else pd.DataFrame()
         self.df_intra = df_intra_raw[df_intra_raw['ticker'] == self.ticker].copy() if not df_intra_raw.empty else pd.DataFrame()
+        self.df_pt = df_pt_raw[df_pt_raw['symbol'] == self.ticker].copy() if not df_pt_raw.empty else pd.DataFrame()
         
         if not df_board_raw.empty:
             col_name = 'symbol' if 'symbol' in df_board_raw.columns else 'ticker'
@@ -80,7 +82,8 @@ class TargetSniper:
         # Băm OmniMatrix
         data_frames = {
             'price': self.df_price, 'foreign': self.df_foreign, 'prop': self.df_prop,
-            'comp': self.df_comp, 'idx': self.df_idx, 'board': self.df_board, 'intra': self.df_intra
+            'comp': self.df_comp, 'idx': self.df_idx, 'board': self.df_board, 
+            'intra': self.df_intra, 'put_through': self.df_pt
         }
         self.omni_matrix = OmniFlowMatrix(data_frames, lookback_days=30)
 
@@ -359,7 +362,42 @@ class TargetSniper:
 
         print("═"*90)
 
-        # PHẦN 4: KẾT LUẬN ĐẦU TƯ (CẬP NHẬT THEO MICRO-FLOW)
+        # Phần 4: Kiểm toán Thỏa thuận
+        print("═"*90)
+        print(f" 🤝 4. KIỂM TOÁN GIAO DỊCH THỎA THUẬN (OFF-BOOK AUDIT)")
+        if not self.df_pt.empty:
+            # Lấy thỏa thuận trong 30 ngày gần nhất để xem Lái có đang ém hàng không
+            cutoff_pt = datetime.now() - pd.Timedelta(days=30)
+            df_pt_recent = self.df_pt[self.df_pt['time'] >= cutoff_pt].copy()
+            
+            if not df_pt_recent.empty:
+                total_pt_val = df_pt_recent['match_value'].sum() / 1_000_000_000
+                vwap_pt = (df_pt_recent['price'] * df_pt_recent['volume']).sum() / df_pt_recent['volume'].sum()
+                avg_change = df_pt_recent['change_percent'].mean() * 100
+
+                print(f"    - Tổng GT Thỏa thuận (30D): {total_pt_val:.1f} Tỷ VNĐ")
+                print(f"    - Giá vốn Trao tay (VWAP) : ~{vwap_pt:,.0f} đ")
+                
+                # Bóc tách Ý đồ (Premium vs Discount)
+                if avg_change > 1.0:
+                    intent = "🔥 PREMIUM (Mua giá cao hơn trên sàn -> Khát hàng, Cực kỳ Bullish)"
+                elif avg_change < -1.0:
+                    intent = "🧊 DISCOUNT (Trao tay giá rẻ -> Thường là Sang tay nội bộ/Giải chấp)"
+                else:
+                    intent = "⚖️ NEUTRAL (Trao tay quanh giá tham chiếu)"
+                    
+                print(f"    - Ý đồ Tạo lập (Intent)   : {intent}")
+                
+                # Hợp lưu Mua (Giá trị Thỏa thuận > 50 Tỷ mới được coi là Phòng tuyến)
+                if total_pt_val > 50.0:
+                    print(f"    => 🛡️ ĐIỂM NEO GIÁ (ANCHOR) : Nếu giá rớt về sát {vwap_pt:,.0f}đ sẽ có Lực đỡ Khổng lồ từ Tay to!")
+            else:
+                print("    - Không phát hiện GD Thỏa thuận nào đáng kể trong 30 ngày qua.")
+        else:
+            print("    - Không có dữ liệu Giao dịch Thỏa thuận.")
+        print("═"*90)
+
+        # PHẦN 5: KẾT LUẬN ĐẦU TƯ (CẬP NHẬT THEO MICRO-FLOW)
         print(" 🎯 HÀNH ĐỘNG KHUYẾN NGHỊ (SNIPER FINAL VERDICT):")
         
         is_validated_bull = "XÁC NHẬN ĐÚNG" in validation and ("BULLISH" in micro_flow['thesis'] or "BOTTOMING" in micro_flow['thesis'] or "TILT BULL" in micro_flow['thesis'])

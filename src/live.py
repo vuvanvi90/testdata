@@ -57,6 +57,9 @@ class LiveAssistant:
         # Nạp Intraday
         self.df_intra = self._load_parquet_safe(self.parquet_dir / 'intraday/master_intraday.parquet')
 
+        # Nạp Put-through
+        self.df_pt = self._load_parquet_safe(self.parquet_dir / 'intraday/master_put_through.parquet')
+
         # Nạp danh sách mã theo ngành
         self.df_ind = self._load_parquet_safe(self.parquet_dir / 'macro/groups_by_industries.parquet')
 
@@ -140,7 +143,8 @@ class LiveAssistant:
                 'comp': df_comp,
                 'idx': self._load_parquet_safe(self.parquet_dir / 'macro/index_components.parquet'),
                 'board': self.df_board,
-                'intra': self.df_intra
+                'intra': self.df_intra,
+                'put_through': self.df_pt
             }
             self.omni_matrix = OmniFlowMatrix(data_frames, lookback_days=30)
         except Exception as e:
@@ -191,6 +195,11 @@ class LiveAssistant:
                 col_name = 'symbol' if 'symbol' in self.df_board.columns else 'ticker'
                 if col_name in self.df_board.columns:
                     self.df_board = self.df_board[self.df_board[col_name].isin(valid_tickers)]
+
+            if not self.df_pt.empty:
+                col_name = 'symbol' if 'symbol' in self.df_pt.columns else 'ticker'
+                if col_name in self.df_pt.columns:
+                    self.df_pt = self.df_pt[self.df_pt[col_name].isin(valid_tickers)]
 
             # 2. LỌC ĐỒNG LOẠT CÁC DICTIONARY BẰNG SET (TRA CỨU O(1))
             valid_set = set(valid_tickers) # Chuyển list thành set để tăng tốc độ lặp lên 100 lần

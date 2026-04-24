@@ -21,6 +21,7 @@ class OmniFlowMatrix:
         self.df_idx = data_frames.get('idx', pd.DataFrame())
         self.df_board = data_frames.get('board', pd.DataFrame())
         self.df_intra = data_frames.get('intra', pd.DataFrame())
+        self.df_pt = data_frames.get('put_through', pd.DataFrame())
         
         self.lookback_days = lookback_days
         self.DIVISOR = 1_000_000_000 # Quy đổi ra Tỷ VNĐ
@@ -147,27 +148,35 @@ class OmniFlowMatrix:
         cube['p_net_bn'] = cube['prop_net_value'] / self.DIVISOR
         cube['sm_net_bn'] = cube['f_net_bn'] + cube['p_net_bn']
 
-        # 5. NHẬN DIỆN SANG TAY ĐỘC LẬP (INDEPENDENT PUT-THROUGH FILTER)
+        # 5. NHẬN DIỆN SANG TAY BẰNG DỮ LIỆU SỰ THẬT (GROUND TRUTH)
         cube['vol_ma20'] = cube.groupby('ticker')['volume'].transform(lambda x: x.rolling(20, min_periods=1).mean())
         cube['price_spread_pct'] = (cube['high'] - cube['low']) / cube['low'] * 100
-        
-        # Điều kiện On-book (Đột biến khối lượng nhưng giá đứng im -> Áp dụng chung)
         cond_on_book = (cube['volume'] > cube['vol_ma20'] * 3) & (cube['price_spread_pct'] < 2.0)
         
-        # Điều kiện Off-book (Tách riêng Khối ngoại và Tự doanh)
-        cond_off_book_f = cube['f_net_bn'].abs() > (cube['total_val_bn'] * 0.8)
-        cond_off_book_p = cube['p_net_bn'].abs() > (cube['total_val_bn'] * 0.8)
+        # Đọc dữ liệu Thỏa thuận truyền vào từ data_frames
+        if not self.df_pt.empty:
+            # Nhóm tổng giá trị thỏa thuận theo Ngày và Mã
+            df_pt_agg = self.df_pt.groupby(['symbol', 'time'])['match_value'].sum().reset_index()
+            df_pt_agg = df_pt_agg.rename(columns={'symbol': 'ticker', 'match_value': 'pt_val_total'})
+            df_pt_agg['pt_val_bn'] = df_pt_agg['pt_val_total'] / self.DIVISOR
+            # Merge vào Ma trận Lịch sử
+            cube = pd.merge(cube, df_pt_agg, on=['ticker', 'time'], how='left').fillna({'pt_val_bn': 0})
+        else:
+            cube['pt_val_bn'] = 0
+
+        # LỌC KÉP: Dùng cả Công thức Heuristic VÀ Dữ liệu Sự thật
+        # Nếu Dòng tiền Thể chế > 80% Thanh khoản HOẶC Dòng tiền Thể chế trùng khớp với giá trị Thỏa thuận thật
+        cond_off_book_f = (cube['f_net_bn'].abs() > (cube['total_val_bn'] * 0.8)) | ((cube['pt_val_bn'] > 0) & (cube['f_net_bn'].abs() >= cube['pt_val_bn'] * 0.7))
+        cond_off_book_p = (cube['p_net_bn'].abs() > (cube['total_val_bn'] * 0.8)) | ((cube['pt_val_bn'] > 0) & (cube['p_net_bn'].abs() >= cube['pt_val_bn'] * 0.7))
         
-        # Cắm cờ riêng biệt
         cube['is_pt_f'] = np.where(cond_on_book | cond_off_book_f, True, False)
         cube['is_pt_p'] = np.where(cond_on_book | cond_off_book_p, True, False)
         
-        # ÉP VỀ 0 ĐỘC LẬP: Thằng nào sang tay thì thằng đó bị ép về 0, giữ lại data thật
+        # Làm sạch Dòng tiền
         cube['f_net_adj'] = np.where(cube['is_pt_f'], 0, cube['f_net_bn'])
         cube['p_net_adj'] = np.where(cube['is_pt_p'], 0, cube['p_net_bn'])
-        
-        # Tính Smart Money và Shadow Flow dựa trên dòng tiền đã được làm sạch
         cube['sm_net_adj'] = cube['f_net_adj'] + cube['p_net_adj']
+
         cube['shadow_flow_bn'] = (cube['total_val_bn'] - cube['f_net_adj'].abs() - cube['p_net_adj'].abs()).clip(lower=0)
 
         # 6. GẮN MÁC RỔ & NGÀNH
