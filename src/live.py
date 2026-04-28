@@ -277,11 +277,21 @@ class LiveAssistant:
         """Hàm đọc Parquet an toàn, tránh lỗi nếu file chưa tồn tại"""
         if path.exists():
             try: 
-                # return pd.read_parquet(path)
                 df = pd.read_parquet(path)
                 # LỘT BỎ TIMEZONE (ÉP VỀ NAIVE) NGAY KHI ĐỌC LÊN RAM
+                # Ép kiểu và Lột múi giờ an toàn
                 if 'time' in df.columns:
-                    if hasattr(df['time'].dt, 'tz') and df['time'].dt.tz is not None:
+                    # 1. Kiểm tra và ép về datetime nếu cột time chưa chuẩn
+                    if not pd.api.types.is_datetime64_any_dtype(df['time']):
+                        if pd.api.types.is_numeric_dtype(df['time']):
+                            # Nếu là số nguyên (mili-giây từ epoch)
+                            df['time'] = pd.to_datetime(df['time'], unit='ms')
+                        else:
+                            # Nếu là chuỗi string
+                            df['time'] = pd.to_datetime(df['time'])
+                    
+                    # 2. Lột bỏ Timezone (Ép về Naive)
+                    if getattr(df['time'].dt, 'tz', None) is not None:
                         df['time'] = df['time'].dt.tz_localize(None)
                 return df
             except: 

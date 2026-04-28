@@ -24,14 +24,26 @@ class TargetSniper:
     def _load_parquet_safe(self, path):
         if path.exists():
             try: 
-                # return pd.read_parquet(path)
                 df = pd.read_parquet(path)
                 # LỘT BỎ TIMEZONE (ÉP VỀ NAIVE) NGAY KHI ĐỌC LÊN RAM
+                # Ép kiểu và Lột múi giờ an toàn
                 if 'time' in df.columns:
-                    if hasattr(df['time'].dt, 'tz') and df['time'].dt.tz is not None:
+                    # 1. Kiểm tra và ép về datetime nếu cột time chưa chuẩn
+                    if not pd.api.types.is_datetime64_any_dtype(df['time']):
+                        if pd.api.types.is_numeric_dtype(df['time']):
+                            # Nếu là số nguyên (mili-giây từ epoch)
+                            df['time'] = pd.to_datetime(df['time'], unit='ms')
+                        else:
+                            # Nếu là chuỗi string
+                            df['time'] = pd.to_datetime(df['time'])
+                    
+                    # 2. Lột bỏ Timezone (Ép về Naive)
+                    if getattr(df['time'].dt, 'tz', None) is not None:
                         df['time'] = df['time'].dt.tz_localize(None)
                 return df
-            except: return pd.DataFrame()
+            except Exception as e: 
+                print(f"[!] Lỗi đọc file cũ {path}: {e}")
+                return pd.DataFrame()
         return pd.DataFrame()
 
     def _load_and_filter_data(self):
@@ -52,13 +64,18 @@ class TargetSniper:
         self.df_foreign = df_foreign_raw[df_foreign_raw['ticker'] == self.ticker].copy() if not df_foreign_raw.empty else pd.DataFrame()
         self.df_prop = df_prop_raw[df_prop_raw['ticker'] == self.ticker].copy() if not df_prop_raw.empty else pd.DataFrame()
         self.df_intra = df_intra_raw[df_intra_raw['ticker'] == self.ticker].copy() if not df_intra_raw.empty else pd.DataFrame()
-        self.df_pt = df_pt_raw[df_pt_raw['symbol'] == self.ticker].copy() if not df_pt_raw.empty else pd.DataFrame()
         
         if not df_board_raw.empty:
             col_name = 'symbol' if 'symbol' in df_board_raw.columns else 'ticker'
             self.df_board = df_board_raw[df_board_raw[col_name] == self.ticker].copy()
         else:
             self.df_board = pd.DataFrame()
+
+        if not df_pt_raw.empty:
+            col_name = 'symbol' if 'symbol' in df_pt_raw.columns else 'ticker'
+            self.df_pt = df_pt_raw[df_pt_raw[col_name] == self.ticker].copy()
+        else:
+            self.df_pt = pd.DataFrame()
 
         # Build Dict (Để tương thích với các Engine)
         self.price_dict = {self.ticker: self.df_price}
@@ -444,6 +461,57 @@ class TargetSniper:
                 # Hợp lưu Mua (Chỉ coi là Phòng tuyến nếu Thỏa thuận > 50 Tỷ)
                 if total_pt_val > 50.0:
                     print(f"    => 🛡️ TỌA ĐỘ PHÒNG THỦ   : Nếu giá rớt về sát {vwap_pt:,.0f}đ sẽ kích hoạt Lực đỡ Khổng lồ!")
+
+                # TÍCH HỢP 4 BƯỚC PHÂN TÍCH CHUYÊN SÂU (PUT-THROUGH EDGE)
+                print(f"    --------------------------------------------------------------------------------------")
+                print(f"    [PHÂN TÍCH CHUYÊN SÂU 4 CHIỀU (PUT-THROUGH EDGE)]")
+                
+                # 1. CỤM MỨC GIÁ (WHALE NODE)
+                whale_node = df_pt_recent.groupby('price')['volume'].sum().idxmax()
+                print(f"    - Cụm Giá Tập Trung (Node)     : {whale_node:,.0f} đ (Vùng Nam châm hút giá lớn nhất 30D)")
+
+                # 2. CƯỜNG ĐỘ THANH KHOẢN (LIQUIDITY INTENSITY T0)
+                avg_vol_20d = self.df_price['volume'].tail(20).mean() if not self.df_price.empty else 0
+                t0_pt = df_pt_recent[df_pt_recent['time'].dt.date == self.omni_matrix.t0_date].copy()
+                pt_vol_today = t0_pt['volume'].sum()
+                
+                if avg_vol_20d > 0 and pt_vol_today > 0:
+                    liqd_ratio = pt_vol_today / avg_vol_20d
+                    print(f"    - Cường độ Ẩn T0 (Liqd Ratio)  : {liqd_ratio:.2f}x so với Khớp lệnh MA20")
+                    if liqd_ratio > 2.0:
+                        print("      => 🚨 CẢNH BÁO ĐỘT BIẾN: Thỏa thuận bùng nổ! Rủi ro/Cơ hội thay máu Cổ đông lớn.")
+                else:
+                    print("    - Cường độ Ẩn T0 (Liqd Ratio)  : Không có thỏa thuận trong phiên hôm nay")
+
+                # 3. CHU KỲ TẦN SUẤT (PULSE ANALYSIS)
+                # Chỉ lọc các giao dịch LỚN (Định nghĩa: > 10 Tỷ VNĐ) để đo nhịp tim
+                large_pts = df_pt_recent[df_pt_recent['match_value'] > 10_000_000_000]
+                if not large_pts.empty:
+                    unique_dates = sorted(large_pts['time'].dt.date.unique())
+                    if len(unique_dates) >= 2:
+                        diffs = [(unique_dates[i] - unique_dates[i-1]).days for i in range(1, len(unique_dates))]
+                        avg_pulse = sum(diffs) / len(diffs)
+                        print(f"    - Chu kỳ Nhịp đập (Pulse)      : ~{avg_pulse:.1f} ngày / một nhịp Thỏa thuận LỚN (>10 Tỷ)")
+                    else:
+                        print("    - Chu kỳ Nhịp đập (Pulse)      : Chưa đủ số phiên để đo nhịp điệu Tay to")
+                else:
+                    print("    - Chu kỳ Nhịp đập (Pulse)      : Không có thỏa thuận Khủng (>10 Tỷ) nào")
+
+                # 4. ĐỘ LỆCH PHA THỜI GIAN (TIMING DIVERGENCE T0)
+                if not t0_pt.empty and not self.df_price.empty:
+                    t0_price_row = self.df_price.iloc[-1] 
+                    # Tính biến động giá trên bảng điện (Đóng cửa vs Mở cửa)
+                    price_change_today = (t0_price_row['close'] - t0_price_row['open']) / t0_price_row['open'] * 100 if t0_price_row['open'] > 0 else 0
+                    
+                    t0_pt['weighted_change'] = t0_pt['change_percent'] * t0_pt['match_value']
+                    t0_avg_change = (t0_pt['weighted_change'].sum() / t0_pt['match_value'].sum()) * 100
+                    
+                    print(f"    - Lệch pha T0 (Timing Diverge) : Giá trên sàn {price_change_today:+.2f}% vs Thỏa thuận T0 {t0_avg_change:+.2f}%")
+                    
+                    if price_change_today < -1.0 and t0_avg_change > 1.0:
+                        print("      => 🌟 SIÊU TÍN HIỆU ĐẢO CHIỀU: Đạp sàn ép nhỏ lẻ, Thỏa thuận giá cao (Gom ngầm)!")
+                    elif price_change_today > 1.0 and t0_avg_change < -1.0:
+                        print("      => ⚠️ TÍN HIỆU BULL-TRAP: Kéo thốc trên sàn dụ FOMO, Thỏa thuận giá bèo táng nội bộ!")
             else:
                 print("    - Không phát hiện GD Thỏa thuận nào đáng kể trong 30 ngày qua.")
         else:
