@@ -27,6 +27,7 @@ from src.flow_tracker import SmartMoneyTracker
 # from src.market_tracker import MarketTracker
 # from src.post_mortem import PostMortemAnalyzer
 from src.sniper import TargetSniper
+from src.darkpool import DarkPoolRadar
 
 def main():
     df_price = _load_parquet(Path('data/parquet/price/master_price.parquet'))
@@ -70,11 +71,18 @@ def main():
     # run_midcap_trading_system()
     # run_smallcap_trading_system()
 
+    # radar = DarkPoolRadar()
+    # radar.run_radar()
+
     # # watch_list = ["SHB","GMD","FPT","VHM","VIC"]
     # watch_list = ["SHB","GMD"]
     # for ticker in watch_list:
     #     sniper = TargetSniper(ticker=ticker)
     #     sniper.analyze()
+
+    # # Bóc tách dòng tiền của 1 mã bất kỳ
+    # tracker = SmartMoneyTracker(df_price, df_foreign, df_prop, df_indx=df_index)
+    # tracker.track_ticker(ticker='SHB', target_date=None, start_date='2026-03-01')
 
     # # Test: Kiểm tra mã tăng và signal trước đó
     # analyzer = PostMortemAnalyzer()
@@ -131,10 +139,6 @@ def main():
     # manual_list = ["DIG", "GMD"]
     # for ticker in manual_list:
     #     inspector.inspect_single_ticker(ticker=ticker)
-
-    # # Bóc tách dòng tiền của 1 mã bất kỳ
-    # tracker = SmartMoneyTracker(df_price, df_foreign, df_prop, df_indx=df_index)
-    # tracker.track_ticker(ticker='SHB', target_date=None, start_date='2026-03-01')
 
     # # Kiểm soát vùng xám
     # profiler = ShadowProfiler(df_price)
