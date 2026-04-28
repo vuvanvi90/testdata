@@ -8,7 +8,7 @@ class MarketFlowAnalyzer:
         # Đồng bộ Bộ lọc Hạn sử dụng với Smart Money
         self.MAX_DELAY_DAYS = 15 
 
-    def analyze_flow(self, ticker, df_p, df_f, df_pr, target_date_str=None, lookback_sessions=130):
+    def analyze_flow(self, ticker, df_p, df_f, df_pr, df_pt, target_date_str=None, lookback_sessions=130):
         result = {
             "ticker": ticker,
             "anchor_date": None,
@@ -23,12 +23,21 @@ class MarketFlowAnalyzer:
 
         if df_p is None or df_p.empty: return result
 
+        # ÉP TARGET_DATE VỀ NAIVE (NẾU CÓ TIMEZONE)
         target_date = pd.to_datetime(target_date_str) if target_date_str else pd.Timestamp.now().normalize()
+        if getattr(target_date, 'tz', None) is not None:
+            target_date = target_date.tz_localize(None)
 
         # =====================================================================
         # 1. TIỀN XỬ LÝ LƯỚI LỌC THỜI GIAN CHUẨN (TRUE-TIME WINDOW)
         # =====================================================================
-        df_p = df_p[df_p['time'] <= target_date].sort_values('time').copy()
+        df_p = df_p.copy()
+        
+        # ÉP df_p VỀ NAIVE (BẢO HIỂM 2 LỚP)
+        if getattr(df_p['time'].dt, 'tz', None) is not None:
+            df_p['time'] = df_p['time'].dt.tz_localize(None)
+
+        df_p = df_p[df_p['time'] <= target_date].sort_values('time')
         if df_p.empty: return result
 
         # CHẶN ĐỨNG LỖI "ZOMBIE STOCK"
@@ -89,29 +98,43 @@ class MarketFlowAnalyzer:
         # =====================================================================
         # 4 & 5. KẾ TOÁN GIÁ VỐN LÁI (SMART MONEY COST BASIS ACCOUNTING)
         # =====================================================================
-        df_flow['net_f'] = df_flow.get('f_net', 0)
-        df_flow['net_p'] = df_flow.get('p_net', 0)
-        df_flow['net_sm'] = df_flow.get('sm_net', 0)
-
         df_flow['val_f'] = df_flow.get('foreign_net_value', 0)
         df_flow['val_p'] = df_flow.get('prop_net_value', 0)
-        df_flow['val_sm'] = df_flow['val_f'] + df_flow['val_p']
         
         # BỘ LỌC SANG TAY (PUT-THROUGH NEUTRALIZER)
         df_flow['total_val_bn'] = (df_flow['close'] * df_flow['volume']) / 1_000_000_000
+        df_flow['val_f_bn'] = df_flow['val_f'] / 1_000_000_000
+        df_flow['val_p_bn'] = df_flow['val_p'] / 1_000_000_000
+
         df_flow['vol_ma20'] = df_flow['volume'].rolling(20, min_periods=1).mean()
         df_flow['price_spread_pct'] = (df_flow['high'] - df_flow['low']) / df_flow['low'] * 100
 
         cond_on_book = (df_flow['volume'] > df_flow['vol_ma20'] * 3) & (df_flow['price_spread_pct'] < 2.0)
-        cond_off_book_f = ((df_flow['val_f'].abs()) / 1_000_000_000) > (df_flow['total_val_bn'] * 0.8)
-        cond_off_book_p = ((df_flow['val_p'].abs()) / 1_000_000_000) > (df_flow['total_val_bn'] * 0.8)
+
+        # ĐƯA GROUND TRUTH (DF_PT) VÀO LÀM CHUẨN ĐỐI CHIẾU
+        if df_pt is not None and not df_pt.empty:
+            # Lọc đúng mã
+            sym_col = 'symbol' if 'symbol' in df_pt.columns else ('ticker' if 'ticker' in df_pt.columns else None)
+            df_pt_ticker = df_pt[df_pt[sym_col] == ticker].copy() if sym_col else df_pt.copy()
+            
+            # Lọc đúng khung thời gian
+            df_pt_valid = df_pt_ticker[(df_pt_ticker['time'] >= start_date) & (df_pt_ticker['time'] <= target_date)].copy()
+            
+            if not df_pt_valid.empty:
+                df_pt_agg = df_pt_valid.groupby('time')['match_value'].sum().reset_index()
+                df_pt_agg['pt_val_bn'] = df_pt_agg['match_value'] / 1_000_000_000
+                df_flow = pd.merge(df_flow, df_pt_agg[['time', 'pt_val_bn']], on='time', how='left').fillna({'pt_val_bn': 0})
+            else:
+                df_flow['pt_val_bn'] = 0
+        else:
+            df_flow['pt_val_bn'] = 0
+
+        # LỌC KÉP: Dùng cả Công thức Heuristic VÀ Dữ liệu Sự thật (Ngưỡng 40%)
+        cond_off_book_f = (df_flow['val_f_bn'].abs() > (df_flow['total_val_bn'] * 0.8)) | ((df_flow['pt_val_bn'] > 0) & (df_flow['val_f_bn'].abs() >= df_flow['pt_val_bn'] * 0.4))
+        cond_off_book_p = (df_flow['val_p_bn'].abs() > (df_flow['total_val_bn'] * 0.8)) | ((df_flow['pt_val_bn'] > 0) & (df_flow['val_p_bn'].abs() >= df_flow['pt_val_bn'] * 0.4))
 
         df_flow['is_pt_f'] = np.where(cond_on_book | cond_off_book_f, True, False)
         df_flow['is_pt_p'] = np.where(cond_on_book | cond_off_book_p, True, False)
-
-        # # Nếu là Sang tay -> Ép Dòng tiền Thể chế về 0 để không làm méo VWAP
-        # df_flow['net_sm'] = np.where(df_flow['is_put_through'], 0, df_flow.get('sm_net', 0))
-        # df_flow['val_sm'] = np.where(df_flow['is_put_through'], 0, df_flow['val_f'] + df_flow['val_p'])
 
         # Điều chỉnh độc lập
         df_flow['net_f_adj'] = np.where(df_flow['is_pt_f'], 0, df_flow.get('f_net', 0))

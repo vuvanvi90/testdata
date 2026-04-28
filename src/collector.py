@@ -1006,29 +1006,47 @@ class VNStockDataPipeline:
         print("     TẢI DỮ LIỆU GIAO DỊCH THỎA THUẬN (PUT-THROUGH)")
         print("="*50)
         try:
-            trading = Trading(source='VCI')
+            trading = Trading(source=self.source)
             df_pt = trading.put_through()
-            required_cols = ['time', 'symbol', 'price', 'volume', 'match_value', 'change_percent']
+            required_cols = ['time', 'symbol', 'price', 'volume', 'match_value', 'change_percent', 'match_value', 'accumulated_volume', 'accumulated_value']
             df_pt = self._validate_schema(df_pt, required_cols, item_name="Put-Through")
 
             if df_pt is not None and not df_pt.empty:
-                # Chuẩn hóa thời gian từ mili-giây
+                # 1. CHUẨN HÓA THỜI GIAN DATA MỚI (ÉP VỀ NAIVE)
                 if pd.api.types.is_numeric_dtype(df_pt['time']):
                     df_pt['time'] = pd.to_datetime(df_pt['time'], unit='ms').dt.normalize()
                 else:
                     df_pt['time'] = pd.to_datetime(df_pt['time']).dt.normalize()
+                
+                # Quét và lột bỏ Timezone nếu API trả về có múi giờ
+                if getattr(df_pt['time'].dt, 'tz', None) is not None:
+                    df_pt['time'] = df_pt['time'].dt.tz_localize(None)
 
-                pt_path = self.folders['intraday'] / "master_put_through.parquet"
+                pt_path = self.folders['current'] / "master_put_through.parquet"
                 if pt_path.exists():
                     old_df = pd.read_parquet(pt_path)
+                    
+                    # 2. CHUẨN HÓA THỜI GIAN DATA CŨ (LỘT BỎ UTC TỪ PARQUET)
+                    if 'time' in old_df.columns and getattr(old_df['time'].dt, 'tz', None) is not None:
+                        old_df['time'] = old_df['time'].dt.tz_localize(None)
+                    
+                    # 3. GỘP DỮ LIỆU
                     combined = pd.concat([old_df, df_pt], ignore_index=True)
-                    # Xóa trùng lặp theo Ngày, Mã, Giá và Khối lượng
-                    combined = combined.drop_duplicates(subset=['time', 'symbol', 'price', 'volume', 'change', 'change_percent', 'match_value'], keep='last')
+                    
+                    # 4. TỐI ƯU XÓA TRÙNG LẶP (DROP DUPLICATES)
+                    # Cần check toàn bộ các cột quan trọng để không xóa nhầm các lệnh tách nhỏ
+                    check_cols = [c for c in required_cols if c in combined.columns]
+                    combined = combined.drop_duplicates(subset=check_cols, keep='last')
                 else:
                     combined = df_pt
 
+                # Sắp xếp lại cho chuẩn Timeline
+                combined = combined.sort_values(['time', 'symbol']).reset_index(drop=True)
+                # 5. LƯU LẠI VÀO Ổ CỨNG
                 combined.to_parquet(pt_path, engine='pyarrow')
-                print(f" [OK] Đã lưu {len(df_pt)} dòng vào master_put_through.parquet")
+                print(f" [OK] Đã lưu {len(df_pt)} GD Thỏa thuận hôm nay. Tổng: {len(combined)} GD.")
+            else:
+                print(" [*] Không có giao dịch Thỏa thuận nào hôm nay.")
         except Exception as e:
             print(f" [!] Lỗi tải Giao dịch Thỏa thuận: {e}")
 

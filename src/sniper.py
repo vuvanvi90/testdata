@@ -23,7 +23,14 @@ class TargetSniper:
 
     def _load_parquet_safe(self, path):
         if path.exists():
-            try: return pd.read_parquet(path)
+            try: 
+                # return pd.read_parquet(path)
+                df = pd.read_parquet(path)
+                # LỘT BỎ TIMEZONE (ÉP VỀ NAIVE) NGAY KHI ĐỌC LÊN RAM
+                if 'time' in df.columns:
+                    if hasattr(df['time'].dt, 'tz') and df['time'].dt.tz is not None:
+                        df['time'] = df['time'].dt.tz_localize(None)
+                return df
             except: return pd.DataFrame()
         return pd.DataFrame()
 
@@ -35,7 +42,7 @@ class TargetSniper:
         df_prop_raw = self._load_parquet_safe(self.data_dir / 'macro/prop_flow.parquet')
         df_intra_raw = self._load_parquet_safe(self.data_dir / 'intraday/master_intraday.parquet')
         df_board_raw = self._load_parquet_safe(self.data_dir / 'board/master_board.parquet')
-        df_pt_raw = self._load_parquet_safe(self.data_dir / 'board/master_put_through.parquet')
+        df_pt_raw = self._load_parquet_safe(self.data_dir / 'intraday/master_put_through.parquet')
         
         self.df_comp = self._load_parquet_safe(self.data_dir / 'company/master_company.parquet')
         self.df_idx = self._load_parquet_safe(self.data_dir / 'macro/index_components.parquet')
@@ -271,7 +278,7 @@ class TargetSniper:
             }
 
         sm_result = self.sm_engine.analyze_ticker(self.ticker, board_info)
-        mf_result = self.mf_analyzer.analyze_flow(self.ticker, df_full, self.df_foreign, self.df_prop)
+        mf_result = self.mf_analyzer.analyze_flow(self.ticker, df_full, self.df_foreign, self.df_prop, self.df_pt)
         sm_vwap = mf_result.get('sm_vwap', 0)
         dtl = mf_result.get('dtl_days', 0)
 
@@ -318,6 +325,8 @@ class TargetSniper:
         # GỌI MODULE MICRO-FLOW T-3 ĐẾN T-1
         micro_flow = self._analyze_micro_flow()
 
+        validation = "CHƯA XÁC NHẬN"
+        
         # PHẦN 3: ĐỘNG LƯỢNG HIỆN TẠI & KIỂM ĐỊNH GIẢ THUYẾT
         print(f" ⚡ 3. ĐỘNG LƯỢNG KẾT HỢP (MICRO-FLOW VALIDATION)")
         if micro_flow:
@@ -333,7 +342,6 @@ class TargetSniper:
             print(f"    - Sổ lệnh (Bid/Ask)      : Mất cân bằng {omni_now['imbalance']:+.2f}")
 
             # 🚀 ĐỘNG CƠ KIỂM ĐỊNH (VALIDATOR)
-            validation = "CHƯA XÁC NHẬN"
             t0_active = omni_now['net_active_bn']
             if micro_flow:
                 # 1. KỊCH BẢN BỐI CẢNH TÍCH CỰC (GOM HÀNG)
@@ -366,31 +374,62 @@ class TargetSniper:
         print("═"*90)
         print(f" 🤝 4. KIỂM TOÁN GIAO DỊCH THỎA THUẬN (OFF-BOOK AUDIT)")
         if not self.df_pt.empty:
-            # Lấy thỏa thuận trong 30 ngày gần nhất để xem Lái có đang ém hàng không
+            
+            # 1. LẬP BẢN ĐỒ TIMELINE (T-5 -> T0)
+            # Lấy 6 ngày gần nhất từ df_price để đồng bộ trục thời gian với Phần 3
+            trading_days = sorted(self.df_price['time'].unique())[-6:]
+            pt_vals = []
+            pt_intents = []
+            
+            for d in trading_days:
+                df_day = self.df_pt[self.df_pt['time'] == d].copy()
+                if not df_day.empty:
+                    val_bn = df_day['match_value'].sum() / 1_000_000_000
+                    # Tính % Premium/Discount gia quyền theo Volume của riêng ngày đó
+                    df_day['weighted_change'] = df_day['change_percent'] * df_day['match_value']
+                    w_change = (df_day['weighted_change'].sum() / df_day['match_value'].sum()) * 100
+                    
+                    pt_vals.append(f"{val_bn:+.1f}")
+                    if w_change > 1.0: pt_intents.append("🔥")     # Premium (Khát hàng)
+                    elif w_change < -1.0: pt_intents.append("🧊")  # Discount (Giải chấp/Nội bộ)
+                    else: pt_intents.append("⚖️")                  # Neutral (Quanh tham chiếu)
+                else:
+                    # Nếu ngày đó không có thỏa thuận
+                    pt_vals.append(f"{0.0:+.1f}")
+                    pt_intents.append(" -")
+
+            print(f"    [LỊCH TRÌNH 6 PHIÊN (T-5 -> T0)]")
+            print(f"    - Sang tay (Tỷ VNĐ) : {' | '.join(pt_vals)}")
+            print(f"    - Ý đồ (Intent)     : {'  |  '.join(pt_intents)}  (🔥 Đắt / 🧊 Rẻ / ⚖️ Tham chiếu)")
+            print(f"    --------------------------------------------------------------------------------------")
+
+            # 2. TỔNG KẾT TÌM ĐIỂM NEO GIÁ 30 NGÀY (ANCHOR FINDER)
             cutoff_pt = datetime.now() - pd.Timedelta(days=30)
             df_pt_recent = self.df_pt[self.df_pt['time'] >= cutoff_pt].copy()
             
             if not df_pt_recent.empty:
                 total_pt_val = df_pt_recent['match_value'].sum() / 1_000_000_000
                 vwap_pt = (df_pt_recent['price'] * df_pt_recent['volume']).sum() / df_pt_recent['volume'].sum()
-                avg_change = df_pt_recent['change_percent'].mean() * 100
-
-                print(f"    - Tổng GT Thỏa thuận (30D): {total_pt_val:.1f} Tỷ VNĐ")
-                print(f"    - Giá vốn Trao tay (VWAP) : ~{vwap_pt:,.0f} đ")
                 
-                # Bóc tách Ý đồ (Premium vs Discount)
+                df_pt_recent['weighted_change'] = df_pt_recent['change_percent'] * df_pt_recent['match_value']
+                avg_change = (df_pt_recent['weighted_change'].sum() / df_pt_recent['match_value'].sum()) * 100
+
+                print(f"    [TỔNG KẾT VÙNG NEO GIÁ (30D)]")
+                print(f"    - Tổng quy mô Trao tay  : {total_pt_val:.1f} Tỷ VNĐ")
+                print(f"    - Giá vốn Thỏa thuận    : ~{vwap_pt:,.0f} đ")
+                
                 if avg_change > 1.0:
-                    intent = "🔥 PREMIUM (Mua giá cao hơn trên sàn -> Khát hàng, Cực kỳ Bullish)"
+                    intent = "🔥 PREMIUM (Khát hàng, Chấp nhận mua đắt -> Siêu Bullish)"
                 elif avg_change < -1.0:
-                    intent = "🧊 DISCOUNT (Trao tay giá rẻ -> Thường là Sang tay nội bộ/Giải chấp)"
+                    intent = "🧊 DISCOUNT (Trao tay giá rẻ -> Thường là Sang tay nội bộ/Né thuế)"
                 else:
                     intent = "⚖️ NEUTRAL (Trao tay quanh giá tham chiếu)"
                     
-                print(f"    - Ý đồ Tạo lập (Intent)   : {intent}")
+                print(f"    - Ý đồ Tổng thể (Intent): {intent}")
                 
-                # Hợp lưu Mua (Giá trị Thỏa thuận > 50 Tỷ mới được coi là Phòng tuyến)
+                # Hợp lưu Mua (Chỉ coi là Phòng tuyến nếu Thỏa thuận > 50 Tỷ)
                 if total_pt_val > 50.0:
-                    print(f"    => 🛡️ ĐIỂM NEO GIÁ (ANCHOR) : Nếu giá rớt về sát {vwap_pt:,.0f}đ sẽ có Lực đỡ Khổng lồ từ Tay to!")
+                    print(f"    => 🛡️ TỌA ĐỘ PHÒNG THỦ   : Nếu giá rớt về sát {vwap_pt:,.0f}đ sẽ kích hoạt Lực đỡ Khổng lồ!")
             else:
                 print("    - Không phát hiện GD Thỏa thuận nào đáng kể trong 30 ngày qua.")
         else:

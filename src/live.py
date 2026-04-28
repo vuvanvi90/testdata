@@ -59,6 +59,7 @@ class LiveAssistant:
 
         # Nạp Put-through
         self.df_pt = self._load_parquet_safe(self.parquet_dir / 'intraday/master_put_through.parquet')
+        self.pt_dict = self._load_pt_dict(self.parquet_dir / 'intraday/master_put_through.parquet')
 
         # Nạp danh sách mã theo ngành
         self.df_ind = self._load_parquet_safe(self.parquet_dir / 'macro/groups_by_industries.parquet')
@@ -276,7 +277,13 @@ class LiveAssistant:
         """Hàm đọc Parquet an toàn, tránh lỗi nếu file chưa tồn tại"""
         if path.exists():
             try: 
-                return pd.read_parquet(path)
+                # return pd.read_parquet(path)
+                df = pd.read_parquet(path)
+                # LỘT BỎ TIMEZONE (ÉP VỀ NAIVE) NGAY KHI ĐỌC LÊN RAM
+                if 'time' in df.columns:
+                    if hasattr(df['time'].dt, 'tz') and df['time'].dt.tz is not None:
+                        df['time'] = df['time'].dt.tz_localize(None)
+                return df
             except: 
                 print(f"Could NOT read {path}")
                 return pd.DataFrame()
@@ -323,6 +330,19 @@ class LiveAssistant:
             price_dict[ticker] = group
             
         return price_dict
+
+    def _load_pt_dict(self, path):
+        df = self._load_parquet_safe(path)
+        if df.empty or 'symbol' not in df.columns:
+            return {}
+            
+        pt_dict = {}
+        for ticker, group in df.groupby('symbol'):
+            # CHỈ GIỮ 130 DÒNG CUỐI (Tương đương 6 tháng giao dịch)
+            group = group.sort_values('time').tail(130)
+            pt_dict[ticker] = group
+            
+        return pt_dict
 
     def _evaluate_macro_environment(self):
         """Phân tích Ma trận Thanh khoản từ dữ liệu Vĩ mô (CPI & Tín dụng)"""
@@ -1425,7 +1445,8 @@ class LiveAssistant:
             df_p_ticker = df_full_price[df_full_price['ticker'] == ticker]
             df_f_ticker = self.foreign_dict.get(ticker)
             df_pr_ticker = self.prop_dict.get(ticker)
-            mf_info_dict[ticker] = mf_analyzer.analyze_flow(ticker, df_p_ticker, df_f_ticker, df_pr_ticker)
+            df_pt_ticker = self.pt_dict.get(ticker)
+            mf_info_dict[ticker] = mf_analyzer.analyze_flow(ticker, df_p_ticker, df_f_ticker, df_pr_ticker, df_pt_ticker)
 
         # =====================================================================
         # 📡 EARLY RADAR (ĐƯA VÀO TẦM NGẮM CÁC KÈO TÂY CHỚM GOM)

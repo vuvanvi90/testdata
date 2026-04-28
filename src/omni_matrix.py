@@ -166,8 +166,8 @@ class OmniFlowMatrix:
 
         # LỌC KÉP: Dùng cả Công thức Heuristic VÀ Dữ liệu Sự thật
         # Nếu Dòng tiền Thể chế > 80% Thanh khoản HOẶC Dòng tiền Thể chế trùng khớp với giá trị Thỏa thuận thật
-        cond_off_book_f = (cube['f_net_bn'].abs() > (cube['total_val_bn'] * 0.8)) | ((cube['pt_val_bn'] > 0) & (cube['f_net_bn'].abs() >= cube['pt_val_bn'] * 0.7))
-        cond_off_book_p = (cube['p_net_bn'].abs() > (cube['total_val_bn'] * 0.8)) | ((cube['pt_val_bn'] > 0) & (cube['p_net_bn'].abs() >= cube['pt_val_bn'] * 0.7))
+        cond_off_book_f = (cube['f_net_bn'].abs() > (cube['total_val_bn'] * 0.8)) | ((cube['pt_val_bn'] > 0) & (cube['f_net_bn'].abs() >= cube['pt_val_bn'] * 0.4))
+        cond_off_book_p = (cube['p_net_bn'].abs() > (cube['total_val_bn'] * 0.8)) | ((cube['pt_val_bn'] > 0) & (cube['p_net_bn'].abs() >= cube['pt_val_bn'] * 0.4))
         
         cube['is_pt_f'] = np.where(cond_on_book | cond_off_book_f, True, False)
         cube['is_pt_p'] = np.where(cond_on_book | cond_off_book_p, True, False)
