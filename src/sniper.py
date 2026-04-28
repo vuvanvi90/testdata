@@ -376,8 +376,22 @@ class TargetSniper:
         if not self.df_pt.empty:
             
             # 1. LẬP BẢN ĐỒ TIMELINE (T-5 -> T0)
-            # Lấy 6 ngày gần nhất từ df_price để đồng bộ trục thời gian với Phần 3
-            trading_days = sorted(self.df_price['time'].unique())[-6:]
+            # trading_days = sorted(self.df_price['time'].unique())[-6:]
+
+            # XÁC ĐỊNH CHUẨN PHIÊN GIAO DỊCH T-5 ĐẾN T0
+            # Lấy 5 ngày giao dịch cũ từ df_price
+            past_sessions = sorted(self.df_price['time'].unique())
+            if len(past_sessions) >= 5:
+                # Nếu ngày cuối cùng của df_price chính là T0 (sau khi kết thúc phiên)
+                if past_sessions[-1].date() == self.omni_matrix.t0_date:
+                    trading_days = past_sessions[-6:] # Lấy đủ 6 ngày cuối
+                else:
+                    # Nếu đang trong phiên (df_price mới đến T-1), lấy 5 ngày cũ + T0 hệ thống
+                    t0_timestamp = pd.Timestamp(self.omni_matrix.t0_date)
+                    trading_days = past_sessions[-5:] + [t0_timestamp]
+            else:
+                trading_days = past_sessions # Phòng hờ dữ liệu quá ít
+
             pt_vals = []
             pt_intents = []
             
