@@ -13,7 +13,8 @@ from pathlib import Path
 # Giao dịch thỏa thuận: 9h00 – 15h00
 
 # from src.collector import VNStockDataPipeline
-from src.run_bot import run_trading_system, run_vn30_trading_system, run_midcap_trading_system, run_smallcap_trading_system
+# from src.run_bot import run_trading_system
+from src.run_bot import run_darkpool_radar, run_vn30_live, run_midcap_live, run_smallcap_live
 # from src.run_bot import run_cashflow_report, run_cashflow_group_report
 # from src.backtester import VectorizedBacktester
 # from src.validator import ValidatePipeline
@@ -65,17 +66,17 @@ def main():
     # # pipeline.get_share_group = True
     # pipeline.run_pipeline()
 
-    # Chạy vào 14h15 hàng ngày là tốt nhất
-    # run_trading_system()
-    # run_vn30_trading_system()
-    # run_midcap_trading_system()
-    # run_smallcap_trading_system()
+    # Chạy 5 phút/lần để nắm bắt dòng tiền thỏa thuận 
+    # run_darkpool_radar()
 
-    # radar = DarkPoolRadar()
-    # radar.run_radar()
+    # Chạy vào 14h15 hàng ngày là tốt nhất
+    # run_vn30_live()
+    # run_midcap_live()
+    # run_smallcap_live()
 
     # # watch_list = ["SHB","GMD","FPT","VHM","VIC"]
     # watch_list = ["SHB","GMD"]
+    # # watch_list = ["POW","IJC"]
     # for ticker in watch_list:
     #     sniper = TargetSniper(ticker=ticker)
     #     sniper.analyze()

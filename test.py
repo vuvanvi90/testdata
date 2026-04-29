@@ -26,6 +26,7 @@ class VN30DataPipeline:
         df_price = self._load_parquet(Path('data/parquet/price/master_price.parquet'))
         df_board = self._load_parquet(Path('data/parquet/board/master_board.parquet'))
         df_intra = self._load_parquet(Path('data/parquet/intraday/master_intraday.parquet'))
+        df_pt = self._load_parquet(Path('data/parquet/intraday/master_put_through.parquet'))
         df_foreign = self._load_parquet(Path('data/parquet/macro/foreign_flow.parquet'))
         df_prop = self._load_parquet(Path('data/parquet/macro/prop_flow.parquet'))
         df_industry = self._load_parquet(Path('data/parquet/macro/groups_by_industries.parquet'))
@@ -213,6 +214,49 @@ class VN30DataPipeline:
         #     df_group = {ticker: group for ticker, group in df_intra.groupby('ticker')}
         #     print(df_group['GMD'].tail(10))
         #     # df_intra.to_json("intraday.json", orient='records', force_ascii=False, indent=4)
+
+        # if not df_pt.empty:
+        #     # df_group = {ticker: group for ticker, group in df_pt.groupby('symbol')}
+        #     # print(df_group['ORS'])
+        #     df_pt['time'] = pd.to_datetime(df_pt['time'], unit='ms' if pd.api.types.is_numeric_dtype(df_pt['time']) else None)
+        #     unique_dates = df_pt['time'].dt.date.unique()
+        #     cutoff_date = unique_dates[-1]
+        #     cutoff_timestamp = pd.Timestamp(cutoff_date)
+        #     combined = df_pt[df_pt['time'] >= cutoff_timestamp]
+        #     df_group = {ticker: group for ticker, group in combined.groupby('symbol')}
+        #     for t in df_group:
+        #         print(f"{t} \n")
+        #     # for dt in unique_dates:
+        #     #     print(dt)
+        #     # df_pt.to_json("local_put_through.json", orient='records', force_ascii=False, indent=4)
+
+        # df_pt_1 = self._load_parquet(Path('1_master_put_through.parquet'))
+        # df_pt_2 = self._load_parquet(Path('2_master_put_through.parquet'))
+
+        # if not df_pt_1.empty and not df_pt_2.empty:
+        #     required_cols = ['time', 'symbol', 'price', 'volume', 'match_value', 'change_percent', 'accumulated_volume', 'accumulated_value']
+
+        #     if pd.api.types.is_numeric_dtype(df_pt_1['time']):
+        #         df_pt_1['time'] = pd.to_datetime(df_pt_1['time'], unit='ms').dt.normalize()
+        #     else:
+        #         df_pt_1['time'] = pd.to_datetime(df_pt_1['time']).dt.normalize()
+
+        #     if getattr(df_pt_1['time'].dt, 'tz', None) is not None:
+        #         df_pt_1['time'] = df_pt_1['time'].dt.tz_localize(None)
+
+        #     if pd.api.types.is_numeric_dtype(df_pt_2['time']):
+        #         df_pt_2['time'] = pd.to_datetime(df_pt_2['time'], unit='ms').dt.normalize()
+        #     else:
+        #         df_pt_2['time'] = pd.to_datetime(df_pt_2['time']).dt.normalize()
+
+        #     if getattr(df_pt_2['time'].dt, 'tz', None) is not None:
+        #         df_pt_2['time'] = df_pt_2['time'].dt.tz_localize(None)
+
+        #     combined = pd.concat([df_pt_1, df_pt_2], ignore_index=True)
+        #     check_cols = [c for c in required_cols if c in combined.columns]
+        #     combined = combined.drop_duplicates(subset=check_cols, keep='last')
+        #     combined = combined.sort_values(['time', 'symbol']).reset_index(drop=True)
+        #     combined.to_parquet(Path('master_put_through.parquet'), engine='pyarrow')
 
         # if not df_foreign.empty:
         #     df_group = {ticker: group for ticker, group in df_foreign.groupby('ticker')}
