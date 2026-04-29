@@ -1008,11 +1008,11 @@ class VNStockDataPipeline:
         try:
             trading = Trading(source=self.source)
             df_pt = trading.put_through()
-            required_cols = ['time', 'symbol', 'price', 'volume', 'match_value', 'change_percent', 'match_value', 'accumulated_volume', 'accumulated_value']
+            required_cols = ['time', 'symbol', 'price', 'volume', 'match_value', 'change_percent', 'accumulated_volume', 'accumulated_value']
             df_pt = self._validate_schema(df_pt, required_cols, item_name="Put-Through")
 
             if df_pt is not None and not df_pt.empty:
-                # 1. CHUẨN HÓA THỜI GIAN DATA MỚI (ÉP VỀ NAIVE)
+                # CHUẨN HÓA THỜI GIAN DATA MỚI (ÉP VỀ NAIVE)
                 if pd.api.types.is_numeric_dtype(df_pt['time']):
                     df_pt['time'] = pd.to_datetime(df_pt['time'], unit='ms').dt.normalize()
                 else:
@@ -1022,27 +1022,27 @@ class VNStockDataPipeline:
                 if getattr(df_pt['time'].dt, 'tz', None) is not None:
                     df_pt['time'] = df_pt['time'].dt.tz_localize(None)
 
-                pt_path = self.folders['current'] / "master_put_through.parquet"
+                pt_path = self.folders['intraday'] / "master_put_through.parquet"
                 if pt_path.exists():
                     old_df = pd.read_parquet(pt_path)
                     
-                    # 2. CHUẨN HÓA THỜI GIAN DATA CŨ (LỘT BỎ UTC TỪ PARQUET)
+                    # CHUẨN HÓA THỜI GIAN DATA CŨ (LỘT BỎ UTC TỪ PARQUET)
                     if 'time' in old_df.columns and getattr(old_df['time'].dt, 'tz', None) is not None:
                         old_df['time'] = old_df['time'].dt.tz_localize(None)
                     
-                    # 3. GỘP DỮ LIỆU
+                    # GỘP DỮ LIỆU
                     combined = pd.concat([old_df, df_pt], ignore_index=True)
-                    
-                    # 4. TỐI ƯU XÓA TRÙNG LẶP (DROP DUPLICATES)
-                    # Cần check toàn bộ các cột quan trọng để không xóa nhầm các lệnh tách nhỏ
-                    check_cols = [c for c in required_cols if c in combined.columns]
-                    combined = combined.drop_duplicates(subset=check_cols, keep='last')
                 else:
                     combined = df_pt
 
+                # TỐI ƯU XÓA TRÙNG LẶP (DROP DUPLICATES)
+                # Cần check toàn bộ các cột quan trọng để không xóa nhầm các lệnh tách nhỏ
+                check_cols = [c for c in required_cols if c in combined.columns]
+                combined = combined.drop_duplicates(subset=check_cols, keep='last')
+
                 # Sắp xếp lại cho chuẩn Timeline
                 combined = combined.sort_values(['time', 'symbol']).reset_index(drop=True)
-                # 5. LƯU LẠI VÀO Ổ CỨNG
+                # LƯU LẠI VÀO Ổ CỨNG
                 combined.to_parquet(pt_path, engine='pyarrow')
                 print(f" [OK] Đã lưu {len(df_pt)} GD Thỏa thuận hôm nay. Tổng: {len(combined)} GD.")
             else:

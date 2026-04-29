@@ -1,3 +1,4 @@
+import json
 import pandas as pd
 import numpy as np
 import warnings
@@ -46,12 +47,24 @@ class DarkPoolRadar:
         return pd.DataFrame()
 
     def _identify_system_t0(self):
-        """Xác định ngày giao dịch hiện tại thực tế nhất từ Intraday hoặc Price"""
-        if not self.df_intra.empty:
-            return self.df_intra['time'].dt.date.max()
-        if not self.df_price.empty:
-            return self.df_price['time'].dt.date.max()
-        return datetime.now().date()
+        # """Xác định ngày giao dịch hiện tại thực tế nhất từ Intraday hoặc Price"""
+        latest_date = None
+        
+        # Thử lấy từ Intraday trước (Dữ liệu mới nhất trong phiên)
+        if not self.df_intra.empty and 'time' in self.df_intra.columns:
+            latest_date = self.df_intra['time'].max()
+            
+        # Nếu Intraday rỗng, lấy từ Bảng giá
+        elif not self.df_price.empty and 'time' in self.df_price.columns:
+            latest_date = self.df_price['time'].max()
+            
+        # Nếu cả 2 đều rỗng, dùng ngày hiện tại của máy tính
+        if pd.isna(latest_date) or latest_date is None:
+            latest_date = pd.Timestamp.now()
+            
+        # Ép chuẩn về Timestamp và Normalize (Cắt giờ/phút/giây về 00:00:00)
+        # Điều này đảm bảo nó có thể so sánh dấu "==" với bất kỳ cột 'time' nào trong DataFrame
+        return pd.Timestamp(latest_date).normalize()
 
     def _prepare_data(self):
         """Xử lý dữ liệu nền tảng"""
@@ -125,10 +138,26 @@ class DarkPoolRadar:
         anomalies_temp = []
 
         for ticker, group in grouped:
-            total_val_bn = group['match_value'].sum() / 1_000_000_000
-            if total_val_bn < 20: continue 
-            
             basket = group['basket'].iloc[0]
+            total_val_bn = group['match_value'].sum() / 1_000_000_000
+            
+            # =================================================================
+            # 🚀 THIẾT LẬP NGƯỠNG ĐỘNG (DYNAMIC THRESHOLDS) THEO TỪNG RỔ
+            # =================================================================
+            if basket == 'VN30':
+                min_val = 50.0       # VN30: Dưới 50 Tỷ là nhiễu, bỏ qua
+                extreme_val = 200.0  # Mốc Cá mập khổng lồ
+                surge_ratio = 1.0    # Chỉ cần Thỏa thuận = 1x MA20 là đã rất khủng khiếp
+            elif basket == 'VNMidCap':
+                min_val = 15.0       # MidCap: Tối thiểu 15 Tỷ
+                extreme_val = 50.0
+                surge_ratio = 1.5    # Cần gấp rưỡi thanh khoản sàn mới gọi là đột biến
+            else: # VNSmallCap
+                min_val = 3.0        # SmallCap/Penny: 3 Tỷ đã là đáng chú ý
+                extreme_val = 15.0
+                surge_ratio = 2.5    # Phải gấp 2.5 lần thanh khoản bình thường
+                
+            if total_val_bn < min_val: continue 
             
             # Tính Cường độ (Liquidity Ratio)
             pt_vol = group['volume'].sum()
@@ -146,26 +175,31 @@ class DarkPoolRadar:
             # TÌM WHALE NODE
             whale_node = float(group.groupby('price')['volume'].sum().idxmax())
             
-            # 🚀 LƯỚI LỌC CÁ MẬP KHẮC NGHIỆT (STRICT FILTERS)
-            is_vol_surge = liqd_ratio > 1.5  # Bùng nổ khối lượng
-            is_price_extreme = abs(avg_change) >= 2.0 and total_val_bn > 30  # Ép giá lộ liễu
-            is_bluechip_whale = total_val_bn > 150 and liqd_ratio > 0.5 # Cá mập Bluechip thực sự ra tay
+            # =================================================================
+            # 🚀 LƯỚI LỌC CÁ MẬP ĐÃ CHUẨN HÓA (NORMALIZED STRICT FILTERS)
+            # =================================================================
+            is_vol_surge = liqd_ratio > surge_ratio # Bùng nổ khối lượng
+            is_price_extreme = abs(avg_change) >= 2.0 and total_val_bn > (min_val * 1.5) # Ép giá lộ liễu
+            is_true_whale = total_val_bn > extreme_val and liqd_ratio > (surge_ratio * 0.5) # Cá mập thực sự ra tay
             
-            if is_vol_surge or is_price_extreme or is_bluechip_whale:
+            if is_vol_surge or is_price_extreme or is_true_whale:
                 # Phân loại Ý đồ
                 if avg_change > 1.0: intent = f"🔥 Premium ({avg_change:+.1f}%)"
                 elif avg_change < -1.0: intent = f"🧊 Discount ({avg_change:+.1f}%)"
                 else: intent = f"⚖️ Neutral ({avg_change:+.1f}%)"
                 
-                # 🚀 HỆ THỐNG CHẤM ĐIỂM ĐỘT BIẾN (ANOMALY SCORE)
-                # Đề cao sự bất thường về Cường độ và Biên độ giá thay vì Giá trị tuyệt đối
-                anomaly_score = (liqd_ratio * 15) + (abs(avg_change) * 10) + (total_val_bn / 50)
+                # 🚀 HỆ THỐNG CHẤM ĐIỂM ĐỘT BIẾN (NORMALIZED ANOMALY SCORE)
+                # Loại bỏ việc cộng giá trị tuyệt đối (total_val_bn) để SmallCap không bị Bluechip đè bẹp.
+                # Công thức chuẩn Quant: Score = (Tỷ lệ thanh khoản) + (Biên độ giá) + (Trọng số T0)
+                t0_weight = (t0_val_bn / total_val_bn) * 10 if total_val_bn > 0 else 0
+                
+                anomaly_score = (liqd_ratio * 20) + (abs(avg_change) * 10) + t0_weight
                 
                 anomalies_temp.append({
                     'ticker': ticker,
                     'basket': basket,
                     'val_bn': total_val_bn,
-                    't0_val_bn': t0_val_bn, # Lưu thêm T0
+                    't0_val_bn': t0_val_bn, 
                     'ratio': liqd_ratio,
                     'intent': intent,
                     'whale_node': whale_node,
@@ -177,7 +211,7 @@ class DarkPoolRadar:
         self.anomalies = sorted(anomalies_temp, key=lambda x: x['score'], reverse=True)[:10]
 
     def _forecast_tactics(self):
-        """Tầng 3: Động cơ Dự báo T+ (T-Day Forecaster) - Bản nâng cấp V2"""
+        """Tầng 3: Động cơ Dự báo T+ (T-Day Forecaster)"""
         for an in self.anomalies:
             ticker = an['ticker']
             whale_node = an['whale_node']
@@ -216,8 +250,49 @@ class DarkPoolRadar:
                 else:
                     forecast = f"Sang tay Discount sâu vùng đáy. Lệnh trao tay nội bộ, không phản ánh cung cầu thật. THEO DÕI."
             
+            # KỊCH BẢN 4: THAY MÁU CỔ ĐÔNG LỚN (Đột biến thanh khoản ngầm)
+            elif liqd_ratio >= 5.0 and -2.0 <= avg_change <= 2.0:
+                forecast = f"Thanh khoản ngầm SIÊU ĐỘT BIẾN ({liqd_ratio:.1f}x MA20) quanh tham chiếu. Dấu hiệu thay máu cổ đông lớn hoặc Deal thâu tóm (M&A). Cổ phiếu sắp có sóng lớn. ĐƯA VÀO TẦM NGẮM ĐẶC BIỆT."
+
             if forecast:
                 self.forecasts.append(f"- Kèo [{ticker}]: {forecast}")
+
+    def export_signals(self):
+        """Xuất Mật lệnh (Signals) ra file JSON để live.py và sniper.py đọc"""
+        out_path = self.data_dir.parent / 'live/darkpool_signals.json'
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        export_data = {}
+        # Ép t0_date thành chuỗi chuẩn để làm Hạn sử dụng
+        valid_date_str = self.t0_date.strftime('%Y-%m-%d')
+
+        for an in self.anomalies:
+            ticker = an['ticker']
+            # Lấy câu text dự báo tương ứng với mã này
+            forecast_text = next((f for f in self.forecasts if f"[{ticker}]" in f), "")
+            
+            # Gắn nhãn Hành động (Action) để Cỗ máy khác dễ hiểu
+            action = "NONE"
+            if "BẮT ĐÁY" in forecast_text or "GOM MẠNH" in forecast_text or "TẦM NGẮM ĐẶC BIỆT" in forecast_text:
+                action = "BUY_TARGET"
+            elif "BÁN/ĐỨNG NGOÀI" in forecast_text or "TẮM MÁU" in forecast_text or "CÁ MẬP KẸP HÀNG" in forecast_text:
+                action = "DANGER"
+
+            export_data[ticker] = {
+                "basket": an['basket'],
+                "val_bn": an['val_bn'],
+                "t0_val_bn": an['t0_val_bn'],
+                "ratio": an['ratio'],
+                "intent": an['intent'],
+                "forecast": forecast_text,
+                "action": action,
+                "valid_for_date": valid_date_str, # Gắn tem Hạn sử dụng
+                "date_updated": datetime.now().strftime('%Y-%m-%d')
+            }
+            
+        with open(out_path, 'w', encoding='utf-8') as f:
+            json.dump(export_data, f, ensure_ascii=False, indent=4)
+        print(f" [*] Đã phát tín hiệu (Broadcasted) {len(export_data)} mã sang Mạng lưới Bot.")
 
     def run_radar(self):
         """Thực thi Pipeline và In Báo Cáo"""
@@ -228,6 +303,7 @@ class DarkPoolRadar:
         self._analyze_baskets()
         self._detect_anomalies()
         self._forecast_tactics()
+        self.export_signals()
 
         today_str = datetime.now().strftime('%d/%m/%Y')
         print("\n" + "="*95)

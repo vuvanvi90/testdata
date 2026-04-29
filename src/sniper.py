@@ -1,3 +1,4 @@
+import json
 import pandas as pd
 import warnings
 from datetime import datetime
@@ -385,10 +386,9 @@ class TargetSniper:
         else:
             print(f"    - [!] {omni_now['error']}")
 
-        print("═"*90)
+        print("-" * 90)
 
         # Phần 4: Kiểm toán Thỏa thuận
-        print("═"*90)
         print(f" 🤝 4. KIỂM TOÁN GIAO DỊCH THỎA THUẬN (OFF-BOOK AUDIT)")
         if not self.df_pt.empty:
             
@@ -512,6 +512,26 @@ class TargetSniper:
                         print("      => 🌟 SIÊU TÍN HIỆU ĐẢO CHIỀU: Đạp sàn ép nhỏ lẻ, Thỏa thuận giá cao (Gom ngầm)!")
                     elif price_change_today > 1.0 and t0_avg_change < -1.0:
                         print("      => ⚠️ TÍN HIỆU BULL-TRAP: Kéo thốc trên sàn dụ FOMO, Thỏa thuận giá bèo táng nội bộ!")
+
+                # =====================================================================
+                # 🚀 ĐỒNG BỘ HỆ SINH THÁI (ĐỌC BẢN ÁN TỪ DARK POOL RADAR)
+                # =====================================================================
+                dp_path = Path('data/live/darkpool_signals.json')
+                if dp_path.exists():
+                    with open(dp_path, 'r', encoding='utf-8') as f:
+                        dp_signals = json.load(f)
+                    
+                    if self.ticker in dp_signals:
+                        dp_data = dp_signals[self.ticker]
+                        system_t0_str = self.omni_matrix.t0_date.strftime('%Y-%m-%d')
+                        # Chỉ hiển thị nếu Tín hiệu thuộc về ngày hôm nay
+                        if dp_data.get('valid_for_date') == system_t0_str:
+                            print(f"    --------------------------------------------------------------------------------------")
+                            print(f"    [📡 KẾT NỐI HỆ SINH THÁI: TRÍCH XUẤT TỪ DARK POOL RADAR]")
+                            print(f"    - Cảnh báo T0      : {'🚨 CÓ THỎA THUẬN TRONG PHIÊN' if dp_data['t0_val_bn'] > 0 else 'Không có trong T0'}")
+                            print(f"    - Lệnh Tác chiến   : {dp_data['forecast']}")
+                            if dp_data['action'] == 'DANGER':
+                                print("      => 🚫 HỆ THỐNG KHUYẾN NGHỊ: CẤM MUA!")
             else:
                 print("    - Không phát hiện GD Thỏa thuận nào đáng kể trong 30 ngày qua.")
         else:

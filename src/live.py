@@ -152,6 +152,13 @@ class LiveAssistant:
             print(f"[!] Lỗi khởi động OmniFlowMatrix: {e}")
             self.omni_matrix = None
 
+        # NẠP MẬT LỆNH TỪ DARK POOL RADAR
+        dp_path = self.live_dir / 'darkpool_signals.json'
+        self.darkpool_signals = {}
+        if dp_path.exists():
+            with open(dp_path, 'r', encoding='utf-8') as f:
+                self.darkpool_signals = json.load(f)
+
     def _filter_universe(self):
         """Lọc Master Price theo Rổ cổ phiếu Chuẩn MECE (HOSE, VN30, VNMID, VNSMALL)"""
         if self.df_price.empty: return
@@ -1190,6 +1197,20 @@ class LiveAssistant:
                 score += 5
                 details.append(f"X-Quang T0: Cầu chủ động nghiêng Mua (+5)")
 
+        # 7. HỢP LƯU HỆ SINH THÁI (DARK POOL INTEGRATION)
+        if getattr(self, 'darkpool_signals', None) and ticker in self.darkpool_signals:
+            system_t0_str = self.omni_matrix.t0_date.strftime('%Y-%m-%d') if hasattr(self, 'omni_matrix') else datetime.now().strftime('%Y-%m-%d')
+            dp_data = self.darkpool_signals[ticker]
+            # CHỈ CỘNG ĐIỂM NẾU TÍN HIỆU CÒN HẠN SỬ DỤNG
+            if dp_data.get('valid_for_date') == system_t0_str:
+                dp_data = self.darkpool_signals[ticker]
+                if dp_data['action'] == 'BUY_TARGET':
+                    score += 15
+                    details.append(f"📡 Dark Pool Radar (Gom Mạnh/Bắt Đáy) (+15)")
+                elif dp_data['action'] == 'DANGER':
+                    score -= 20
+                    details.append(f"📡 Dark Pool Radar (Rủi ro Phân phối ngầm) (-20)")
+
         return score, details
 
     def load_portfolio(self, p_type="paper"):
@@ -1527,6 +1548,31 @@ class LiveAssistant:
                     else:
                         next_watchlist[ticker] = watchlist[ticker]
         
+        # =================================================================
+        # 🚀 TÍCH HỢP HỆ SINH THÁI: NHẬN MẬT LỆNH TỪ DARK POOL RADAR
+        # =================================================================
+        if getattr(self, 'darkpool_signals', None):
+            system_t0_str = self.omni_matrix.t0_date.strftime('%Y-%m-%d') # Lấy ngày T0 của hệ thống
+
+            for dp_ticker, dp_data in self.darkpool_signals.items():
+                # KIỂM TRA HẠN SỬ DỤNG
+                if dp_data.get('valid_for_date') != system_t0_str:
+                    continue # Nếu file JSON là của ngày hôm qua, bỏ qua không đọc!
+
+                # 1. Báo động Thời gian thực (Nếu có thỏa thuận nổ TRONG PHIÊN T0)
+                if dp_data.get('t0_val_bn', 0) > 10.0:
+                    print(f"   🚨 [DARK POOL REAL-TIME] {dp_ticker}: Đang nổ thỏa thuận {dp_data['t0_val_bn']:.1f} Tỷ ngay trong phiên! Ý đồ: {dp_data['intent']}")
+                
+                # 2. Tự động bơm vào Watchlist nếu có tín hiệu MUA
+                if dp_data.get('action') == 'BUY_TARGET' and dp_ticker not in next_watchlist:
+                    reason_str = f"DarkPool: {dp_data['intent']} (Ratio: {dp_data['ratio']:.1f}x)"
+                    print(f"   🎯 TẦM NGẮM TỰ ĐỘNG (TỪ DARK POOL): {dp_ticker} | Lực đỡ ngầm xuất hiện!")
+                    next_watchlist[dp_ticker] = {
+                        "date_added": datetime.now().strftime('%Y-%m-%d'),
+                        "price_added": 0, # Chưa cần giá
+                        "reason": reason_str
+                    }
+
         self._save_watchlist(next_watchlist)
         
         if not next_watchlist: print("[*] Hiện tại chưa có mã nào lọt vào Tầm ngắm sớm.")
