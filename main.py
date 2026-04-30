@@ -14,7 +14,7 @@ from pathlib import Path
 
 # from src.collector import VNStockDataPipeline
 # from src.run_bot import run_trading_system
-from src.run_bot import run_darkpool_radar, run_vn30_live, run_midcap_live, run_smallcap_live
+from src.run_bot import run_darkpool_radar, run_vn30_live, run_midcap_live, run_smallcap_live, run_sniper
 # from src.run_bot import run_cashflow_report, run_cashflow_group_report
 # from src.backtester import VectorizedBacktester
 # from src.validator import ValidatePipeline
@@ -27,8 +27,6 @@ from src.flow_tracker import SmartMoneyTracker
 # from src.shadow_profiler import ShadowProfiler
 # from src.market_tracker import MarketTracker
 # from src.post_mortem import PostMortemAnalyzer
-from src.sniper import TargetSniper
-from src.darkpool import DarkPoolRadar
 
 def main():
     df_price = _load_parquet(Path('data/parquet/price/master_price.parquet'))
@@ -75,15 +73,13 @@ def main():
     # run_smallcap_live()
 
     # # watch_list = ["SHB","GMD","FPT","VHM","VIC"]
-    # watch_list = ["SHB","GMD"]
-    # # watch_list = ["POW","IJC"]
-    # for ticker in watch_list:
-    #     sniper = TargetSniper(ticker=ticker)
-    #     sniper.analyze()
+    # # watch_list = ["SHB","GMD"]
+    # watch_list = ["ORS"]
+    # run_sniper(tickers=watch_list)
 
     # # Bóc tách dòng tiền của 1 mã bất kỳ
     # tracker = SmartMoneyTracker(df_price, df_foreign, df_prop, df_indx=df_index)
-    # tracker.track_ticker(ticker='SHB', target_date=None, start_date='2026-03-01')
+    # tracker.track_ticker(ticker='ORS', target_date=None, start_date='2026-03-01')
 
     # # Test: Kiểm tra mã tăng và signal trước đó
     # analyzer = PostMortemAnalyzer()
