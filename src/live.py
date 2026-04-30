@@ -1555,9 +1555,16 @@ class LiveAssistant:
             system_t0_str = self.omni_matrix.t0_date.strftime('%Y-%m-%d') # Lấy ngày T0 của hệ thống
 
             for dp_ticker, dp_data in self.darkpool_signals.items():
-                # KIỂM TRA HẠN SỬ DỤNG
+                
+                # 🚀 LƯỚI LỌC 1: KIỂM TRA HẠN SỬ DỤNG
                 if dp_data.get('valid_for_date') != system_t0_str:
-                    continue # Nếu file JSON là của ngày hôm qua, bỏ qua không đọc!
+                    continue # File JSON của ngày hôm qua -> Cũ rích, vứt đi!
+
+                # 🚀 LƯỚI LỌC 2: CHỐNG Ô NHIỄM CHÉO RỔ (CROSS-BASKET CONTAMINATION)
+                # Chỉ xử lý nếu mã đó nằm trong Universe đang chạy (Ví dụ: Đang chạy VN30 thì không bơm con MidCap vào)
+                if getattr(self, 'universe', 'ALL') != 'ALL' and getattr(self, 'universe', 'HOSE') != 'HOSE':
+                    if dp_data.get('basket') != self.universe:
+                        continue # Khác rổ -> Chặn đứng ngay ngoài cửa!
 
                 # 1. Báo động Thời gian thực (Nếu có thỏa thuận nổ TRONG PHIÊN T0)
                 if dp_data.get('t0_val_bn', 0) > 10.0:

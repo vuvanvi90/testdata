@@ -5,6 +5,7 @@ from pathlib import Path
 
 from src.live import LiveAssistant, DualLogger
 from src.darkpool import DarkPoolRadar
+from src.sniper import TargetSniper
 from src.reporter import CashFlowReporter
 from src.reporter_by_group import GroupCashFlowReporter
 
@@ -103,6 +104,29 @@ def run_darkpool_radar():
         radar.run_radar()
     except Exception as e:
         print(f"\n[!!!] LỖI NGHIÊM TRỌNG TRONG QUÁ TRÌNH CHẠY BOT cho DARKPOOL: {e}")
+        print(traceback.format_exc()) # In chi tiết dòng code gây lỗi vào log
+    finally:
+        print(f"\n[{datetime.now().strftime('%H:%M:%S')}] 🛑 KẾT THÚC PHIÊN LÀM VIỆC.")
+
+def run_sniper(tickers=None):
+    log_dir = Path("data/logs/sniper")
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_filename = log_dir / f"run_{datetime.now().strftime('%Y_%m_%d_%H_%M_%S')}.log"
+    sys.stdout = DualLogger(log_filename)
+    
+    print("="*65)
+    print(f"[*] 🚀 BẮT ĐẦU PHIÊN LÀM VIỆC SNIPER. Log được lưu tại: {log_filename}")
+    print("="*65)
+
+    try:
+        if tickers:
+            for ticker in tickers:
+                sniper = TargetSniper(ticker=ticker)
+                sniper.analyze()
+        else:
+            print(f"Sniper nhận được tickers = {tickers}")
+    except Exception as e:
+        print(f"\n[!!!] LỖI NGHIÊM TRỌNG TRONG QUÁ TRÌNH CHẠY BOT cho SNIPER: {e}")
         print(traceback.format_exc()) # In chi tiết dòng code gây lỗi vào log
     finally:
         print(f"\n[{datetime.now().strftime('%H:%M:%S')}] 🛑 KẾT THÚC PHIÊN LÀM VIỆC.")
