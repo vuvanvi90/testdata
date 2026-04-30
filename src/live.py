@@ -1484,6 +1484,7 @@ class LiveAssistant:
         # =====================================================================
         watchlist = self._load_watchlist()
         next_watchlist = {}
+        rejected_tickers = set() # Khởi tạo Thùng rác trong phiên
 
         print("\n" + "="*65)
         print(" 📡 RADAR CẢNH BÁO SỚM & KIỂM ĐỊNH BẪY TAY TO")
@@ -1508,10 +1509,12 @@ class LiveAssistant:
                 
                 if price < ema89:
                     print(f"🚨 PHÁT HIỆN BẪY: {ticker} gãy EMA89. Lực gom của {watchlist[ticker]['reason']} đã thất bại. Xóa khỏi tầm ngắm!")
+                    rejected_tickers.add(ticker) # Ném vào thùng rác
                     continue 
                     
                 if days_pending > 10:
                     print(f"⏳ HẾT HẠN GOM: {ticker} quá 10 ngày không nổ SOS. Bỏ theo dõi để tránh chôn vốn.")
+                    rejected_tickers.add(ticker) # Ném vào thùng rác
                     continue
 
             # 3. QUÉT TÌM CƠ HỘI MỚI HOẶC DUY TRÌ THEO DÕI
@@ -1571,7 +1574,7 @@ class LiveAssistant:
                     print(f"   🚨 [DARK POOL REAL-TIME] {dp_ticker}: Đang nổ thỏa thuận {dp_data['t0_val_bn']:.1f} Tỷ ngay trong phiên! Ý đồ: {dp_data['intent']}")
                 
                 # 2. Tự động bơm vào Watchlist nếu có tín hiệu MUA
-                if dp_data.get('action') == 'BUY_TARGET' and dp_ticker not in next_watchlist:
+                if dp_data.get('action') == 'BUY_TARGET' and dp_ticker not in next_watchlist and dp_ticker not in rejected_tickers:
                     reason_str = f"DarkPool: {dp_data['intent']} (Ratio: {dp_data['ratio']:.1f}x)"
                     print(f"   🎯 TẦM NGẮM TỰ ĐỘNG (TỪ DARK POOL): {dp_ticker} | Lực đỡ ngầm xuất hiện!")
                     next_watchlist[dp_ticker] = {
