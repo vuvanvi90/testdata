@@ -24,6 +24,7 @@ class VN30DataPipeline:
 
     def run_pipeline(self):
         df_price = self._load_parquet(Path('data/parquet/price/master_price.parquet'))
+        df_price_l2 = self._load_parquet(Path('data/parquet/price/master_price_l2.parquet'))
         df_board = self._load_parquet(Path('data/parquet/board/master_board.parquet'))
         df_intra = self._load_parquet(Path('data/parquet/intraday/master_intraday.parquet'))
         df_pt = self._load_parquet(Path('data/parquet/intraday/master_put_through.parquet'))
@@ -206,6 +207,11 @@ class VN30DataPipeline:
         #     # print(df_group['TCB'].tail(10))
         #     df_group['TCB'].to_json("TCB_price.json", orient='records', force_ascii=False, indent=4)
 
+        # if not df_price_l2.empty:
+        #     df_group = {ticker: group for ticker, group in df_price_l2.groupby('ticker')}
+        #     print(df_group['SHB'].tail(10))
+        #     # df_group['TCB'].to_json("TCB_price.json", orient='records', force_ascii=False, indent=4)
+
         # if not df_industry.empty:
         #     # print(df_industry.tail(10))
         #     df_industry.to_json("groups_by_industries_new.json", orient='records', force_ascii=False, indent=4)
@@ -279,6 +285,32 @@ class VN30DataPipeline:
         # omni = OmniFlowMatrix(data_frames, lookback_days=30)
         # test_tickers = ['VHM', 'VIC', 'HPG', 'DIG', 'GMD'] # Thử với VN30, MidCap và SmallCap
         # # test_tickers = ['GMD'] # Thử với VN30, MidCap và SmallCap
+        # for ticker in test_tickers:
+        #     print("\n" + "="*95)
+        #     print(f" 🎯 OMNI-MATRIX REPORT: MÃ [ {ticker} ] - RỔ: {omni.ticker_to_universe.get(ticker, 'N/A')}")
+        #     print("="*95)
+            
+        #     past = omni.explain_past_movement(ticker, lookback_days=10)
+        #     if "error" not in past:
+        #         print(f" 🕰️ GIẢI MÃ QUÁ KHỨ (10 Phiên & Bẫy T-1):")
+        #         print(f"    - Xu hướng     : {past['trend']} ({past['change_pct']:+.2f}%)")
+        #         print(f"    - Dòng tiền 10D: Thể chế {past['sm_net']:+.1f} Tỷ | Ẩn/Lái {past['shadow']:+.1f} Tỷ")
+        #         print(f"    - Chẩn đoán    : 🧠 {past['verdict']}")
+        #     else:
+        #         print(f"    [!] {past['error']}")
+
+        #     print("-" * 95)
+            
+        #     now = omni.predict_t0_action(ticker, past_context=past)
+        #     if "error" not in now:
+        #         print(f" ⚡ DỰ BÁO HIỆN TẠI (PHIÊN T0):")
+        #         print(f"    - Mua/Bán C.Động : {now['net_active_bn']:+.1f} Tỷ (Từ lệnh Khớp Intraday)")
+        #         print(f"    - Ngoại T0       : {now['f_net_t0']:+.1f} Tỷ (Từ Bảng điện Real-time)")
+        #         print(f"    - Sổ lệnh (Bid)  : Mất cân bằng {now['imbalance']:+.2f} (Dương = Kê mua, Âm = Chặn bán)")
+        #         print(f"    - KẾT LUẬN       : 🎯 {now['verdict']}")
+        #         print(f"    - Tín hiệu phụ   : {now['details']}")
+        #     else:
+        #         print(f"    [!] {now['error']}")
     
         
         # js_prod = self.load_json(Path('ps_sales_production.json'))

@@ -30,6 +30,7 @@ from src.flow_tracker import SmartMoneyTracker
 
 def main():
     df_price = _load_parquet(Path('data/parquet/price/master_price.parquet'))
+    df_price_l2 = _load_parquet(Path('data/parquet/price/master_price_l2.parquet'))
     df_intra = _load_parquet(Path('data/parquet/intraday/master_intraday.parquet'))
     df_foreign = _load_parquet(Path('data/parquet/macro/foreign_flow.parquet'))
     df_prop = _load_parquet(Path('data/parquet/macro/prop_flow.parquet'))
@@ -73,8 +74,8 @@ def main():
     # run_smallcap_live()
 
     # # watch_list = ["SHB","GMD","FPT","VHM","VIC"]
-    # # watch_list = ["SHB","GMD"]
-    # watch_list = ["ORS"]
+    # watch_list = ["SHB"]
+    # # watch_list = ["ORS"]
     # run_sniper(tickers=watch_list)
 
     # # Bóc tách dòng tiền của 1 mã bất kỳ
