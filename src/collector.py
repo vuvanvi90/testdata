@@ -52,6 +52,7 @@ class VNStockDataPipeline:
         self.trading = Trading(symbol='VCB', source='kbs')
         # NẠP SẴN DỮ LIỆU CŨ VÀO RAM ĐỂ MERGE
         self.old_prices = self._load_master_data('price', 'master_price.parquet')
+        self.old_prices_l2 = self._load_master_data('price', 'master_price_l2.parquet')
         self.old_intraday = self._load_master_data('intraday', 'master_intraday.parquet')
         self.old_fins = self._load_master_data('financial', 'master_financial.parquet')
         self.old_coms = self._load_master_data('company', 'master_company.parquet')
@@ -769,7 +770,9 @@ class VNStockDataPipeline:
                         return combined
                     
                     return new_df
-            except Exception: pass
+            except Exception as e: 
+                print(f"fetch_ohlcv Error: {e}")
+                pass
             return None
 
         print(f"[*] Đang khởi động {max_workers} luồng tải song song")
@@ -787,6 +790,99 @@ class VNStockDataPipeline:
                 time.sleep(2)
 
         self.merge_and_save(updated_prices, updated_price_tickers, tickers, self.old_prices, 'price', "master_price.parquet")
+
+    def fetch_ohlcv_l2(self, tickers, max_workers=5):
+        """Tải dữ liệu Lịch sử Giá Cấp độ 2 (Level-2 Order Flow & Foreign Insight)"""
+        print("\n" + "="*50)
+        print(" 🔄 TẢI GIA TĂNG LỊCH SỬ CẤP ĐỘ 2 (LEVEL-2 AUDIT VAULT)")
+        print("="*50)
+        updated_prices, updated_price_tickers = [], set()
+        chunk_size = 100
+        ticker_chunks = [tickers[i:i + chunk_size] for i in range(0, len(tickers), chunk_size)]
+
+        def _fetch_price_l2_worker(ticker):
+            old_df = self.old_prices_l2.get(ticker, None)
+            start_date = '2020-01-01'
+            today_str = datetime.now().strftime('%Y-%m-%d')
+
+            # KIỂM TRA LỊCH SỬ ĐỂ LẤY NGÀY BẮT ĐẦU
+            if old_df is not None and not old_df.empty:
+                if 'time' in old_df.columns:
+                    # Lấy lùi 5 ngày để bù đắp sai số nếu Sở Giao dịch cập nhật lại số liệu
+                    last_date = pd.to_datetime(old_df['time']).max() - timedelta(days=5)
+                    start_date = last_date.strftime('%Y-%m-%d')
+
+            try:
+                # mặc định lấy nguồn từ VCI
+                trading = Trading(symbol=ticker, source='vci')
+                new_df = trading.price_history(start=start_date, end=today_str, get_all=True) 
+
+                # LỌC LẤY NHỮNG TRƯỜNG TINH HOA NHẤT (Lọc Rác)
+                core_cols = [
+                    'trading_date', 
+                    'close_price_adjusted', 'matched_volume', 'total_net_trade_volume', # Basic EOD & Động lượng hấp thụ
+                    'average_buy_trade_volume', 'average_sell_trade_volume',          # Quy mô lệnh (Whale Ratio)
+                    'total_buy_unmatched_volume', 'total_sell_unmatched_volume',      # Sổ lệnh ảo (Spoofing Ratio)
+                    'fr_buy_volume_matched', 'fr_sell_volume_matched',                # Cung Cầu Ngoại trực tiếp
+                    'fr_buy_volume_deal', 'fr_sell_volume_deal',                      # Ngoại thỏa thuận (Né thuế/Thoát hàng)
+                    'fr_owned_percentage', 'fr_available_percentage',                 # Tỷ lệ Room (Độ hiếm/Thâu tóm)
+                    'market_cap', 'total_shares', 'fr_owned'                          # Định lượng Vị thế & Nguồn cung
+                ]
+
+                new_df = self._validate_schema(new_df, core_cols, item_name=f"OHLCV L2 - {ticker}")
+                if new_df is None or new_df.empty: return None
+                
+                # Giữ lại các cột cốt lõi
+                new_df = new_df[[c for c in core_cols if c in new_df.columns]].copy()
+                
+                # CHUẨN HÓA CỘT THỜI GIAN
+                new_df = new_df.rename(columns={'trading_date': 'time'})
+                new_df['ticker'] = ticker
+                
+                if pd.api.types.is_numeric_dtype(new_df['time']):
+                    new_df['time'] = pd.to_datetime(new_df['time'], unit='ms').dt.normalize()
+                else:
+                    new_df['time'] = pd.to_datetime(new_df['time']).dt.normalize()
+                
+                if getattr(new_df['time'].dt, 'tz', None) is not None:
+                    new_df['time'] = new_df['time'].dt.tz_localize(None)
+
+                # MERGE DỮ LIỆU CŨ VÀ MỚI (Tối ưu Khử Trùng Lặp)
+                if old_df is not None and not old_df.empty:
+                    if pd.api.types.is_numeric_dtype(old_df['time']):
+                        old_df['time'] = pd.to_datetime(old_df['time'], unit='ms').dt.normalize()
+                    else:
+                        old_df['time'] = pd.to_datetime(old_df['time']).dt.normalize()
+                        
+                    if getattr(old_df['time'].dt, 'tz', None) is not None:
+                        old_df['time'] = old_df['time'].dt.tz_localize(None)
+                    
+                    combined = pd.concat([old_df, new_df])
+                    combined = combined.sort_values('time').drop_duplicates(subset=['time'], keep='last')
+                    return combined
+                
+                return new_df
+            except Exception as e:
+                print(f"fetch_ohlcv_l2 Error: {e}")
+                pass 
+            return None
+
+        print(f"[*] Đang khởi động {max_workers} luồng tải song song dữ liệu L2")
+        for chunk_idx, chunk in enumerate(ticker_chunks):
+            print(f">>> Đang xử lý Chunk {chunk_idx + 1}/{len(ticker_chunks)} ({len(chunk)} mã)...")
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                res_list = self._run_throttled_tasks(executor, _fetch_price_l2_worker, chunk)
+                for res in res_list:
+                    updated_prices.append(res)
+                    updated_price_tickers.add(res['ticker'].iloc[0])
+
+            # Nghỉ ngơi giữa các chunk để chống khóa API
+            if chunk_idx < len(ticker_chunks) - 1:
+                print("   [Zzz] Nghỉ 2 giây trước khi qua chunk mới...")
+                time.sleep(2)
+
+        # Lưu thành file Parquet độc lập
+        self.merge_and_save(updated_prices, updated_price_tickers, tickers, self.old_prices_l2, 'price', "master_price_l2.parquet")
 
     def fetch_intra(self, tickers, max_workers=5):
         print("\n" + "="*50)
@@ -1153,6 +1249,7 @@ class VNStockDataPipeline:
         # TẢI DỮ LIỆU OHLCV & CHẠY ĐA LUỒNG RIÊNG
         if self.get_price:
             self.fetch_ohlcv(tickers)
+            self.fetch_ohlcv_l2(tickers)
 
         # TẢI DỮ LIỆU INTRA & CHẠY ĐA LUỒNG RIÊNG
         if self.get_intra:

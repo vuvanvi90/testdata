@@ -15,6 +15,7 @@ class OmniFlowMatrix:
         
         # 1. Nạp các DataFrame từ RAM
         self.df_price = data_frames.get('price', pd.DataFrame())
+        self.df_price_l2 = data_frames.get('price_l2', pd.DataFrame())
         self.df_foreign = data_frames.get('foreign', pd.DataFrame())
         self.df_prop = data_frames.get('prop', pd.DataFrame())
         self.df_comp = data_frames.get('comp', pd.DataFrame())
@@ -26,27 +27,77 @@ class OmniFlowMatrix:
         self.lookback_days = lookback_days
         self.DIVISOR = 1_000_000_000 # Quy đổi ra Tỷ VNĐ
         
-        self.t0_date = self._identify_system_t0()
+        # 2. XÂY DỰNG TRỤC THỜI GIAN TUYỆT ĐỐI (ABSOLUTE TIMELINE)
+        self.calendar = self._build_trading_calendar()
+        self._set_absolute_timeline()
 
         # 2. Xây dựng Bản đồ (Mapping) O(1)
         self.ticker_to_universe = {}
         self.ticker_to_sector = {}
         self._build_mappings()
         
-        # 3. Trích xuất Snapshot T0 từ Bảng điện (Ý TƯỞNG CỦA ANH VÀO ĐÂY)
+        # 3. Trích xuất Snapshot T0 từ Bảng điện
         self.t0_snapshot = self._extract_t0_snapshot()
         
         # 4. Xây dựng Khối dữ liệu Lịch sử (Historical Data Cube)
         self.history_cube = pd.DataFrame()
         self._build_historical_cube()
 
-    def _identify_system_t0(self):
-        """Xác định ngày giao dịch hiện tại thực tế nhất từ Intraday hoặc Price"""
-        if not self.df_intra.empty:
-            return self.df_intra['time'].dt.date.max()
-        if not self.df_price.empty:
-            return self.df_price['time'].dt.date.max()
-        return datetime.now().date()
+    def _build_trading_calendar(self):
+        """Trích xuất lịch giao dịch thực tế từ dữ liệu Master Price"""
+        dates = set()
+        if not self.df_price.empty and 'time' in self.df_price.columns:
+            time_col = pd.to_datetime(self.df_price['time'], unit='ms' if pd.api.types.is_numeric_dtype(self.df_price['time']) else None)
+            dates.update(time_col.dt.date.unique())
+        return sorted(list(dates))
+
+    def _set_absolute_timeline(self):
+        """
+        ĐỘNG CƠ THỜI GIAN TUYỆT ĐỐI (POST-MARKET ROLLOVER)
+        Tự động nhận diện Đang trong phiên, Đã đóng cửa, hay Ngày nghỉ.
+        """
+        from datetime import timedelta
+        now = datetime.now()
+        current_sys_date = now.date()
+        current_time = now.time()
+        
+        # Tìm ngày EOD mới nhất đã cào được
+        latest_l2_date = None
+        if not self.df_price_l2.empty and 'time' in self.df_price_l2.columns:
+            time_col = pd.to_datetime(self.df_price_l2['time'], unit='ms' if pd.api.types.is_numeric_dtype(self.df_price_l2['time']) else None)
+            latest_l2_date = time_col.dt.date.max()
+
+        latest_price_date = None
+        if not self.df_price.empty and 'time' in self.df_price.columns:
+            time_col = pd.to_datetime(self.df_price['time'], unit='ms' if pd.api.types.is_numeric_dtype(self.df_price['time']) else None)
+            latest_price_date = time_col.dt.date.max()
+            
+        # Một phiên được coi là ĐÃ KẾT THÚC (Post-Market) khi:
+        # 1. Đã qua 15h00 chiều.
+        # 2. VÀ Dữ liệu của ngày hôm đó đã được tải về.
+        is_post_market = False
+        if current_time.hour >= 15:
+            if latest_l2_date == current_sys_date or latest_price_date == current_sys_date:
+                is_post_market = True
+
+        if is_post_market:
+            # Nếu chạy lúc 20h00 tối nay -> Cỗ máy sẽ chuẩn bị cho ngày mai (T0 = Ngày mai)
+            # T-1 chính là ngày hôm nay (vừa chốt sổ xong)
+            self.t0_date = current_sys_date + timedelta(days=1)
+            self.t1_date = current_sys_date
+        else:
+            # Đang trong phiên (Live), hoặc ngày nghỉ cuối tuần (chưa có data hôm nay)
+            self.t0_date = current_sys_date
+            # T-1 sẽ là ngày giao dịch gần nhất CÓ TRƯỚC T0
+            past_l2 = [d for d in self.calendar if d < self.t0_date]
+            self.t1_date = past_l2[-1] if past_l2 else latest_l2_date
+
+        # Xây dựng danh sách quá khứ cho explain_past_movement (Chỉ lấy đến T-1)
+        self.past_dates = [d for d in self.calendar if d <= self.t1_date] if self.t1_date else []
+        self.t2_date = self.past_dates[-2] if len(self.past_dates) >= 2 else None
+        
+        status_msg = "POST-MARKET" if is_post_market else "LIVE/WEEKEND"
+        print(f"[*] Trục Thời Gian ({status_msg}): T0 (Phiên ngắm bắn) = {self.t0_date.strftime('%d/%m/%Y')} | T-1 (Hậu kiểm L2) = {self.t1_date.strftime('%d/%m/%Y') if self.t1_date else 'N/A'}")
 
     def _build_mappings(self):
         """Tạo từ điển tra cứu nhanh Universe và Sector cho từng mã"""
@@ -121,11 +172,9 @@ class OmniFlowMatrix:
         df_p = self.df_price.copy()
         df_p['time'] = pd.to_datetime(df_p['time']).dt.normalize()
         
-        # Cắt lấy danh sách ngày (lấy 30 ngày cuối)
-        trading_days = sorted(df_p['time'].unique())
-        if len(trading_days) > self.lookback_days:
-            cutoff_date = trading_days[-self.lookback_days]
-            df_p = df_p[df_p['time'] >= cutoff_date]
+        if self.past_dates:
+            cutoff_date = self.past_dates[-self.lookback_days] if len(self.past_dates) > self.lookback_days else self.past_dates[0]
+            df_p = df_p[df_p['time'].dt.date >= cutoff_date]
 
         # 2. Xử lý Foreign & Prop EOD
         df_f = self.df_foreign.copy() if not self.df_foreign.empty else pd.DataFrame(columns=['ticker', 'time', 'foreign_net_value'])
@@ -183,6 +232,9 @@ class OmniFlowMatrix:
         cube['universe'] = cube['ticker'].map(lambda x: self.ticker_to_universe.get(x, 'HOSE'))
         cube['sector'] = cube['ticker'].map(lambda x: self.ticker_to_sector.get(x, 'Unknown'))
 
+        # Chuẩn hóa Date để dễ tra cứu sau này
+        cube['date'] = cube['time'].dt.date
+
         self.history_cube = cube.sort_values(['ticker', 'time']).reset_index(drop=True)
         print(f"[OK] Ma trận hoàn tất: {len(self.history_cube)} records, sẵn sàng cho Inference Engine.")
 
@@ -197,7 +249,7 @@ class OmniFlowMatrix:
         # Lọc đúng mã và đúng ngày mỏ neo
         df_today = df_i[df_i['time'].dt.date == self.t0_date]
 
-        if df_today.empty: return 0, 0
+        if df_today.empty: return 0, 0, 0
 
         # 3. Phân loại lệnh & Tính tiền
         is_bu = df_today['match_type'].isin(['Buy', 'BU', 'B'])
@@ -214,13 +266,96 @@ class OmniFlowMatrix:
 
         return net_active_bn, trade_val.sum(), vwap_t0  # Trả về thêm vwap_t0
 
+    def _analyze_level_2_microstructure(self, ticker):
+        """ĐỘNG CƠ KIỂM TOÁN L2 (ĐỌC TỪ MASTER_PRICE_L2.PARQUET)"""
+        if self.df_price_l2.empty or 'ticker' not in self.df_price_l2.columns:
+            return None
+
+        if self.t1_date is None:
+            return None # Không xác định được ngày T-1 hệ thống
+            
+        df_ticker_l2 = self.df_price_l2[self.df_price_l2['ticker'] == ticker].copy()
+        if df_ticker_l2.empty:
+            return None
+            
+        # Ép kiểu an toàn cột time
+        df_ticker_l2['date'] = pd.to_datetime(
+            df_ticker_l2['time'], 
+            unit='ms' if pd.api.types.is_numeric_dtype(df_ticker_l2['time']) else None
+        ).dt.date
+        
+        # 🛡️ LỌC ĐÚNG NGÀY T-1 (Xóa sổ bẫy iloc[-1])
+        df_t1 = df_ticker_l2[df_ticker_l2['date'] == self.t1_date]
+        
+        if df_t1.empty:
+            return None # Dữ liệu L2 của ngày hôm qua bị Miss
+            
+        t1_row = df_t1.iloc[0]
+        t1_date_str = self.t1_date.strftime('%d/%m/%Y')
+        
+        def safe_num(val): return float(val) if pd.notna(val) else 0.0
+        
+        # 1. WHALE FOOTPRINT RATIO
+        avg_buy = safe_num(t1_row.get('average_buy_trade_volume', 0))
+        avg_sell = safe_num(t1_row.get('average_sell_trade_volume', 0))
+        whale_ratio = (avg_buy / avg_sell) if avg_sell > 0 else 1.0
+        
+        # 2. SPOOFING RATIO 
+        buy_unmatched = safe_num(t1_row.get('total_buy_unmatched_volume', 0))
+        sell_unmatched = safe_num(t1_row.get('total_sell_unmatched_volume', 0))
+        spoofing_ratio = (buy_unmatched / sell_unmatched) if sell_unmatched > 0 else 1.0
+        
+        # 3. ABSORPTION MOMENTUM
+        net_trade_vol = safe_num(t1_row.get('total_net_trade_volume', 0))
+        
+        # 4. FOREIGN INTENT & OWNERSHIP
+        fr_room_avail = safe_num(t1_row.get('fr_available_percentage', 1.0))
+        fr_owned_pct = safe_num(t1_row.get('fr_owned_percentage', 0))
+        fr_deal_net_bn = safe_num(t1_row.get('fr_buy_volume_deal', 0) - t1_row.get('fr_sell_volume_deal', 0)) * safe_num(t1_row.get('close_price_adjusted', 0)) / self.DIVISOR
+        
+        # 5. MARKET CAP & SUPPLY
+        market_cap = safe_num(t1_row.get('market_cap', 0)) / self.DIVISOR # Tỷ VNĐ
+        
+        return {
+            "t1_date": t1_date_str,
+            "whale_ratio": whale_ratio,
+            "spoofing_ratio": spoofing_ratio,
+            "net_trade_vol": net_trade_vol,
+            "fr_room_avail": fr_room_avail,
+            "fr_owned_pct": fr_owned_pct,
+            "fr_deal_net_bn": fr_deal_net_bn,
+            "avg_buy_vol": avg_buy,
+            "avg_sell_vol": avg_sell,
+            "market_cap_bn": market_cap,
+            "is_trap": (whale_ratio < 0.6 and spoofing_ratio > 2.0),
+            "is_whale_buy": (whale_ratio > 1.5),
+            "is_free_float_squeeze": (fr_room_avail < 0.05) # Hở room dưới 5% (Độ cạn kiệt cổ phiếu của Khối Ngoại)
+        }
+
     def explain_past_movement(self, ticker, lookback_days=10):
         """
         ĐỘNG CƠ GIẢI THÍCH QUÁ KHỨ (RETROSPECTIVE ENGINE)
         Phân tích đa chiều: Giá vs Dòng tiền Thể chế vs Dòng tiền Lái nội
         """
-        df_t = self.history_cube[self.history_cube['ticker'] == ticker].tail(lookback_days)
-        if df_t.empty: return {"error": "Không có dữ liệu lịch sử"}
+        if self.history_cube.empty or not self.past_dates:
+            return {"error": "Không có dữ liệu lịch sử"}
+
+        # Xác định khung thời gian từ T-N đến T-1
+        target_past_dates = self.past_dates[-lookback_days:]
+        if not target_past_dates:
+            return {"error": "Dữ liệu quá khứ không đủ"}
+            
+        start_date = target_past_dates[0]
+        end_date = target_past_dates[-1] # Chính là t1_date
+
+        df_t = self.history_cube[
+            (self.history_cube['ticker'] == ticker) &
+            (self.history_cube['date'] >= start_date) &
+            (self.history_cube['date'] <= end_date)
+        ].sort_values('time')
+        
+        if df_t.empty: 
+            return {"error": "Không có dữ liệu lịch sử trong khoảng thời gian này"}
 
         # 1. Tính toán Biến động Giá
         start_price = df_t['close'].iloc[0]
@@ -274,13 +409,29 @@ class OmniFlowMatrix:
             if pt_p_days: msgs.append(f"Nội ({', '.join(pt_p_days)})")
             diagnosis.append(f"⚠️ Sang tay ngầm (Trao kho) vào: {' & '.join(msgs)}.")
 
+        # NHÚNG KẾT QUẢ KIỂM TOÁN L2 VÀO HỒ SƠ QUÁ KHỨ
+        l2_data = self._analyze_level_2_microstructure(ticker)
+        has_l2_trap = False
+        
+        if l2_data:
+            if l2_data['is_trap']:
+                diagnosis.append(f"🚨 BẪY L2 ({l2_data['t1_date']}): Dư mua ảo gấp {l2_data['spoofing_ratio']:.1f}x nhưng lệnh táng thực tế to gấp {1/l2_data['whale_ratio']:.1f}x lệnh mua!")
+                has_l2_trap = True
+            elif l2_data['is_whale_buy']:
+                diagnosis.append(f"🐋 Cá voi ({l2_data['t1_date']}): Lệnh mua to gấp {l2_data['whale_ratio']:.1f}x lệnh bán.")
+                
+            if l2_data['is_free_float_squeeze']:
+                diagnosis.append(f"💎 Cạn Cung Trôi Nổi: Ngoại đã gom {l2_data['fr_owned_pct']*100:.1f}% cty. Hở room < 5%!")
+
         return {
             "trend": trend,
             "change_pct": price_change_pct,
             "sm_net": total_sm_net,
             "f_net": total_f_net,
             "shadow": total_shadow,
-            "verdict": " | ".join(diagnosis)
+            "verdict": " | ".join(diagnosis),
+            "has_l2_trap": has_l2_trap,
+            "l2_data": l2_data
         }
 
     def predict_t0_action(self, ticker, past_context=None):
@@ -289,100 +440,114 @@ class OmniFlowMatrix:
         Kết hợp: Ngoại T0 (Bảng điện) + Sổ lệnh Imbalance + Lực mua chủ động Intraday
         """
         t0_data = self.t0_snapshot.get(ticker, {})
-        if not t0_data: return {"error": "Không có dữ liệu Bảng điện T0."}
 
-        # Lấy dữ liệu T0
+        # 1. FALLBACK GIÁ TRỊ KHI OFFLINE (Cuối tuần/Chưa mở cửa)
         f_net_t0 = t0_data.get('t0_foreign_net_bn', 0)
         imbalance = t0_data.get('t0_imbalance', 0)
+        
+        # Lấy giá gần nhất từ Bảng điện, nếu rỗng thì mượn tạm giá EOD từ Lịch sử
         last_price = t0_data.get('t0_last_price', 0)
+        if last_price == 0 and not self.df_price.empty:
+            df_p_ticker = self.df_price[self.df_price['ticker'] == ticker]
+            if not df_p_ticker.empty:
+                last_price = df_p_ticker.iloc[-1]['close']
         
         # Bóc tách lệnh chủ động từ Intraday
         net_active_bn, total_intra_val, vwap_t0 = self._get_intraday_t0_metrics(ticker)
 
         score = 0
         signals = []
+        verdict = "NEUTRAL (Giằng co)"
+
+        # Cờ nhận diện trạng thái Thị trường đóng cửa
+        is_offline = not t0_data and net_active_bn == 0
 
         # --- PHẦN 1: ĐÁNH GIÁ VI CẤU TRÚC (MICROSTRUCTURE) ---
-        # Khớp lệnh chủ động lớn (Thực tế)
-        if net_active_bn > (total_intra_val * 0.1): 
-            if imbalance < -0.3:
-                # Kịch bản Vàng: Lái kê bán ảo để đè giá, nhưng lệnh khớp thật lại là MUA XUYÊN TƯỜNG! (Đè Gom / Hấp thụ)
-                signals.append(f"Cầu chủ động ăn vã Bức tường Bán ảo (+{net_active_bn:.1f} Tỷ)")
-                score += 3 # Thưởng điểm cực cao
-            else:
-                signals.append(f"Cầu chủ động áp đảo (+{net_active_bn:.1f} Tỷ)")
-                score += 2
-        # Áp lực bán chủ động lớn (Thực tế)
-        elif net_active_bn < -(total_intra_val * 0.1): 
-            if imbalance > 0.3:
-                # Kịch bản Rủi ro: Lái kê mua ảo dụ Nhỏ lẻ, nhưng lại lén XẢ THẲNG VÀO ĐẦU (Phân phối)
-                signals.append(f"Kê Mua ảo dụ cầu, Bán chủ động táng rát ({net_active_bn:.1f} Tỷ)")
-                score -= 3
-            else:
-                signals.append(f"Cung chủ động áp đảo ({net_active_bn:.1f} Tỷ)")
-                score -= 2
-        # Nếu chưa có Khớp lệnh đáng kể
+        if is_offline:
+            signals.append("Thị trường Đóng cửa/Chưa có GD T0")
         else:
-            # Thiếu thanh khoản xác nhận
-            if imbalance > 0.3:
-                signals.append("Lái kê lệnh Mua (Bid) dày đặc chặn dưới (Thiếu Vol)")
-                score += 1
-            elif imbalance < -0.3:
-                signals.append("Lái chặn lệnh Bán (Ask) dày đặc ép giá (Thiếu Vol)")
-                score -= 1
-
-        # Đánh giá Khối Ngoại Real-time (Snapshot)
-        if f_net_t0 > 5.0:
-            signals.append(f"Tây lông tiếp sức (+{f_net_t0:.1f} Tỷ)")
-            score += 2
-        elif f_net_t0 < -5.0:
-            signals.append(f"Tây lông đang xả rát ({f_net_t0:.1f} Tỷ)")
-            score -= 2
-
-        # --- PHẦN 2: ĐỐI CHIẾU NGỮ CẢNH QUÁ KHỨ (CONTEXT OVERRIDE) ---
-        is_shaking_out = False
-        if past_context:
-            past_verdict = past_context.get('verdict', "")
-            
-            # NGƯỠNG ĐỘNG THEO RỔ VỐN HÓA
-            universe = self.ticker_to_universe.get(ticker, 'HOSE')
-            
-            if universe == 'VN30':
-                weak_sell_threshold = -15.0  # VN30: Xả dưới 15 Tỷ vẫn là nhiễu nhỏ lẻ
-            elif universe == 'VNMidCap':
-                weak_sell_threshold = -3.0   # MidCap: Xả dưới 3 Tỷ là nhiễu
-            elif universe == 'VNSmallCap':
-                weak_sell_threshold = -0.5   # Penny: Xả dưới 500 triệu (0.5 Tỷ) là nhiễu. Lớn hơn là CÓ BIẾN!
+            # Khớp lệnh chủ động lớn (Thực tế)
+            if net_active_bn > (total_intra_val * 0.1): 
+                if imbalance < -0.3:
+                    # Kịch bản Vàng: Lái kê bán ảo để đè giá, nhưng lệnh khớp thật lại là MUA XUYÊN TƯỜNG! (Đè Gom / Hấp thụ)
+                    signals.append(f"Cầu chủ động ăn vã Bức tường Bán ảo (+{net_active_bn:.1f} Tỷ)")
+                    score += 3 # Thưởng điểm cực cao
+                else:
+                    signals.append(f"Cầu chủ động áp đảo (+{net_active_bn:.1f} Tỷ)")
+                    score += 2
+            # Áp lực bán chủ động lớn (Thực tế)
+            elif net_active_bn < -(total_intra_val * 0.1): 
+                if imbalance > 0.3:
+                    # Kịch bản Rủi ro: Lái kê mua ảo dụ Nhỏ lẻ, nhưng lại lén XẢ THẲNG VÀO ĐẦU (Phân phối)
+                    signals.append(f"Kê Mua ảo dụ cầu, Bán chủ động táng rát ({net_active_bn:.1f} Tỷ)")
+                    score -= 3
+                else:
+                    signals.append(f"Cung chủ động áp đảo ({net_active_bn:.1f} Tỷ)")
+                    score -= 2
+            # Nếu chưa có Khớp lệnh đáng kể
             else:
-                weak_sell_threshold = -3.0   # Mặc định
+                # Thiếu thanh khoản xác nhận
+                if imbalance > 0.3:
+                    signals.append("Lái kê lệnh Mua (Bid) dày đặc chặn dưới (Thiếu Vol)")
+                    score += 1
+                elif imbalance < -0.3:
+                    signals.append("Lái chặn lệnh Bán (Ask) dày đặc ép giá (Thiếu Vol)")
+                    score -= 1
 
-            # Lực xả được coi là "YẾU" (Không đáng ngại) nếu nó thỏa mãn 1 trong 2 điều kiện:
-            # 1. Nhỏ hơn mức chịu đựng tuyệt đối của Rổ (Tuyệt đối)
-            # 2. Hoặc chiếm chưa tới 5% tổng thanh khoản hiện tại (Tương đối)
+            # Đánh giá Khối Ngoại Real-time (Snapshot)
+            if f_net_t0 > 5.0:
+                signals.append(f"Tây lông tiếp sức (+{f_net_t0:.1f} Tỷ)")
+                score += 2
+            elif f_net_t0 < -5.0:
+                signals.append(f"Tây lông đang xả rát ({f_net_t0:.1f} Tỷ)")
+                score -= 2
+
+            # ĐIỀU KIỆN VWAP
+            if vwap_t0 > 0:
+                if last_price >= vwap_t0 and net_active_bn > 0:
+                    signals.append("Giá neo vững trên VWAP T0")
+                    score += 1
+                elif last_price < vwap_t0 and net_active_bn < 0:
+                    signals.append("Giá thủng VWAP T0, cầu đuối")
+                    score -= 1
+
+        # --- PHẦN 2: ĐỐI CHIẾU NGỮ CẢNH T-1 (GHI ĐÈ BẰNG KILL-SWITCH LEVEL 2) ---
+        is_shaking_out = False
+        l2_trap = False
+
+        if past_context and "error" not in past_context:
+            past_verdict = past_context.get('verdict', "")
+            l2_trap = past_context.get('has_l2_trap', False)
+            l2_data = past_context.get('l2_data', None)
+            
+            universe = self.ticker_to_universe.get(ticker, 'HOSE')
+            if universe == 'VN30': weak_sell_threshold = -15.0
+            elif universe == 'VNMidCap': weak_sell_threshold = -3.0
+            elif universe == 'VNSmallCap': weak_sell_threshold = -0.5
+            else: weak_sell_threshold = -3.0
+
             is_weak_selling = (net_active_bn >= weak_sell_threshold) or (net_active_bn > -(total_intra_val * 0.05))
             
-            # Nếu quá khứ đang là Sóng Gom HOẶC đang Siết nền cạn kiệt, và lực xả hiện tại chỉ là "Xả Yếu"
-            if any(keyword in past_verdict for keyword in ["Gom Ngầm", "Sóng Thể chế", "Đồng thuận", "Siết nền"]):
-                if score < 0 and is_weak_selling:
+            if any(keyword in past_verdict for keyword in ["Gom", "Sóng", "Đồng thuận", "Siết nền", "Cá voi"]):
+                if score < 0 and is_weak_selling and not l2_trap and not is_offline:
                     is_shaking_out = True
-                    score = 0 # Đưa về Neutral để không báo bán sai
-
-        # ĐIỀU KIỆN VWAP
-        if vwap_t0 > 0:
-            if last_price >= vwap_t0 and net_active_bn > 0:
-                signals.append("Giá neo vững trên VWAP T0")
-                score += 1
-            elif last_price < vwap_t0 and net_active_bn < 0:
-                signals.append("Giá thủng VWAP T0, cầu đuối")
-                score -= 1
+                    
+            # KÍCH HOẠT MÁY CHÉM: Nếu T-1 là Bẫy Kéo Xả Ảo
+            if l2_trap and l2_data:
+                score -= 50 # Ép điểm rớt đài
+                signals.insert(0, f"BẪY L2: Lệnh bán thực tế to gấp {1/l2_data['whale_ratio']:.1f}x. Lái kê lệnh ảo dụ Fomo!")
+                verdict = "BEARISH (Bẫy Kéo Xả Ảo)"
 
         # --- PHẦN 3: CHỐT KẾT LUẬN ---
-        if score >= 3: verdict = "🔥 BULLISH (Tích cực - Lái đang kéo giá, Canh Mua)"
-        elif score <= -3: verdict = "🩸 BEARISH (Tiêu cực - Áp lực xả lớn, Đứng ngoài/Bán)"
-        elif is_shaking_out: verdict = "🟡 NEUTRAL - RŨ BỎ (Bối cảnh tốt, Lái đang đè lệnh ảo để gom nốt)"
-        elif score > 0: verdict = "🟢 TILT BULL (Hơi nghiêng về chiều Mua)"
-        elif score < 0: verdict = "🔴 TILT BEAR (Hơi nghiêng về chiều Bán)"
-        else: verdict = "⚖️ NEUTRAL (Giằng co - Phân phối đều)"
+        if verdict == "NEUTRAL (Giằng co)": 
+            if is_offline: 
+                verdict = "OFFLINE (Chờ Phiên Mới)"
+            elif score >= 3: verdict = "🔥 BULLISH (Tích cực - Lái đang kéo giá, Canh Mua)"
+            elif score <= -3: verdict = "🩸 BEARISH (Tiêu cực - Áp lực xả lớn, Đứng ngoài/Bán)"
+            elif is_shaking_out: verdict = "🟡 NEUTRAL - RŨ BỎ (Bối cảnh tốt, Lái đang đè để gom nốt)"
+            elif score > 0: verdict = "🟢 TILT BULL (Nghiêng Mua)"
+            elif score < 0: verdict = "🔴 TILT BEAR (Nghiêng Bán)"
+            else: verdict = "⚖️ NEUTRAL (Giằng co - Phân phối đều)"
 
         return {
             "verdict": verdict,
@@ -390,7 +555,10 @@ class OmniFlowMatrix:
             "net_active_bn": net_active_bn,
             "f_net_t0": f_net_t0,
             "imbalance": imbalance,
-            "details": " | ".join(signals) if signals else "Chưa có dòng tiền đột biến."
+            "details": " | ".join(signals) if signals else "Chưa có dòng tiền đột biến.",
+            # Trả ngược Level 2 data cho live.py/sniper.py đọc để hiển thị chi tiết (nếu cần)
+            "l2_data": past_context.get('l2_data', None) if past_context else None, # dữ liệu t-1
+            "is_offline": is_offline
         }
 
 if __name__ == "__main__":
@@ -403,6 +571,7 @@ if __name__ == "__main__":
 
     data_frames = {
         'price': load_pq('price/master_price.parquet'),
+        'price_l2': load_pq('price/master_price_l2.parquet'),
         'foreign': load_pq('macro/foreign_flow.parquet'),
         'prop': load_pq('macro/prop_flow.parquet'),
         'comp': load_pq('company/master_company.parquet'),
@@ -423,7 +592,7 @@ if __name__ == "__main__":
         # 1. HỒ SƠ QUÁ KHỨ (10 Ngày qua)
         past = omni.explain_past_movement(ticker, lookback_days=10)
         if "error" not in past:
-            print(f" 🕰️ GIẢI MÃ QUÁ KHỨ (10 Phiên):")
+            print(f" 🕰️ GIẢI MÃ QUÁ KHỨ (10 Phiên & Bẫy T-1):")
             print(f"    - Xu hướng     : {past['trend']} ({past['change_pct']:+.2f}%)")
             print(f"    - Dòng tiền 10D: Thể chế {past['sm_net']:+.1f} Tỷ | Ẩn/Lái {past['shadow']:+.1f} Tỷ")
             print(f"    - Chẩn đoán    : 🧠 {past['verdict']}")

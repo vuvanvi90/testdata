@@ -15,6 +15,7 @@ class DarkPoolRadar:
         self.df_intra = self._load_parquet_safe(self.data_dir / 'intraday/master_intraday.parquet')
         self.df_pt = self._load_parquet_safe(self.data_dir / 'intraday/master_put_through.parquet')
         self.df_price = self._load_parquet_safe(self.data_dir / 'price/master_price.parquet')
+        self.df_price_l2 = self._load_parquet_safe(self.data_dir / 'price/master_price_l2.parquet')
         self.df_idx = self._load_parquet_safe(self.data_dir / 'macro/index_components.parquet')
         
         self.t0_date = self._identify_system_t0()
@@ -142,7 +143,7 @@ class DarkPoolRadar:
             total_val_bn = group['match_value'].sum() / 1_000_000_000
             
             # =================================================================
-            # 🚀 THIẾT LẬP NGƯỠNG ĐỘNG (DYNAMIC THRESHOLDS) THEO TỪNG RỔ
+            # THIẾT LẬP NGƯỠNG ĐỘNG (DYNAMIC THRESHOLDS) THEO TỪNG RỔ
             # =================================================================
             if basket == 'VN30':
                 min_val = 50.0       # VN30: Dưới 50 Tỷ là nhiễu, bỏ qua
@@ -188,12 +189,36 @@ class DarkPoolRadar:
                 elif avg_change < -1.0: intent = f"🧊 Discount ({avg_change:+.1f}%)"
                 else: intent = f"⚖️ Neutral ({avg_change:+.1f}%)"
                 
-                # 🚀 HỆ THỐNG CHẤM ĐIỂM ĐỘT BIẾN (NORMALIZED ANOMALY SCORE)
+                # Price L2: XÁC MINH SỰ THAM GIA CỦA KHỐI NGOẠI
+                fr_deal_state = "LOCAL" # Mặc định là Lái nội
+                if not getattr(self, 'df_price_l2', pd.DataFrame()).empty:
+                    df_l2_ticker = self.df_price_l2[(self.df_price_l2['ticker'] == ticker) & (self.df_price_l2['time'].isin(self.last_5_days))]
+                    if not df_l2_ticker.empty:
+                        f_buy = df_l2_ticker['fr_buy_volume_deal'].sum()
+                        f_sell = df_l2_ticker['fr_sell_volume_deal'].sum()
+                        
+                        if f_buy > 0 and f_sell == 0:
+                            fr_deal_state = "FOREIGN_BUY"
+                            intent += " | 🕵️ TÂY GOM NGẦM"
+                        elif f_sell > 0 and f_buy == 0:
+                            fr_deal_state = "FOREIGN_SELL"
+                            intent += " | 🏃 TÂY XẢ NGẦM"
+                        elif f_buy > 0 and f_sell > 0:
+                            fr_deal_state = "FOREIGN_CROSS"
+                            intent += " | 🤝 TÂY SANG TAY"
+
+                # HỆ THỐNG CHẤM ĐIỂM ĐỘT BIẾN (NORMALIZED ANOMALY SCORE)
                 # Loại bỏ việc cộng giá trị tuyệt đối (total_val_bn) để SmallCap không bị Bluechip đè bẹp.
                 # Công thức chuẩn Quant: Score = (Tỷ lệ thanh khoản) + (Biên độ giá) + (Trọng số T0)
                 t0_weight = (t0_val_bn / total_val_bn) * 10 if total_val_bn > 0 else 0
                 
                 anomaly_score = (liqd_ratio * 20) + (abs(avg_change) * 10) + t0_weight
+
+                # THƯỞNG ĐIỂM SÁT THỦ: Tây gom ngầm giá cao hoặc Xả ngầm giá rát
+                if fr_deal_state == "FOREIGN_BUY" and avg_change > 0:
+                    anomaly_score += 20
+                elif fr_deal_state == "FOREIGN_SELL" and avg_change < 0:
+                    anomaly_score += 20
                 
                 anomalies_temp.append({
                     'ticker': ticker,
@@ -204,7 +229,8 @@ class DarkPoolRadar:
                     'intent': intent,
                     'whale_node': whale_node,
                     'avg_change': avg_change,
-                    'score': anomaly_score
+                    'score': anomaly_score,
+                    'fr_deal_state': fr_deal_state
                 })
         
         # Sắp xếp theo Anomaly Score giảm dần và lấy Top 10
@@ -217,6 +243,7 @@ class DarkPoolRadar:
             whale_node = an['whale_node']
             avg_change = an['avg_change']
             liqd_ratio = an['ratio']
+            fr_state = an.get('fr_deal_state', 'LOCAL')
             
             last_price = self.last_price_dict.get(ticker, 0)
             if last_price == 0: continue
@@ -224,13 +251,15 @@ class DarkPoolRadar:
             dist_to_node = (last_price - whale_node) / whale_node * 100
             forecast = ""
             
-            # Đánh giá xem Node này có uy tín không (Dựa trên khối lượng)
             is_node_strong = liqd_ratio > 0.8
             
             # KỊCH BẢN 1: BỆ ĐỠ T+1 (Cần Support mạnh)
             if -2.0 <= dist_to_node <= 1.5 and avg_change > -1.0:
                 if is_node_strong:
-                    forecast = f"Giá ({last_price:,.0f}) test lại Whale Node ({whale_node:,.0f}) với thanh khoản ngầm ĐỦ LỚN. Lực đỡ uy tín. Khuyến nghị CANH BẮT ĐÁY."
+                    if fr_state == "FOREIGN_BUY":
+                        forecast = f"Giá ({last_price:,.0f}) tựa nền Node ({whale_node:,.0f}) + Khối ngoại âm thầm GOM THỎA THUẬN. Bệ phóng siêu cứng. Khuyến nghị GOM MẠNH."
+                    else:
+                        forecast = f"Giá ({last_price:,.0f}) test lại Whale Node ({whale_node:,.0f}) với thanh khoản ngầm ĐỦ LỚN. Lực đỡ uy tín. Khuyến nghị CANH BẮT ĐÁY."
                 else:
                     forecast = f"Giá ({last_price:,.0f}) về Node ({whale_node:,.0f}) nhưng Khối lượng thỏa thuận yếu ({liqd_ratio:.1f}x). Bệ đỡ rỗng, dễ thủng. THEO DÕI."
             
@@ -241,18 +270,30 @@ class DarkPoolRadar:
                 elif dist_to_node < -3.0:
                     forecast = f"⚠️ CÁ MẬP KẸP HÀNG: Mua Premium giá cao nhưng giá sàn rớt thảm. Động lượng cực xấu, cẩn thận vỡ deal. ĐỨNG NGOÀI."
                 else:
-                    forecast = f"🔥 Khát hàng: Nổ thỏa thuận Premium ngay nền. Deal đã chốt. Dự báo bứt phá T+1/T+2. Khuyến nghị GOM MẠNH."
+                    if fr_state == "FOREIGN_BUY":
+                        forecast = f"🔥 TÂY LÔNG KHÁT HÀNG: Mua thỏa thuận Premium giá cao. Cổ phiếu cạn kiệt cung. Dự báo bứt phá T+1. TẦM NGẮM ĐẶC BIỆT."
+                    else:
+                        forecast = f"🔥 Khát hàng: Nổ thỏa thuận Premium ngay nền. Deal đã chốt. Dự báo bứt phá T+1/T+2. Khuyến nghị GOM MẠNH."
                     
             # KỊCH BẢN 3: PHÂN PHỐI TỐI (Discount sâu)
             elif avg_change < -2.0:
                 if dist_to_node > 4.0:
-                    forecast = f"🩸 Giá sàn kéo thốc ({last_price:,.0f}) nhưng táng thỏa thuận Discount sâu. Dấu hiệu Phân phối ngầm / Bull-trap. T+2 TẮM MÁU. BÁN/ĐỨNG NGOÀI."
+                    if fr_state == "FOREIGN_SELL":
+                        forecast = f"🩸 KHỐI NGOẠI THÁO CỐNG NGẦM: Bán thỏa thuận Discount cực sâu. Phân phối đỉnh/Bull-trap rõ ràng. BÁN/ĐỨNG NGOÀI."
+                    else:
+                        forecast = f"🩸 Giá sàn kéo thốc ({last_price:,.0f}) nhưng táng thỏa thuận Discount sâu. Dấu hiệu Phân phối ngầm / Bull-trap. T+2 TẮM MÁU. BÁN/ĐỨNG NGOÀI."
                 else:
-                    forecast = f"Sang tay Discount sâu vùng đáy. Lệnh trao tay nội bộ, không phản ánh cung cầu thật. THEO DÕI."
+                    if fr_state == "FOREIGN_CROSS":
+                        forecast = f"🤝 Tây lông sang tay Discount sâu vùng đáy. Lệnh trao tay né thuế/cơ cấu quỹ, không tạo áp lực xả trên sàn. THEO DÕI."
+                    else:
+                        forecast = f"Sang tay Discount sâu vùng đáy. Lệnh trao tay nội bộ, không phản ánh cung cầu thật. THEO DÕI."
             
             # KỊCH BẢN 4: THAY MÁU CỔ ĐÔNG LỚN (Đột biến thanh khoản ngầm)
             elif liqd_ratio >= 5.0 and -2.0 <= avg_change <= 2.0:
-                forecast = f"Thanh khoản ngầm SIÊU ĐỘT BIẾN ({liqd_ratio:.1f}x MA20) quanh tham chiếu. Dấu hiệu thay máu cổ đông lớn hoặc Deal thâu tóm (M&A). Cổ phiếu sắp có sóng lớn. ĐƯA VÀO TẦM NGẮM ĐẶC BIỆT."
+                if fr_state == "FOREIGN_CROSS":
+                    forecast = f"Tây Lông sang tay KHỦNG ({liqd_ratio:.1f}x MA20) quanh tham chiếu. Tái cơ cấu danh mục Quỹ ETF. ĐƯA VÀO TẦM NGẮM ĐẶC BIỆT."
+                else:
+                    forecast = f"Thanh khoản ngầm SIÊU ĐỘT BIẾN ({liqd_ratio:.1f}x MA20) quanh tham chiếu. Dấu hiệu thay máu cổ đông lớn hoặc Deal thâu tóm (M&A). ĐƯA VÀO TẦM NGẮM ĐẶC BIỆT."
 
             if forecast:
                 self.forecasts.append(f"- Kèo [{ticker}]: {forecast}")

@@ -51,6 +51,7 @@ class TargetSniper:
         """Chỉ nạp và giữ lại dữ liệu của ĐÚNG MÃ CẦN SOI để chạy với tốc độ ánh sáng"""
         # Đọc Master Data
         df_price_raw = self._load_parquet_safe(self.data_dir / 'price/master_price.parquet')
+        df_price_l2_raw = self._load_parquet_safe(self.data_dir / 'price/master_price_l2.parquet')
         df_foreign_raw = self._load_parquet_safe(self.data_dir / 'macro/foreign_flow.parquet')
         df_prop_raw = self._load_parquet_safe(self.data_dir / 'macro/prop_flow.parquet')
         df_intra_raw = self._load_parquet_safe(self.data_dir / 'intraday/master_intraday.parquet')
@@ -62,6 +63,7 @@ class TargetSniper:
 
         # Lọc siêu tốc (Chỉ lấy ticker)
         self.df_price = df_price_raw[df_price_raw['ticker'] == self.ticker].copy() if not df_price_raw.empty else pd.DataFrame()
+        self.df_price_l2 = df_price_l2_raw[df_price_l2_raw['ticker'] == self.ticker].copy() if not df_price_l2_raw.empty else pd.DataFrame()
         self.df_foreign = df_foreign_raw[df_foreign_raw['ticker'] == self.ticker].copy() if not df_foreign_raw.empty else pd.DataFrame()
         self.df_prop = df_prop_raw[df_prop_raw['ticker'] == self.ticker].copy() if not df_prop_raw.empty else pd.DataFrame()
         self.df_intra = df_intra_raw[df_intra_raw['ticker'] == self.ticker].copy() if not df_intra_raw.empty else pd.DataFrame()
@@ -108,7 +110,7 @@ class TargetSniper:
         data_frames = {
             'price': self.df_price, 'foreign': self.df_foreign, 'prop': self.df_prop,
             'comp': self.df_comp, 'idx': self.df_idx, 'board': self.df_board, 
-            'intra': self.df_intra, 'put_through': self.df_pt
+            'intra': self.df_intra, 'put_through': self.df_pt, 'price_l2': self.df_price_l2
         }
         self.omni_matrix = OmniFlowMatrix(data_frames, lookback_days=30)
 
@@ -256,6 +258,34 @@ class TargetSniper:
             "pattern": pattern, "thesis": thesis
         }
 
+    def _log_audit_trail(self, price, signal, sm_vwap, pt_intent, dp_action, final_action, final_reason):
+        """Hộp đen ghi nhận phán quyết của Sniper để Forward-test và Phân tích sau này"""
+        log_path = self.data_dir.parent / 'invest/sniper_audit_log.csv'
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        file_exists = log_path.exists()
+        
+        # Bắt lỗi an toàn nếu pt_intent trống
+        short_intent = pt_intent.split(' ')[0] if pt_intent and isinstance(pt_intent, str) else "NONE"
+        
+        row_data = {
+            'Time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'Ticker': self.ticker,
+            'Price': round(price, 0),
+            'Wyckoff': signal,
+            'VWAP_SM': round(sm_vwap, 0),
+            'DP_Intent': short_intent,
+            'Radar_Action': dp_action,
+            'Action': final_action, 
+            'Reason': final_reason
+        }
+        
+        df_log = pd.DataFrame([row_data])
+        if not file_exists:
+            df_log.to_csv(log_path, index=False, encoding='utf-8-sig')
+        else:
+            df_log.to_csv(log_path, mode='a', header=False, index=False, encoding='utf-8-sig')
+
     def analyze(self):
         """Khớp nối dữ liệu và Báo cáo X-Quang"""
         df_full = self._prepare_latest_ohlcv()
@@ -340,74 +370,73 @@ class TargetSniper:
         print(f"    - Radar Lái nội    : {shadow_msg}")
         print("-" * 90)
 
-        # GỌI MODULE MICRO-FLOW T-3 ĐẾN T-1
-        micro_flow = self._analyze_micro_flow()
-
-        validation = "CHƯA XÁC NHẬN"
+        # PHẦN 3: ĐỘNG LƯỢNG KẾT HỢP & BÓC TÁCH LEVEL 2
+        print("------------------------------------------------------------------------------------------")
+        print(" ⚡ 3. BÓC TÁCH CẤU TRÚC LỆNH & ĐỘNG LƯỢNG T0 (LEVEL-2 X-RAY)")
         
-        # PHẦN 3: ĐỘNG LƯỢNG HIỆN TẠI & KIỂM ĐỊNH GIẢ THUYẾT
-        print(f" ⚡ 3. ĐỘNG LƯỢNG KẾT HỢP (MICRO-FLOW VALIDATION)")
+        micro_flow = self._analyze_micro_flow()
+        
         if micro_flow:
-            print(f"    [QUÁ KHỨ GẦN - CHU KỲ 1 TUẦN]")
-            print(f"    - Dòng tiền T-5 -> T-1   : {micro_flow['t5']:+.1f} | {micro_flow['t4']:+.1f} | {micro_flow['t3']:+.1f} | {micro_flow['t2']:+.1f} | {micro_flow['t1']:+.1f} (Tỷ VNĐ)")
+            print("    [QUÁ KHỨ GẦN - CHU KỲ 1 TUẦN]")
+            history_str = " | ".join([f"{micro_flow[k]:+.1f}" for k in ['t5', 't4', 't3', 't2', 't1']])
+            print(f"    - Dòng tiền T-5 -> T-1   : {history_str} (Tỷ VNĐ)")
             print(f"    - TỔNG KẾT TUẦN (Weekly) : {micro_flow['weekly_net']:+.1f} Tỷ")
             print(f"    - Hành vi Lái (Pattern)  : {micro_flow['pattern']}")
             print(f"    - Giả thuyết T0 (Thesis) : {micro_flow['thesis']}")
-        
-        print(f"    [HIỆN TẠI T0]")
-        if "error" not in omni_now:
-            print(f"    - Khớp chủ động T0       : {omni_now['net_active_bn']:+.1f} Tỷ")
-            print(f"    - Sổ lệnh (Bid/Ask)      : Mất cân bằng {omni_now['imbalance']:+.2f}")
-
-            # 🚀 ĐỘNG CƠ KIỂM ĐỊNH (VALIDATOR)
-            t0_active = omni_now['net_active_bn']
-            if micro_flow:
-                # 1. KỊCH BẢN BỐI CẢNH TÍCH CỰC (GOM HÀNG)
-                if any(k in micro_flow['thesis'] for k in ["BULLISH", "BOTTOMING", "TILT BULL"]):
-                    if t0_active > 3.0: 
-                        validation = "✅ XÁC NHẬN ĐÚNG (Tiền vào chủ động như dự kiến)"
-                    elif t0_active < -3.0: 
-                        validation = "❌ XÁC NHẬN SAI (Bị xả ngược, Giả thuyết gãy)"
-                    else:
-                        # Nằm trong khoảng -3 đến +3 là trạng thái Cạn Cung chờ nổ
-                        validation = "✅ XÁC NHẬN ĐÚNG (Tiết Cung T0, Dòng tiền đang nén chặt)"
+            
+            # IN KẾT QUẢ KIỂM TOÁN T-1 LÊN MÀN HÌNH
+            l2_data = omni_now.get('l2_data') if omni_now else None
+            if l2_data:
+                w_ratio = l2_data['whale_ratio']
+                s_ratio = l2_data['spoofing_ratio']
+                avg_buy, avg_sell = l2_data['avg_buy_vol'], l2_data['avg_sell_vol']
                 
-                # 2. KỊCH BẢN BỐI CẢNH TIÊU CỰC (XẢ HÀNG)
-                elif any(k in micro_flow['thesis'] for k in ["BEARISH", "TILT BEAR"]):
-                    if t0_active < -3.0: 
-                        validation = "✅ XÁC NHẬN ĐÚNG (Tiếp tục bị đè bán)"
-                    elif t0_active > 5.0: 
-                        validation = "🔄 ĐẢO CHIỀU CẦU (Lực mua bất ngờ giải cứu)"
-                    else:
-                        validation = "⚠️ TẠM DỪNG XẢ (Lực bán yếu đi nhưng chưa có Cầu vào)"
+                print(f"    [HẬU KIỂM LEVEL-2 (PHIÊN T-1: {l2_data['t1_date']})]")
+                print(f"    - Quy mô Lệnh (L2)       : Mua TB {avg_buy:,.0f} cp/lệnh vs Bán TB {avg_sell:,.0f} cp/lệnh")
+                
+                if w_ratio >= 1.5:
+                    print(f"    - Dấu chân Cá voi (Whale): 🐋 LỆNH MUA TO GẤP {w_ratio:.1f}x LỆNH BÁN")
+                elif w_ratio <= 0.6:
+                    print(f"    - Dấu chân Cá voi (Whale): 🦈 LỆNH BÁN TO GẤP {1/w_ratio:.1f}x LỆNH MUA")
+                else:
+                    print(f"    - Dấu chân Cá voi (Whale): ⚖️ Giằng co nhỏ lẻ (Tỷ lệ {w_ratio:.1f}x)")
                     
-            print(f"    => KIỂM ĐỊNH T0          : {validation}")
-            print(f"    => KẾT LUẬN OMNI T0      : {omni_now['verdict']}")
+                if s_ratio > 2.0:
+                    print(f"    - Bẫy Kê Lệnh (Spoofing) : ⚠️ DƯ MUA ẢO (Gấp {s_ratio:.1f}x Dư bán) - Cẩn thận dụ Fomo!")
+                elif s_ratio < 0.5:
+                    print(f"    - Bẫy Kê Lệnh (Spoofing) : ⚠️ DƯ BÁN ẢO (Gấp {1/s_ratio:.1f}x Dư mua) - Cẩn thận đè gom!")
+        
+        print("    [HIỆN TẠI T0 - INTRADAY MOMENTUM]")
+        if omni_now and "error" not in omni_now:
+            is_offline = omni_now.get('is_offline') if omni_now else None
+            if not is_offline:
+                print(f"    - Khớp chủ động T0       : {omni_now.get('net_active_bn', 0):+.1f} Tỷ VNĐ")
+                print(f"    - Sổ lệnh (Bid/Ask)      : Mất cân bằng {omni_now.get('imbalance', 0):+.2f} (Dương=Kê Mua / Âm=Chặn Bán)")
+                print(f"    => BẢN ÁN OMNI T0        : {omni_now.get('verdict', 'N/A')}")
+                print(f"    => LÝ DO CHI TIẾT        : {omni_now.get('details', 'N/A')}")
+            else:
+                print("    - Thị trường Đóng cửa/Chưa có GD T0.")
         else:
-            print(f"    - [!] {omni_now['error']}")
+            print("    - Chưa có dữ liệu Khớp lệnh T0 hoặc lỗi Omni-Matrix.")
 
         print("-" * 90)
 
         # Phần 4: Kiểm toán Thỏa thuận
         print(f" 🤝 4. KIỂM TOÁN GIAO DỊCH THỎA THUẬN (OFF-BOOK AUDIT)")
-        if not self.df_pt.empty:
-            
-            # 1. LẬP BẢN ĐỒ TIMELINE (T-5 -> T0)
-            # trading_days = sorted(self.df_price['time'].unique())[-6:]
+        intent_str = "NONE"
+        dp_action_tag = "NONE"
 
+        if not self.df_pt.empty:
             # XÁC ĐỊNH CHUẨN PHIÊN GIAO DỊCH T-5 ĐẾN T0
-            # Lấy 5 ngày giao dịch cũ từ df_price
             past_sessions = sorted(self.df_price['time'].unique())
             if len(past_sessions) >= 5:
-                # Nếu ngày cuối cùng của df_price chính là T0 (sau khi kết thúc phiên)
                 if past_sessions[-1].date() == self.omni_matrix.t0_date:
-                    trading_days = past_sessions[-6:] # Lấy đủ 6 ngày cuối
+                    trading_days = past_sessions[-6:] 
                 else:
-                    # Nếu đang trong phiên (df_price mới đến T-1), lấy 5 ngày cũ + T0 hệ thống
                     t0_timestamp = pd.Timestamp(self.omni_matrix.t0_date)
                     trading_days = past_sessions[-5:] + [t0_timestamp]
             else:
-                trading_days = past_sessions # Phòng hờ dữ liệu quá ít
+                trading_days = past_sessions 
 
             pt_vals = []
             pt_intents = []
@@ -416,16 +445,14 @@ class TargetSniper:
                 df_day = self.df_pt[self.df_pt['time'] == d].copy()
                 if not df_day.empty:
                     val_bn = df_day['match_value'].sum() / 1_000_000_000
-                    # Tính % Premium/Discount gia quyền theo Volume của riêng ngày đó
                     df_day['weighted_change'] = df_day['change_percent'] * df_day['match_value']
                     w_change = (df_day['weighted_change'].sum() / df_day['match_value'].sum()) * 100
                     
                     pt_vals.append(f"{val_bn:+.1f}")
-                    if w_change > 1.0: pt_intents.append("🔥")     # Premium (Khát hàng)
-                    elif w_change < -1.0: pt_intents.append("🧊")  # Discount (Giải chấp/Nội bộ)
-                    else: pt_intents.append("⚖️")                  # Neutral (Quanh tham chiếu)
+                    if w_change > 1.0: pt_intents.append("🔥")     # Premium
+                    elif w_change < -1.0: pt_intents.append("🧊")  # Discount
+                    else: pt_intents.append("⚖️")                  # Neutral
                 else:
-                    # Nếu ngày đó không có thỏa thuận
                     pt_vals.append(f"{0.0:+.1f}")
                     pt_intents.append(" -")
 
@@ -434,10 +461,9 @@ class TargetSniper:
             print(f"    - Ý đồ (Intent)     : {'  |  '.join(pt_intents)}  (🔥 Đắt / 🧊 Rẻ / ⚖️ Tham chiếu)")
             print(f"    --------------------------------------------------------------------------------------")
 
-            # 2. TỔNG KẾT TÌM ĐIỂM NEO GIÁ 30 NGÀY (ANCHOR FINDER)
             cutoff_pt = datetime.now() - pd.Timedelta(days=30)
             df_pt_recent = self.df_pt[self.df_pt['time'] >= cutoff_pt].copy()
-            
+
             if not df_pt_recent.empty:
                 total_pt_val = df_pt_recent['match_value'].sum() / 1_000_000_000
                 vwap_pt = (df_pt_recent['price'] * df_pt_recent['volume']).sum() / df_pt_recent['volume'].sum()
@@ -450,27 +476,24 @@ class TargetSniper:
                 print(f"    - Giá vốn Thỏa thuận    : ~{vwap_pt:,.0f} đ")
                 
                 if avg_change > 1.0:
-                    intent = "🔥 PREMIUM (Khát hàng, Chấp nhận mua đắt -> Siêu Bullish)"
+                    intent_str = "🔥 PREMIUM"
+                    print(f"    - Ý đồ Tổng thể (Intent): {intent_str} (Khát hàng, Chấp nhận mua đắt -> Siêu Bullish)")
                 elif avg_change < -1.0:
-                    intent = "🧊 DISCOUNT (Trao tay giá rẻ -> Thường là Sang tay nội bộ/Né thuế)"
+                    intent_str = "🧊 DISCOUNT"
+                    print(f"    - Ý đồ Tổng thể (Intent): {intent_str} (Trao tay giá rẻ -> Thường là Sang tay nội bộ/Né thuế)")
                 else:
-                    intent = "⚖️ NEUTRAL (Trao tay quanh giá tham chiếu)"
+                    intent_str = "⚖️ NEUTRAL"
+                    print(f"    - Ý đồ Tổng thể (Intent): {intent_str} (Trao tay quanh giá tham chiếu)")
                     
-                print(f"    - Ý đồ Tổng thể (Intent): {intent}")
-                
-                # Hợp lưu Mua (Chỉ coi là Phòng tuyến nếu Thỏa thuận > 50 Tỷ)
                 if total_pt_val > 50.0:
                     print(f"    => 🛡️ TỌA ĐỘ PHÒNG THỦ   : Nếu giá rớt về sát {vwap_pt:,.0f}đ sẽ kích hoạt Lực đỡ Khổng lồ!")
 
-                # TÍCH HỢP 4 BƯỚC PHÂN TÍCH CHUYÊN SÂU (PUT-THROUGH EDGE)
                 print(f"    --------------------------------------------------------------------------------------")
                 print(f"    [PHÂN TÍCH CHUYÊN SÂU 4 CHIỀU (PUT-THROUGH EDGE)]")
                 
-                # 1. CỤM MỨC GIÁ (WHALE NODE)
                 whale_node = df_pt_recent.groupby('price')['volume'].sum().idxmax()
                 print(f"    - Cụm Giá Tập Trung (Node)     : {whale_node:,.0f} đ (Vùng Nam châm hút giá lớn nhất 30D)")
 
-                # 2. CƯỜNG ĐỘ THANH KHOẢN (LIQUIDITY INTENSITY T0)
                 avg_vol_20d = self.df_price['volume'].tail(20).mean() if not self.df_price.empty else 0
                 t0_pt = df_pt_recent[df_pt_recent['time'].dt.date == self.omni_matrix.t0_date].copy()
                 pt_vol_today = t0_pt['volume'].sum()
@@ -483,8 +506,6 @@ class TargetSniper:
                 else:
                     print("    - Cường độ Ẩn T0 (Liqd Ratio)  : Không có thỏa thuận trong phiên hôm nay")
 
-                # 3. CHU KỲ TẦN SUẤT (PULSE ANALYSIS)
-                # Chỉ lọc các giao dịch LỚN (Định nghĩa: > 10 Tỷ VNĐ) để đo nhịp tim
                 large_pts = df_pt_recent[df_pt_recent['match_value'] > 10_000_000_000]
                 if not large_pts.empty:
                     unique_dates = sorted(large_pts['time'].dt.date.unique())
@@ -497,10 +518,8 @@ class TargetSniper:
                 else:
                     print("    - Chu kỳ Nhịp đập (Pulse)      : Không có thỏa thuận Khủng (>10 Tỷ) nào")
 
-                # 4. ĐỘ LỆCH PHA THỜI GIAN (TIMING DIVERGENCE T0)
                 if not t0_pt.empty and not self.df_price.empty:
                     t0_price_row = self.df_price.iloc[-1] 
-                    # Tính biến động giá trên bảng điện (Đóng cửa vs Mở cửa)
                     price_change_today = (t0_price_row['close'] - t0_price_row['open']) / t0_price_row['open'] * 100 if t0_price_row['open'] > 0 else 0
                     
                     t0_pt['weighted_change'] = t0_pt['change_percent'] * t0_pt['match_value']
@@ -513,65 +532,104 @@ class TargetSniper:
                     elif price_change_today > 1.0 and t0_avg_change < -1.0:
                         print("      => ⚠️ TÍN HIỆU BULL-TRAP: Kéo thốc trên sàn dụ FOMO, Thỏa thuận giá bèo táng nội bộ!")
 
-                # =====================================================================
-                # 🚀 ĐỒNG BỘ HỆ SINH THÁI (ĐỌC BẢN ÁN TỪ DARK POOL RADAR)
-                # =====================================================================
-                dp_path = Path('data/live/darkpool_signals.json')
-                if dp_path.exists():
-                    with open(dp_path, 'r', encoding='utf-8') as f:
-                        dp_signals = json.load(f)
+            # ĐỒNG BỘ DARK POOL RADAR VÀ KẾT LUẬN
+            dp_path = Path('data/live/darkpool_signals.json')
+            
+            if dp_path.exists():
+                with open(dp_path, 'r', encoding='utf-8') as f:
+                    dp_signals = json.load(f)
+                
+                if self.ticker in dp_signals:
+                    dp_data = dp_signals[self.ticker]
+                    system_t0_str = self.omni_matrix.t0_date.strftime('%Y-%m-%d')
                     
-                    if self.ticker in dp_signals:
-                        dp_data = dp_signals[self.ticker]
-                        system_t0_str = self.omni_matrix.t0_date.strftime('%Y-%m-%d')
-                        # Chỉ hiển thị nếu Tín hiệu thuộc về ngày hôm nay
-                        if dp_data.get('valid_for_date') == system_t0_str:
-                            print(f"    --------------------------------------------------------------------------------------")
-                            print(f"    [📡 KẾT NỐI HỆ SINH THÁI: TRÍCH XUẤT TỪ DARK POOL RADAR]")
-                            print(f"    - Cảnh báo T0      : {'🚨 CÓ THỎA THUẬN TRONG PHIÊN' if dp_data['t0_val_bn'] > 0 else 'Không có trong T0'}")
-                            print(f"    - Lệnh Tác chiến   : {dp_data['forecast']}")
-                            if dp_data['action'] == 'DANGER':
-                                print("      => 🚫 HỆ THỐNG KHUYẾN NGHỊ: CẤM MUA!")
-            else:
-                print("    - Không phát hiện GD Thỏa thuận nào đáng kể trong 30 ngày qua.")
+                    if dp_data.get('valid_for_date') == system_t0_str:
+                        dp_action_tag = dp_data.get('action', "NONE")
+                        print(f"    --------------------------------------------------------------------------------------")
+                        print(f"    [📡 KẾT NỐI HỆ SINH THÁI: TRÍCH XUẤT TỪ DARK POOL RADAR]")
+                        print(f"    - Cảnh báo T0      : {'🚨 CÓ THỎA THUẬN TRONG PHIÊN' if dp_data.get('t0_val_bn', 0) > 0 else 'Không có trong T0'}")
+                        print(f"    - Lệnh Tác chiến   : {dp_data.get('forecast', '')}")
+                        if dp_action_tag == 'DANGER':
+                            print("      => 🚫 HỆ THỐNG KHUYẾN NGHỊ: CẤM MUA DO CÓ RỦI RO NGẦM!")
         else:
             print("    - Không có dữ liệu Giao dịch Thỏa thuận.")
         print("═"*90)
 
-        # PHẦN 5: KẾT LUẬN ĐẦU TƯ (CẬP NHẬT THEO MICRO-FLOW)
+        # PHẦN 5: KẾT LUẬN ĐẦU TƯ & LƯU NHẬT KÝ HỘP ĐEN
         print(" 🎯 HÀNH ĐỘNG KHUYẾN NGHỊ (SNIPER FINAL VERDICT):")
         
-        is_validated_bull = "XÁC NHẬN ĐÚNG" in validation and ("BULLISH" in micro_flow['thesis'] or "BOTTOMING" in micro_flow['thesis'] or "TILT BULL" in micro_flow['thesis'])
-        
-        if sm_result.get("is_danger", False) and not is_validated_bull:
-            print("   🚫 KHÔNG MUA: Cá mập dài hạn đang tháo cống. Bỏ qua mọi tín hiệu kỹ thuật.")
-        elif "BEARISH" in micro_flow['thesis'] and "XÁC NHẬN ĐÚNG" in validation:
-            print("   🩸 KHÔNG MUA (ĐANG TẮM MÁU): Áp lực xả từ tuần trước vẫn tiếp diễn ở T0. Bắt đáy là cụt tay!")
-        elif "BOTTOMING" in micro_flow['thesis'] and "XÁC NHẬN SAI" in validation:
-            print("   ⚠️ HỦY KẾ HOẠCH BẮT ĐÁY: T-1 đã tiết cung, nhưng T0 lái lại tiếp tục táng hàng. Quá rủi ro!")
-        elif "BULLISH" in micro_flow['thesis'] and "XÁC NHẬN SAI" in validation:
-            print("   ⚠️ HỦY LỆNH MUA (FADE THE BREAKOUT): Quá khứ gom đẹp nhưng T0 bị xả ngược. Lái tạo Bull-trap!")
-        
-        # 🚀 TÁCH RIÊNG 2 TRƯỜNG HỢP MUA
-        elif is_validated_bull and signal in ['SOS', 'SPRING', 'TEST_CUNG', 'NEUTRAL']:
+        final_action = "WAIT"
+        final_reason = ""
+
+        # 1. CÁC KỊCH BẢN BÁO ĐỘNG ĐỎ (TỪ CHỐI MUA)
+        # 🚀 BẢN VÁ LEVEL-2: Từ chối mua tuyệt đối nếu T-1 là Bẫy Kéo Xả Ảo
+        if omni_now and "BEARISH (Bẫy Kéo Xả Ảo)" in omni_now.get('verdict', ''):
+            final_action = "REJECT"
+            final_reason = "BẪY KẾO XẢ LEVEL-2: Lệnh bán thực tế to gấp nhiều lần lệnh mua dù đang kê dư mua ảo."
+            print(f"   🚫 KHÔNG MUA: {final_reason}")
+            
+        elif dp_action_tag == 'DANGER':
+            final_action = "REJECT"
+            final_reason = "DARK POOL CẢNH BÁO ĐỎ: Phát hiện rủi ro ngầm từ dữ liệu Thỏa thuận."
+            print(f"   🚫 KHÔNG MUA: {final_reason}")
+            
+        elif sm_result.get("is_danger", False):
+            is_validated_bull = micro_flow and ("BULLISH" in micro_flow['thesis'] or "BOTTOMING" in micro_flow['thesis'] or "TILT BULL" in micro_flow['thesis'])
+            if not is_validated_bull:
+                final_action = "REJECT"
+                final_reason = "Cá mập dài hạn đang tháo cống. Bỏ qua mọi tín hiệu kỹ thuật."
+                print(f"   🚫 KHÔNG MUA: {final_reason}")
+
+        elif micro_flow and "BEARISH" in micro_flow['thesis']:
+             final_action = "REJECT"
+             final_reason = "ĐANG TẮM MÁU: Áp lực xả từ tuần trước vẫn tiếp diễn ở T0. Bắt đáy là cụt tay!"
+             print(f"   🩸 KHÔNG MUA: {final_reason}")
+             
+        elif micro_flow and "BOTTOMING" in micro_flow['thesis'] and omni_now and "BEARISH" in omni_now.get('verdict',''):
+            final_action = "CANCEL"
+            final_reason = "HỦY KẾ HOẠCH BẮT ĐÁY: T-1 đã tiết cung, nhưng T0 lái lại tiếp tục táng hàng."
+            print(f"   ⚠️ {final_reason}")
+            
+        elif micro_flow and "BULLISH" in micro_flow['thesis'] and omni_now and "BEARISH" in omni_now.get('verdict',''):
+            final_action = "CANCEL"
+            final_reason = "HỦY LỆNH MUA (BULL-TRAP): Quá khứ gom đẹp nhưng T0 bị xả ngược."
+            print(f"   ⚠️ {final_reason}")
+            
+        # 2. CÁC KỊCH BẢN KÍCH HOẠT ĐIỂM MUA (TRIGGER)
+        elif signal in ['SOS', 'SPRING', 'TEST_CUNG', 'NEUTRAL'] and micro_flow and ("BULLISH" in micro_flow['thesis'] or "BOTTOMING" in micro_flow['thesis'] or "TILT BULL" in micro_flow['thesis']):
             sl_price = price - (wyckoff_row.get('ATR', price * 0.02) * 2.5)
             
-            if "Tiết Cung T0" in validation:
+            if omni_now and "Tiết cung" in omni_now.get('verdict', ''):
+                final_action = "BUY_LIMIT"
+                buy_p = board_info['best_bid'] if board_info else price
+                final_reason = f"GOM VỊ THẾ NỀN. Kê mua rải đinh quanh {buy_p:,.0f} đ."
                 print(f"   🌱 GOM VỊ THẾ NỀN (ACCUMULATE): Quá khứ dọn đường + T0 Cạn cung chờ gió Đông!")
-                buy_p = board_info['best_bid'] # Mua kê giá thấp
                 print(f"      => LỆNH BẮN TỈA: Kê mua rải đinh quanh {buy_p:,.0f} đ | Dừng lỗ cứng tại {sl_price:,.0f} đ.")
-            else:
+            elif omni_now and "BULLISH" in omni_now.get('verdict', ''):
+                final_action = "BUY_MARKET"
+                buy_p = board_info['best_ask'] if board_info and board_info['best_ask'] > 0 else price
+                final_reason = f"ĐIỂM NỔ BỨT PHÁ. Mua quét (Market) quanh {buy_p:,.0f} đ."
                 print(f"   🌟 ĐIỂM NỔ BỨT PHÁ (SNIPER TRIGGER): Quá khứ dọn đường + T0 Tiền vào xác nhận!")
-                buy_p = board_info['best_ask'] if board_info['best_ask'] > 0 else price # Mua chủ động
                 print(f"      => LỆNH BẮN TỈA: Mua quét lên (Market) quanh {buy_p:,.0f} đ | Dừng lỗ cứng tại {sl_price:,.0f} đ.")
+            else:
+                 final_action = "WAIT"
+                 final_reason = "Có điểm cộng kỹ thuật, nhưng dòng tiền chưa đồng thuận mạnh."
+                 print(f"   ☕ CHỜ ĐỢI: {final_reason}")
                 
             if price < sm_vwap:
                 print(f"      => LỢI THẾ KÉP: Giá ({price:,.0f}) đang rẻ hơn giá vốn Cá mập ({sm_vwap:,.0f}).")
+                final_reason += f" (Rẻ hơn VWAP Lái)"
                 
+        # 3. KỊCH BẢN GIẰNG CO (CHỜ ĐỢI)
         else:
-            print(f"   ☕ CHỜ ĐỢI: Dòng tiền đang giằng co. Hành vi Lái chưa rõ ràng. Đưa vào Watchlist theo dõi T0.")
+            final_action = "WAIT"
+            final_reason = "Dòng tiền giằng co. Hành vi Lái chưa rõ ràng. Cần theo dõi thêm."
+            print(f"   ☕ CHỜ ĐỢI: {final_reason}")
 
         print("═"*90)
+
+        # GỌI HỘP ĐEN GHI LẠI DỮ LIỆU
+        self._log_audit_trail(price, signal, sm_vwap, intent_str, dp_action_tag, final_action, final_reason)
 
 if __name__ == "__main__":
     while True:

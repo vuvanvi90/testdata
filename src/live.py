@@ -54,6 +54,10 @@ class LiveAssistant:
         self.df_price = self._load_parquet_safe(self.parquet_dir / 'price/master_price.parquet')
         self.price_dict = self._load_price_dict(self.parquet_dir / 'price/master_price.parquet')
 
+        # Nạp Price L2
+        self.df_price_l2 = self._load_parquet_safe(self.parquet_dir / 'price/master_price_l2.parquet')
+        self.price_l2_dict = self._load_price_dict(self.parquet_dir / 'price/master_price_l2.parquet')
+
         # Nạp Intraday
         self.df_intra = self._load_parquet_safe(self.parquet_dir / 'intraday/master_intraday.parquet')
 
@@ -145,7 +149,8 @@ class LiveAssistant:
                 'idx': self._load_parquet_safe(self.parquet_dir / 'macro/index_components.parquet'),
                 'board': self.df_board,
                 'intra': self.df_intra,
-                'put_through': self.df_pt
+                'put_through': self.df_pt,
+                'price_l2': self.df_price_l2
             }
             self.omni_matrix = OmniFlowMatrix(data_frames, lookback_days=30)
         except Exception as e:
@@ -186,6 +191,9 @@ class LiveAssistant:
             # 1. LỌC ĐỒNG LOẠT CÁC DATAFRAME (GIẢI PHÓNG RAM)
             if not self.df_price.empty and 'ticker' in self.df_price.columns:
                 self.df_price = self.df_price[self.df_price['ticker'].isin(valid_tickers)]
+
+            if not self.df_price_l2.empty and 'ticker' in self.df_price_l2.columns:
+                self.df_price_l2 = self.df_price_l2[self.df_price_l2['ticker'].isin(valid_tickers)]
                 
             if not self.df_intra.empty and 'ticker' in self.df_intra.columns:
                 self.df_intra = self.df_intra[self.df_intra['ticker'].isin(valid_tickers)]
@@ -214,6 +222,9 @@ class LiveAssistant:
             
             if hasattr(self, 'price_dict'):
                 self.price_dict = {k: v for k, v in self.price_dict.items() if k in valid_set}
+
+            if hasattr(self, 'price_l2_dict'):
+                self.price_l2_dict = {k: v for k, v in self.price_l2_dict.items() if k in valid_set}
                 
             if hasattr(self, 'foreign_dict'):
                 self.foreign_dict = {k: v for k, v in self.foreign_dict.items() if k in valid_set}
@@ -1178,18 +1189,30 @@ class LiveAssistant:
                     score += 10
                     details.append(f"🛡️ RE-TEST VAH: Giá kiểm định lại trần cũ thành công (+10)")
 
-        # OMNI-MATRIX T0 PREDICTION (VŨ KHÍ TỐI THƯỢNG)
+        # OMNI-MATRIX T0 PREDICTION & L2 AUDIT (VŨ KHÍ TỐI THƯỢNG)
         if omni_result and "error" not in omni_result:
             verdict = omni_result.get('verdict', '')
             details_str = omni_result.get('details', '')
             short_detail = details_str.split(' | ')[0] # Chỉ lấy ý chính cho ngắn gọn
             
-            if "BULLISH" in verdict and "TILT" not in verdict:
+            # LƯỚI LỌC L2 (T-1)
+            if "Bẫy Kéo Xả Ảo" in verdict:
+                score -= 50 # Ép rớt đài tuyệt đối
+                details.append(f"🚨 TỬ HUYỆT LEVEL-2: Kê ảo xả thật (-50)")
+            
+            # LƯỚI LỌC SQUEEZE (Cạn cung trôi nổi)
+            l2_data = omni_result.get('l2_data')
+            if l2_data and l2_data.get('is_free_float_squeeze'):
+                score += 15
+                details.append(f"💎 CẠN CUNG L2: Kín Room Ngoại, Dễ nổ Squeeze (+15)")
+
+            # Logic T0
+            if "BULLISH" in verdict and "TILT" not in verdict and "Bẫy" not in verdict:
                 score += 15
                 details.append(f"X-Quang T0: BULLISH (+15) ({short_detail})")
-            elif "BEARISH" in verdict and "TILT" not in verdict:
+            elif "BEARISH" in verdict and "TILT" not in verdict and "Bẫy" not in verdict:
                 score -= 20
-                details.append(f"X-Quang T0: BEARISH (-20) (Bị xả trong phiên, rủi ro Bull-trap!)")
+                details.append(f"X-Quang T0: BEARISH (-20) (Bị xả trong phiên!)")
             elif "RŨ BỎ" in verdict:
                 score += 5
                 details.append(f"X-Quang T0: Đè gom rũ bỏ (+5)")
@@ -1484,7 +1507,6 @@ class LiveAssistant:
         # =====================================================================
         watchlist = self._load_watchlist()
         next_watchlist = {}
-        rejected_tickers = set() # Khởi tạo Thùng rác trong phiên
 
         print("\n" + "="*65)
         print(" 📡 RADAR CẢNH BÁO SỚM & KIỂM ĐỊNH BẪY TAY TO")
@@ -1509,12 +1531,10 @@ class LiveAssistant:
                 
                 if price < ema89:
                     print(f"🚨 PHÁT HIỆN BẪY: {ticker} gãy EMA89. Lực gom của {watchlist[ticker]['reason']} đã thất bại. Xóa khỏi tầm ngắm!")
-                    rejected_tickers.add(ticker) # Ném vào thùng rác
                     continue 
                     
                 if days_pending > 10:
                     print(f"⏳ HẾT HẠN GOM: {ticker} quá 10 ngày không nổ SOS. Bỏ theo dõi để tránh chôn vốn.")
-                    rejected_tickers.add(ticker) # Ném vào thùng rác
                     continue
 
             # 3. QUÉT TÌM CƠ HỘI MỚI HOẶC DUY TRÌ THEO DÕI
@@ -1574,7 +1594,7 @@ class LiveAssistant:
                     print(f"   🚨 [DARK POOL REAL-TIME] {dp_ticker}: Đang nổ thỏa thuận {dp_data['t0_val_bn']:.1f} Tỷ ngay trong phiên! Ý đồ: {dp_data['intent']}")
                 
                 # 2. Tự động bơm vào Watchlist nếu có tín hiệu MUA
-                if dp_data.get('action') == 'BUY_TARGET' and dp_ticker not in next_watchlist and dp_ticker not in rejected_tickers:
+                if dp_data.get('action') == 'BUY_TARGET' and dp_ticker not in next_watchlist:
                     reason_str = f"DarkPool: {dp_data['intent']} (Ratio: {dp_data['ratio']:.1f}x)"
                     print(f"   🎯 TẦM NGẮM TỰ ĐỘNG (TỪ DARK POOL): {dp_ticker} | Lực đỡ ngầm xuất hiện!")
                     next_watchlist[dp_ticker] = {
@@ -1799,17 +1819,40 @@ class LiveAssistant:
                 suggested_buy = best_bid
                 buy_strategy = "Kê lệnh chờ mua (Limit) giá thấp"
 
+            # Lấy market_cap từ L2 data để Dynamic Sizing
+            market_cap_bn = 0
+            if omni_now and omni_now.get('l2_data'):
+                market_cap_bn = omni_now['l2_data'].get('market_cap_bn', 0)
+
             # Tính vốn thực tế theo Vĩ mô
             adj_risk_per_trade = RISK_PER_TRADE * self.macro_risk_factor
+            adj_max_position = int(MAX_POSITION_SIZE * self.risk_factor)
 
-            # Tính lại số lượng cổ phiếu theo mức giá gợi ý thực tế (thay vì giá đóng cửa)
+            # MARKET CAP DYNAMIC SIZING (Phân bổ vốn theo Vốn hóa)
+            mc_sizing_note = ""
+            if market_cap_bn > 0:
+                if market_cap_bn > 50000: # Siêu Bluechip (> 50k Tỷ)
+                    adj_risk_per_trade *= 1.2
+                    adj_max_position = int(adj_max_position * 1.2)
+                    mc_sizing_note = f"[Bluechip {market_cap_bn:,.0f} Tỷ -> Tăng 20% Vốn]"
+                elif market_cap_bn < 3000: # Penny (< 3k Tỷ)
+                    adj_risk_per_trade *= 0.3
+                    adj_max_position = int(adj_max_position * 0.3)
+                    mc_sizing_note = f"[Penny {market_cap_bn:,.0f} Tỷ -> Giảm 70% Vốn]"
+                elif market_cap_bn < 10000: # Mid-small (< 10k Tỷ)
+                    adj_risk_per_trade *= 0.7
+                    adj_max_position = int(adj_max_position * 0.7)
+                    mc_sizing_note = f"[Mid-SmallCap {market_cap_bn:,.0f} Tỷ -> Giảm 30% Vốn]"
+                else:
+                    mc_sizing_note = f"[MidCap {market_cap_bn:,.0f} Tỷ -> Tiêu chuẩn]"
+
+            # Tính lại số lượng cổ phiếu theo mức giá gợi ý thực tế
             sl_distance = suggested_buy - stop_loss
             shares = 0
             if sl_distance > 0:
                 shares = int(adj_risk_per_trade / sl_distance)
                 shares = (shares // 100) * 100
-                # Ép khối lượng theo Risk Factor của Quý hiện tại
-                adj_max_position = int(MAX_POSITION_SIZE * self.risk_factor)
+                # Ép khối lượng theo Risk Factor
                 shares = min(shares, adj_max_position)
 
             # Gọi Radar Đo lường Tồn kho & Dòng tiền Ẩn
@@ -1833,22 +1876,30 @@ class LiveAssistant:
                 print(f"   ⚡ X-Ray T0: {omni_now['verdict']} | Khớp chủ động: {omni_now['net_active_bn']:+.1f} Tỷ")
             print(f"   📊 Sổ lệnh hiện tại: Bán rẻ nhất {best_ask:,.0f} | Mua cao nhất {best_bid:,.0f}")
             print(f"   📊 Price: {price:,.0f} | VAL: {val:,.0f} | VAH {vah:,.0f}")
-            print(f"   🎯 HÀNH ĐỘNG: {buy_strategy} {shares:,} cp quanh {suggested_buy:,.0f}đ")
+            print(f"   🎯 HÀNH ĐỘNG: {buy_strategy} {shares:,} cp quanh {suggested_buy:,.0f}đ {mc_sizing_note}")
             print(f"   🛑 Cắt lỗ: {stop_loss:,.0f}đ | Biên độ ngày: {floor_price:,.0f} - {ceil_price:,.0f}")
-            if (total_score < dynamic_threshold or ticker in active_blacklist or mf_result.get('divergence') == "BEARISH_TRAP" or dump_warnings):
+
+            # Cờ cấm mua (Kill-Switch) cho Level-2 Spoofing
+            is_l2_trap = omni_now and "BEARISH (Bẫy Kéo Xả Ảo)" in omni_now.get('verdict', '')
+
+            if (total_score < dynamic_threshold or ticker in active_blacklist or mf_result.get('divergence') == "BEARISH_TRAP" or dump_warnings or is_l2_trap):
                 print("   " + "-" * 62)
                 print(f"  >>> LƯU Ý:")
                 if total_score < dynamic_threshold:
                     print(f"   Đánh giá: scrore / threshold => {total_score} / {dynamic_threshold}")
                 if ticker in active_blacklist:
                     print(f"   🚫 TỪ CHỐI MUA {ticker}: vì nằm trong BLACKLIST.")
+
+                # BỘ LỌC KÉO XẢ LEVEL-2
+                if is_l2_trap:
+                    print(f"   🚫 KILL-SWITCH LEVEL-2: Cây nến Breakout T-1 là BẪY KÊ LỆNH ẢO.")
+                    print(f"      => Hủy toàn bộ lệnh mua. Lái đang táng hàng thật!")
                 # BỘ LỌC CHỐNG BẪY KÉO XẢ (Xử lý các case thao túng như HRC)
-                if mf_result.get('divergence') == "BEARISH_TRAP":
+                elif mf_result.get('divergence') == "BEARISH_TRAP":
                     # Chỉ check bẫy Kéo Xả nếu thực sự đo lường được Giá vốn (> 0đ)
-                    if sm_vwap > 0:
-                        # Nếu giá hiện tại vọt lên quá 1.5% so với giá vốn, nhưng tồn kho đang xả
-                        if price > (sm_vwap * 1.015) and mf_result.get('divergence') == 'BEARISH_TRAP':
-                            print(f"   🚫 TỪ CHỐI MUA {ticker}: Kéo xả ảo (Giá vốn tạo lập: {sm_vwap:,.0f}đ, Tồn kho đang bị xả!)")
+                    # Nếu giá hiện tại vọt lên quá 1.5% so với giá vốn, nhưng tồn kho đang xả
+                    if sm_vwap > 0 and price > (sm_vwap * 1.015):
+                        print(f"   🚫 TỪ CHỐI MUA {ticker}: Kéo xả ảo (Giá vốn tạo lập: {sm_vwap:,.0f}đ, Tồn kho đang bị xả!)")
                 # Lệnh cấm tuyệt đối: Nến có đẹp đến mấy cũng loại ngay từ vòng gửi xe!
                 if dump_warnings:
                     print(f"   🚫 TỪ CHỐI MUA {ticker}: Khối ngoại/Tự doanh vừa có nhịp phân phối rát!")
