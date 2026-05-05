@@ -1869,7 +1869,7 @@ class LiveAssistant:
             poc_price, val, vah = vol_profile
 
             print("-" * 65)
-            print(f"✅ MUA | {ticker} | Điểm: {total_score}/100 | Signal: {row['Signal']}")
+            print(f"✅ MUA | {ticker} | Điểm: {total_score}/100 | Signal: {signal}")
             print(f"   Lý do: {', '.join(score_details)}")
             print(f"   📊 X-Ray: Giá vốn Cá mập ~{sm_vwap:,.0f}đ | Sức ép xả (DTL): {mf_result.get('dtl_days',0):.1f} ngày")
             if omni_now and "error" not in omni_now:

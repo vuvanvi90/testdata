@@ -368,10 +368,10 @@ class TargetSniper:
             print(f"    - Hành vi Nổi bật  : {' | '.join(sm_result['sm_details'])}")
             
         print(f"    - Radar Lái nội    : {shadow_msg}")
+        
         print("-" * 90)
 
         # PHẦN 3: ĐỘNG LƯỢNG KẾT HỢP & BÓC TÁCH LEVEL 2
-        print("------------------------------------------------------------------------------------------")
         print(" ⚡ 3. BÓC TÁCH CẤU TRÚC LỆNH & ĐỘNG LƯỢNG T0 (LEVEL-2 X-RAY)")
         
         micro_flow = self._analyze_micro_flow()

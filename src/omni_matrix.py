@@ -74,10 +74,11 @@ class OmniFlowMatrix:
             
         # Một phiên được coi là ĐÃ KẾT THÚC (Post-Market) khi:
         # 1. Đã qua 15h00 chiều.
-        # 2. VÀ Dữ liệu của ngày hôm đó đã được tải về.
+        # 2. VÀ Dữ liệu CAO CẤP LEVEL-2 của ngày hôm đó đã được tải về thành công.
         is_post_market = False
         if current_time.hour >= 15:
-            if latest_l2_date == current_sys_date or latest_price_date == current_sys_date:
+            # BẢN VÁ: Bỏ điều kiện "latest_price_date", chỉ dùng "latest_l2_date" làm mỏ neo chốt sổ.
+            if latest_l2_date == current_sys_date:
                 is_post_market = True
 
         if is_post_market:

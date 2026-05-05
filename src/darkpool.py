@@ -48,24 +48,22 @@ class DarkPoolRadar:
         return pd.DataFrame()
 
     def _identify_system_t0(self):
-        # """Xác định ngày giao dịch hiện tại thực tế nhất từ Intraday hoặc Price"""
+        """
+        Trục thời gian Hậu kiểm (Audit Timeline).
+        Luôn lấy ngày giao dịch MỚI NHẤT có trong dữ liệu làm mỏ neo T0.
+        Tránh tuyệt đối lỗi tìm kiếm ngày Chủ Nhật/Lễ trong file Parquet.
+        """
         latest_date = None
         
-        # Thử lấy từ Intraday trước (Dữ liệu mới nhất trong phiên)
-        if not self.df_intra.empty and 'time' in self.df_intra.columns:
-            latest_date = self.df_intra['time'].max()
+        # 1. Ưu tiên lấy ngày mới nhất từ dữ liệu Thỏa thuận
+        if not getattr(self, 'df_pt', pd.DataFrame()).empty and 'time' in self.df_pt.columns:
+            latest_date = self.df_pt['time'].dt.date.max()
             
-        # Nếu Intraday rỗng, lấy từ Bảng giá
-        elif not self.df_price.empty and 'time' in self.df_price.columns:
-            latest_date = self.df_price['time'].max()
+        # 2. Backup: Lấy từ dữ liệu Giá EOD
+        if not latest_date and not getattr(self, 'df_price', pd.DataFrame()).empty and 'time' in self.df_price.columns:
+            latest_date = self.df_price['time'].dt.date.max()
             
-        # Nếu cả 2 đều rỗng, dùng ngày hiện tại của máy tính
-        if pd.isna(latest_date) or latest_date is None:
-            latest_date = pd.Timestamp.now()
-            
-        # Ép chuẩn về Timestamp và Normalize (Cắt giờ/phút/giây về 00:00:00)
-        # Điều này đảm bảo nó có thể so sánh dấu "==" với bất kỳ cột 'time' nào trong DataFrame
-        return pd.Timestamp(latest_date).normalize()
+        return latest_date if latest_date else datetime.now().date()
 
     def _prepare_data(self):
         """Xử lý dữ liệu nền tảng"""
@@ -74,15 +72,14 @@ class DarkPoolRadar:
 
         # 1. Xác định 5 phiên giao dịch gần nhất từ Bảng giá
         self.df_price['time'] = self.df_price['time'].dt.normalize()
-        trading_days = sorted(self.df_price['time'].unique())
-        if len(trading_days) >= 5:
-            self.last_5_days = trading_days[-5:]
-        else:
-            self.last_5_days = trading_days
+        trading_days = sorted(self.df_price['time'].dt.date.unique())
+        # Chỉ lấy những ngày quá khứ <= T0
+        valid_days = [d for d in trading_days if d <= self.t0_date]
+        self.last_5_days = valid_days[-5:] if len(valid_days) >= 5 else valid_days
 
         # Lọc dữ liệu Thỏa thuận trong 5 ngày này
         self.df_pt['time'] = self.df_pt['time'].dt.normalize()
-        self.pt_recent = self.df_pt[self.df_pt['time'].isin(self.last_5_days)].copy()
+        self.pt_recent = self.df_pt[self.df_pt['time'].dt.date.isin(self.last_5_days)].copy()
 
         # 2. Map Rổ chỉ số (VN30, VNMidCap, VNSmallCap) vào data Thỏa thuận
         # Tạo dictionary { 'ACB': 'VN30', ... }
@@ -94,14 +91,14 @@ class DarkPoolRadar:
 
         # 3. Tính Khối lượng Khớp lệnh Trung bình 20 phiên (MA20 Volume) cho TẤT CẢ các mã
         # Lấy 20 ngày gần nhất
-        recent_20_days = trading_days[-20:] if len(trading_days) >= 20 else trading_days
-        df_price_20d = self.df_price[self.df_price['time'].isin(recent_20_days)]
+        recent_20_days = valid_days[-20:] if len(valid_days) >= 20 else valid_days
+        df_price_20d = self.df_price[self.df_price['time'].dt.date.isin(recent_20_days)]
         
         self.vol_ma20_dict = df_price_20d.groupby('ticker')['volume'].mean().to_dict()
         
         # Lưu lại Giá Đóng cửa cuối cùng để so sánh
-        last_day = trading_days[-1]
-        self.last_price_dict = self.df_price[self.df_price['time'] == last_day].set_index('ticker')['close'].to_dict()
+        last_day = valid_days[-1] if valid_days else None
+        self.last_price_dict = self.df_price[self.df_price['time'].dt.date == last_day].set_index('ticker')['close'].to_dict()
 
         return True
 
@@ -170,7 +167,7 @@ class DarkPoolRadar:
             avg_change = (group['weighted_change'].sum() / group['match_value'].sum()) * 100
             
             # Khối lượng Thỏa thuận riêng phiên T0
-            t0_group = group[group['time'] == self.t0_date]
+            t0_group = group[group['time'].dt.date == self.t0_date]
             t0_val_bn = t0_group['match_value'].sum() / 1_000_000_000 if not t0_group.empty else 0
             
             # TÌM WHALE NODE
@@ -189,29 +186,41 @@ class DarkPoolRadar:
                 elif avg_change < -1.0: intent = f"🧊 Discount ({avg_change:+.1f}%)"
                 else: intent = f"⚖️ Neutral ({avg_change:+.1f}%)"
                 
-                # Price L2: XÁC MINH SỰ THAM GIA CỦA KHỐI NGOẠI
-                fr_deal_state = "LOCAL" # Mặc định là Lái nội
+                # =====================================================================
+                # 🚀 CROSS-REFERENCING (ĐỊNH VỊ TAM GIÁC) VỚI LEVEL-2 DATA
+                # =====================================================================
+                fr_deal_state = "SHADOW_FLOW" # Lái nội mặc định
+                
                 if not getattr(self, 'df_price_l2', pd.DataFrame()).empty:
-                    df_l2_ticker = self.df_price_l2[(self.df_price_l2['ticker'] == ticker) & (self.df_price_l2['time'].isin(self.last_5_days))]
+                    df_l2_ticker = self.df_price_l2[
+                        (self.df_price_l2['ticker'] == ticker) & 
+                        (self.df_price_l2['time'].dt.date.isin(self.last_5_days))
+                    ]
                     if not df_l2_ticker.empty:
-                        f_buy = df_l2_ticker['fr_buy_volume_deal'].sum()
-                        f_sell = df_l2_ticker['fr_sell_volume_deal'].sum()
+                        # Tính tổng giá trị Thỏa thuận trong 5 ngày
+                        f_buy_deal_bn = df_l2_ticker['fr_buy_value_deal'].sum() / 1_000_000_000
+                        f_sell_deal_bn = df_l2_ticker['fr_sell_value_deal'].sum() / 1_000_000_000
+                        total_deal_l2_bn = df_l2_ticker['deal_value'].sum() / 1_000_000_000
                         
-                        if f_buy > 0 and f_sell == 0:
-                            fr_deal_state = "FOREIGN_BUY"
-                            intent += " | 🕵️ TÂY GOM NGẦM"
-                        elif f_sell > 0 and f_buy == 0:
-                            fr_deal_state = "FOREIGN_SELL"
-                            intent += " | 🏃 TÂY XẢ NGẦM"
-                        elif f_buy > 0 and f_sell > 0:
-                            fr_deal_state = "FOREIGN_CROSS"
-                            intent += " | 🤝 TÂY SANG TAY"
+                        # Chỉ gán nhãn Tây nếu Tây tham gia > 30% Deal (Tránh nhiễu)
+                        if total_deal_l2_bn > 0:
+                            if f_buy_deal_bn > (total_deal_l2_bn * 0.3) and f_sell_deal_bn < (total_deal_l2_bn * 0.1):
+                                fr_deal_state = "FOREIGN_BUY"
+                                intent += " | 🕵️ TÂY GOM NGẦM"
+                            elif f_sell_deal_bn > (total_deal_l2_bn * 0.3) and f_buy_deal_bn < (total_deal_l2_bn * 0.1):
+                                fr_deal_state = "FOREIGN_SELL"
+                                intent += " | 🏃 TÂY XẢ NGẦM"
+                            elif f_buy_deal_bn > (total_deal_l2_bn * 0.3) and f_sell_deal_bn > (total_deal_l2_bn * 0.3):
+                                fr_deal_state = "FOREIGN_CROSS"
+                                intent += " | 🤝 TÂY SANG TAY"
+                            else:
+                                fr_deal_state = "SHADOW_FLOW"
+                                intent += " | 👻 LÁI NỘI TRAO TAY"
 
                 # HỆ THỐNG CHẤM ĐIỂM ĐỘT BIẾN (NORMALIZED ANOMALY SCORE)
                 # Loại bỏ việc cộng giá trị tuyệt đối (total_val_bn) để SmallCap không bị Bluechip đè bẹp.
                 # Công thức chuẩn Quant: Score = (Tỷ lệ thanh khoản) + (Biên độ giá) + (Trọng số T0)
                 t0_weight = (t0_val_bn / total_val_bn) * 10 if total_val_bn > 0 else 0
-                
                 anomaly_score = (liqd_ratio * 20) + (abs(avg_change) * 10) + t0_weight
 
                 # THƯỞNG ĐIỂM SÁT THỦ: Tây gom ngầm giá cao hoặc Xả ngầm giá rát
@@ -237,20 +246,18 @@ class DarkPoolRadar:
         self.anomalies = sorted(anomalies_temp, key=lambda x: x['score'], reverse=True)[:10]
 
     def _forecast_tactics(self):
-        """Tầng 3: Động cơ Dự báo T+ (T-Day Forecaster)"""
         for an in self.anomalies:
             ticker = an['ticker']
             whale_node = an['whale_node']
             avg_change = an['avg_change']
             liqd_ratio = an['ratio']
-            fr_state = an.get('fr_deal_state', 'LOCAL')
+            fr_state = an.get('fr_deal_state', 'SHADOW_FLOW')
             
             last_price = self.last_price_dict.get(ticker, 0)
             if last_price == 0: continue
             
             dist_to_node = (last_price - whale_node) / whale_node * 100
             forecast = ""
-            
             is_node_strong = liqd_ratio > 0.8
             
             # KỊCH BẢN 1: BỆ ĐỠ T+1 (Cần Support mạnh)
@@ -273,7 +280,7 @@ class DarkPoolRadar:
                     if fr_state == "FOREIGN_BUY":
                         forecast = f"🔥 TÂY LÔNG KHÁT HÀNG: Mua thỏa thuận Premium giá cao. Cổ phiếu cạn kiệt cung. Dự báo bứt phá T+1. TẦM NGẮM ĐẶC BIỆT."
                     else:
-                        forecast = f"🔥 Khát hàng: Nổ thỏa thuận Premium ngay nền. Deal đã chốt. Dự báo bứt phá T+1/T+2. Khuyến nghị GOM MẠNH."
+                        forecast = f"🔥 LÁI NỘI GOM HÀNG: Nổ thỏa thuận Premium ngay nền. Deal đã chốt. Dự báo bứt phá T+1/T+2. Khuyến nghị GOM MẠNH."
                     
             # KỊCH BẢN 3: PHÂN PHỐI TỐI (Discount sâu)
             elif avg_change < -2.0:
@@ -281,12 +288,12 @@ class DarkPoolRadar:
                     if fr_state == "FOREIGN_SELL":
                         forecast = f"🩸 KHỐI NGOẠI THÁO CỐNG NGẦM: Bán thỏa thuận Discount cực sâu. Phân phối đỉnh/Bull-trap rõ ràng. BÁN/ĐỨNG NGOÀI."
                     else:
-                        forecast = f"🩸 Giá sàn kéo thốc ({last_price:,.0f}) nhưng táng thỏa thuận Discount sâu. Dấu hiệu Phân phối ngầm / Bull-trap. T+2 TẮM MÁU. BÁN/ĐỨNG NGOÀI."
+                        forecast = f"🩸 Giá sàn kéo thốc ({last_price:,.0f}) nhưng Lái táng thỏa thuận Discount sâu. Dấu hiệu Phân phối ngầm. T+2 TẮM MÁU. BÁN/ĐỨNG NGOÀI."
                 else:
                     if fr_state == "FOREIGN_CROSS":
                         forecast = f"🤝 Tây lông sang tay Discount sâu vùng đáy. Lệnh trao tay né thuế/cơ cấu quỹ, không tạo áp lực xả trên sàn. THEO DÕI."
                     else:
-                        forecast = f"Sang tay Discount sâu vùng đáy. Lệnh trao tay nội bộ, không phản ánh cung cầu thật. THEO DÕI."
+                        forecast = f"👻 Lái nội sang tay Discount sâu vùng đáy. Lệnh trao tay nội bộ, không phản ánh cung cầu thật. THEO DÕI."
             
             # KỊCH BẢN 4: THAY MÁU CỔ ĐÔNG LỚN (Đột biến thanh khoản ngầm)
             elif liqd_ratio >= 5.0 and -2.0 <= avg_change <= 2.0:

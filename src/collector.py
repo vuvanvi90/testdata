@@ -16,10 +16,11 @@ warnings.filterwarnings('ignore', message=".*DataFrameGroupBy.apply.*")
 from vnstock_data import Listing, Company, Quote, Trading, Finance, Macro, CommodityPrice, Fund
 
 class VNStockDataPipeline:
-    def __init__(self, source='VCI', get_com=False, get_price=False, get_intra=False, get_board=False, get_fin=False, get_group=False, get_macro=False, get_foreign=False, get_prop=False, get_fund=False, get_share_group=False, get_index=False, get_pt=False):
+    def __init__(self, source='VCI', get_com=False, get_price=False, get_price_history=False, get_intra=False, get_board=False, get_fin=False, get_group=False, get_macro=False, get_foreign=False, get_prop=False, get_fund=False, get_share_group=False, get_index=False, get_pt=False):
         self.source = source.lower() if source else 'vci'
         self.get_com = get_com
         self.get_price = get_price
+        self.get_price_history = get_price_history
         self.get_intra = get_intra
         self.get_board = get_board
         self.get_fin = get_fin
@@ -820,13 +821,24 @@ class VNStockDataPipeline:
                 # LỌC LẤY NHỮNG TRƯỜNG TINH HOA NHẤT (Lọc Rác)
                 core_cols = [
                     'trading_date', 
-                    'close_price_adjusted', 'matched_volume', 'total_net_trade_volume', # Basic EOD & Động lượng hấp thụ
-                    'average_buy_trade_volume', 'average_sell_trade_volume',          # Quy mô lệnh (Whale Ratio)
-                    'total_buy_unmatched_volume', 'total_sell_unmatched_volume',      # Sổ lệnh ảo (Spoofing Ratio)
-                    'fr_buy_volume_matched', 'fr_sell_volume_matched',                # Cung Cầu Ngoại trực tiếp
-                    'fr_buy_volume_deal', 'fr_sell_volume_deal',                      # Ngoại thỏa thuận (Né thuế/Thoát hàng)
-                    'fr_owned_percentage', 'fr_available_percentage',                 # Tỷ lệ Room (Độ hiếm/Thâu tóm)
-                    'market_cap', 'total_shares', 'fr_owned'                          # Định lượng Vị thế & Nguồn cung
+                    # Basic EOD & Động lượng hấp thụ
+                    'close_price_adjusted', 'matched_volume', 'total_net_trade_volume', 
+                    # Quy mô lệnh (Whale Ratio)
+                    'average_buy_trade_volume', 'average_sell_trade_volume',
+                    # Sổ lệnh ảo (Spoofing Ratio)
+                    'total_buy_unmatched_volume', 'total_sell_unmatched_volume',
+                    # Tỷ lệ Room (Độ hiếm/Thâu tóm)
+                    'fr_owned_percentage', 'fr_available_percentage',
+                    # Định lượng Vị thế & Nguồn cung
+                    'market_cap', 'total_shares', 'fr_owned',
+                    # Cung Cầu Ngoại trực tiếp (Khớp lệnh)
+                    'fr_buy_volume_matched', 'fr_sell_volume_matched',
+                    'fr_buy_value_matched', 'fr_sell_value_matched',
+                    # Ngoại thỏa thuận (Né thuế/Thoát hàng)
+                    'fr_buy_volume_deal', 'fr_sell_volume_deal',
+                    'fr_buy_value_deal', 'fr_sell_value_deal',
+                    # Tổng Thỏa thuận chốt sổ của Sở Giao Dịch
+                    'deal_volume', 'deal_value'
                 ]
 
                 new_df = self._validate_schema(new_df, core_cols, item_name=f"OHLCV L2 - {ticker}")
@@ -1249,6 +1261,8 @@ class VNStockDataPipeline:
         # TẢI DỮ LIỆU OHLCV & CHẠY ĐA LUỒNG RIÊNG
         if self.get_price:
             self.fetch_ohlcv(tickers)
+
+        if self.get_price_history:
             self.fetch_ohlcv_l2(tickers)
 
         # TẢI DỮ LIỆU INTRA & CHẠY ĐA LUỒNG RIÊNG
