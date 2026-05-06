@@ -8,7 +8,7 @@ class MarketFlowAnalyzer:
         # Đồng bộ Bộ lọc Hạn sử dụng với Smart Money
         self.MAX_DELAY_DAYS = 15 
 
-    def analyze_flow(self, ticker, df_p, df_f, df_pr, df_pt, target_date_str=None, lookback_sessions=130):
+    def analyze_flow(self, ticker, df_p, df_f, df_pr, df_pt, df_l2=None, target_date_str=None, lookback_sessions=130):
         result = {
             "ticker": ticker,
             "anchor_date": None,
@@ -76,78 +76,63 @@ class MarketFlowAnalyzer:
             df_flow['prop_net_value'] = 0
 
         df_flow.fillna(0, inplace=True)
-        df_flow['sm_net'] = df_flow['f_net'] + df_flow['p_net']
-
-        # =====================================================================
-        # 3. XÁC ĐỊNH ĐIỂM NEO (ANCHOR DATE) AN TOÀN
-        # =====================================================================
-        if df_flow['sm_net'].sum() == 0:
-            result["status"] = "NO_SMART_MONEY"
-            return result
-
-        df_flow['cum_sm'] = df_flow['sm_net'].cumsum()
         
-        valid_anchor_window = df_flow.iloc[:-10] 
-        if not valid_anchor_window.empty:
-            anchor_date = valid_anchor_window.loc[valid_anchor_window['cum_sm'].idxmin(), 'time']
-        else:
-            anchor_date = df_flow['time'].iloc[0]
-            
-        result["anchor_date"] = anchor_date.strftime('%Y-%m-%d')
-
-        # =====================================================================
-        # 4 & 5. KẾ TOÁN GIÁ VỐN LÁI (SMART MONEY COST BASIS ACCOUNTING)
-        # =====================================================================
+        # TÍNH TOÁN GIÁ TRỊ VÀ KHẤU TRỪ BẰNG LEVEL 2 (NẾU CÓ)
         df_flow['val_f'] = df_flow.get('foreign_net_value', 0)
         df_flow['val_p'] = df_flow.get('prop_net_value', 0)
-        
-        # BỘ LỌC SANG TAY (PUT-THROUGH NEUTRALIZER)
-        df_flow['total_val_bn'] = (df_flow['close'] * df_flow['volume']) / 1_000_000_000
-        df_flow['val_f_bn'] = df_flow['val_f'] / 1_000_000_000
-        df_flow['val_p_bn'] = df_flow['val_p'] / 1_000_000_000
+        df_flow['total_val'] = df_flow['close'] * df_flow['volume']
 
-        df_flow['vol_ma20'] = df_flow['volume'].rolling(20, min_periods=1).mean()
-        df_flow['price_spread_pct'] = (df_flow['high'] - df_flow['low']) / df_flow['low'] * 100
-
-        cond_on_book = (df_flow['volume'] > df_flow['vol_ma20'] * 3) & (df_flow['price_spread_pct'] < 2.0)
-
-        # ĐƯA GROUND TRUTH (DF_PT) VÀO LÀM CHUẨN ĐỐI CHIẾU
-        if df_pt is not None and not df_pt.empty:
-            # Lọc đúng mã
-            sym_col = 'symbol' if 'symbol' in df_pt.columns else ('ticker' if 'ticker' in df_pt.columns else None)
-            df_pt_ticker = df_pt[df_pt[sym_col] == ticker].copy() if sym_col else df_pt.copy()
+        if df_l2 is not None and not df_l2.empty:
+            df_l2_valid = df_l2[(df_l2['time'] >= start_date) & (df_l2['time'] <= target_date)]
+            df_flow = pd.merge(df_flow, df_l2_valid[['time', 'fr_buy_value_matched', 'fr_sell_value_matched', 
+                                                     'fr_buy_volume_matched', 'fr_sell_volume_matched', 'deal_value']], 
+                               on='time', how='left').fillna(0)
             
-            # Lọc đúng khung thời gian
-            df_pt_valid = df_pt_ticker[(df_pt_ticker['time'] >= start_date) & (df_pt_ticker['time'] <= target_date)].copy()
+            # Khối ngoại: Dùng 100% Khớp lệnh thực tế
+            df_flow['net_f_adj'] = df_flow['fr_buy_volume_matched'] - df_flow['fr_sell_volume_matched']
+            df_flow['val_f_adj'] = df_flow['fr_buy_value_matched'] - df_flow['fr_sell_value_matched']
             
-            if not df_pt_valid.empty:
-                df_pt_agg = df_pt_valid.groupby('time')['match_value'].sum().reset_index()
-                df_pt_agg['pt_val_bn'] = df_pt_agg['match_value'] / 1_000_000_000
-                df_flow = pd.merge(df_flow, df_pt_agg[['time', 'pt_val_bn']], on='time', how='left').fillna({'pt_val_bn': 0})
-            else:
-                df_flow['pt_val_bn'] = 0
+            # Tự doanh: Khấu trừ qua Deal của Sở
+            cond_off_p = (df_flow['val_p'].abs() > df_flow['total_val'] * 0.8) | \
+                         ((df_flow['deal_value'] > 0) & (df_flow['val_p'].abs() >= df_flow['deal_value'] * 0.15))
+            df_flow['net_p_adj'] = np.where(cond_off_p, 0, df_flow['p_net'])
+            df_flow['val_p_adj'] = np.where(cond_off_p, 0, df_flow['val_p'])
         else:
-            df_flow['pt_val_bn'] = 0
+            # Rơi về Thuật toán Phỏng đoán nếu mất kết nối L2
+            df_flow['vol_ma20'] = df_flow['volume'].rolling(20, min_periods=1).mean()
+            df_flow['price_spread_pct'] = (df_flow['high'] - df_flow['low']) / df_flow['low'] * 100
+            
+            if df_pt is not None and not df_pt.empty:
+                sym_col = 'symbol' if 'symbol' in df_pt.columns else ('ticker' if 'ticker' in df_pt.columns else None)
+                df_pt_ticker = df_pt[df_pt[sym_col] == ticker].copy() if sym_col else df_pt.copy()
+                df_pt_valid = df_pt_ticker[(df_pt_ticker['time'] >= start_date) & (df_pt_ticker['time'] <= target_date)].copy()
+                if not df_pt_valid.empty:
+                    df_pt_agg = df_pt_valid.groupby('time')['match_value'].sum().reset_index()
+                    df_flow = pd.merge(df_flow, df_pt_agg[['time', 'match_value']].rename(columns={'match_value': 'pt_val'}), on='time', how='left').fillna({'pt_val': 0})
+                else: df_flow['pt_val'] = 0
+            else: df_flow['pt_val'] = 0
 
-        # LỌC KÉP: Dùng cả Công thức Heuristic VÀ Dữ liệu Sự thật (Ngưỡng 40%)
-        cond_off_book_f = (df_flow['val_f_bn'].abs() > (df_flow['total_val_bn'] * 0.8)) | ((df_flow['pt_val_bn'] > 0) & (df_flow['val_f_bn'].abs() >= df_flow['pt_val_bn'] * 0.4))
-        cond_off_book_p = (df_flow['val_p_bn'].abs() > (df_flow['total_val_bn'] * 0.8)) | ((df_flow['pt_val_bn'] > 0) & (df_flow['val_p_bn'].abs() >= df_flow['pt_val_bn'] * 0.4))
+            cond_on = (df_flow['volume'] > df_flow['vol_ma20'] * 3) & (df_flow['price_spread_pct'] < 2.0)
+            cond_off_f = (df_flow['val_f'].abs() > (df_flow['total_val'] * 0.8)) | ((df_flow['pt_val'] > 0) & (df_flow['val_f'].abs() >= df_flow['pt_val'] * 0.15))
+            cond_off_p = (df_flow['val_p'].abs() > (df_flow['total_val'] * 0.8)) | ((df_flow['pt_val'] > 0) & (df_flow['val_p'].abs() >= df_flow['pt_val'] * 0.15))
 
-        df_flow['is_pt_f'] = np.where(cond_on_book | cond_off_book_f, True, False)
-        df_flow['is_pt_p'] = np.where(cond_on_book | cond_off_book_p, True, False)
-
-        # Điều chỉnh độc lập
-        df_flow['net_f_adj'] = np.where(df_flow['is_pt_f'], 0, df_flow.get('f_net', 0))
-        df_flow['net_p_adj'] = np.where(df_flow['is_pt_p'], 0, df_flow.get('p_net', 0))
-        
-        df_flow['val_f_adj'] = np.where(df_flow['is_pt_f'], 0, df_flow['val_f'])
-        df_flow['val_p_adj'] = np.where(df_flow['is_pt_p'], 0, df_flow['val_p'])
+            df_flow['net_f_adj'] = np.where(cond_on | cond_off_f, 0, df_flow['f_net'])
+            df_flow['val_f_adj'] = np.where(cond_on | cond_off_f, 0, df_flow['val_f'])
+            df_flow['net_p_adj'] = np.where(cond_on | cond_off_p, 0, df_flow['p_net'])
+            df_flow['val_p_adj'] = np.where(cond_on | cond_off_p, 0, df_flow['val_p'])
 
         df_flow['net_sm'] = df_flow['net_f_adj'] + df_flow['net_p_adj']
         df_flow['val_sm'] = df_flow['val_f_adj'] + df_flow['val_p_adj']
-
-        # Để vẽ biểu đồ (Chart), chúng ta vẫn tính Cumsum
         df_flow['cum_sm'] = df_flow['net_sm'].cumsum()
+
+        # XÁC ĐỊNH ANCHOR DATE
+        if df_flow['sm_net'].sum() if 'sm_net' in df_flow.columns else df_flow['net_sm'].sum() == 0:
+            result["status"] = "NO_SMART_MONEY"
+            return result
+            
+        valid_anchor_window = df_flow.iloc[:-10] 
+        anchor_date = valid_anchor_window.loc[valid_anchor_window['cum_sm'].idxmin(), 'time'] if not valid_anchor_window.empty else df_flow['time'].iloc[0]
+        result["anchor_date"] = anchor_date.strftime('%Y-%m-%d')
 
         # THUẬT TOÁN TÍNH VWAP THEO DÒNG CHẢY (FLOW-BASED VWAP)
         inventory = 0
@@ -171,9 +156,6 @@ class MarketFlowAnalyzer:
                     # Nếu Lái bán sạch sành sanh kho (Washout/Phân phối hết), Reset game!
                     inventory = 0
                     current_vwap = 0.0
-            
-            # Lưu lại giá vốn theo từng ngày (Dùng để tính phân kỳ nếu cần)
-            df_flow.at[idx, 'dynamic_vwap'] = current_vwap
 
         # Trả kết quả cuối cùng ra ngoài
         result["inventory"] = inventory

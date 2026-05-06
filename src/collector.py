@@ -822,7 +822,8 @@ class VNStockDataPipeline:
                 core_cols = [
                     'trading_date', 
                     # Basic EOD & Động lượng hấp thụ
-                    'close_price_adjusted', 'matched_volume', 'total_net_trade_volume', 
+                    'close_price_adjusted', 'total_net_trade_volume', 
+                    'matched_volume', 'matched_value', 
                     # Quy mô lệnh (Whale Ratio)
                     'average_buy_trade_volume', 'average_sell_trade_volume',
                     # Sổ lệnh ảo (Spoofing Ratio)

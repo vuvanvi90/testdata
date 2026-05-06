@@ -82,11 +82,23 @@ class TargetSniper:
 
         # Build Dict (Để tương thích với các Engine)
         self.price_dict = {self.ticker: self.df_price}
+        self.price_l2_dict = {self.ticker: self.df_price_l2}
         self.foreign_dict = {self.ticker: self.df_foreign}
         self.prop_dict = {self.ticker: self.df_prop}
+
+        # Khởi tạo Dict chứa Số lượng Cổ phiếu
         self.out_shares_dict = {}
+        
+        # 1. BASE LEVEL: Lấy từ master_company (Làm nền dự phòng)
         if not self.df_comp.empty and 'ticker' in self.df_comp.columns and 'issue_share' in self.df_comp.columns:
             self.out_shares_dict = self.df_comp[self.df_comp['ticker'] == self.ticker].set_index('ticker')['issue_share'].to_dict()
+
+        # 2. Ghi đè bằng Dữ liệu Tươi (Live Data) từ master_price_l2
+        if not self.df_price_l2.empty and 'total_shares' in self.df_price_l2.columns:
+            # Lấy dòng dữ liệu mới nhất
+            latest_l2 = self.df_price_l2.sort_values('time').iloc[-1]
+            if pd.notna(latest_l2.get('total_shares')) and latest_l2['total_shares'] > 0:
+                self.out_shares_dict[self.ticker] = latest_l2['total_shares']
 
         # Trích xuất rổ chỉ số (Universe)
         self.universe = "HOSE"
@@ -101,7 +113,8 @@ class TargetSniper:
         """Khởi động toàn bộ vũ khí hạng nặng"""
         self.sm_engine = SmartMoneyEngine(
             foreign_dict=self.foreign_dict, prop_dict=self.prop_dict, 
-            out_shares_dict=self.out_shares_dict, price_dict=self.price_dict, universe=self.universe
+            out_shares_dict=self.out_shares_dict, price_dict=self.price_dict, 
+            price_l2_dict=self.price_l2_dict, universe=self.universe
         )
         self.mf_analyzer = MarketFlowAnalyzer()
         self.shadow_profiler = ShadowProfiler(price_df=self.df_price, verbose=False)
@@ -198,9 +211,15 @@ class TargetSniper:
         
         # Đọc vị Hành vi T-1 (Ngày hôm qua)
         t1_row = df_past.iloc[-1]
-        t1_f = t1_row['f_net_bn']
-        t1_p = t1_row['p_net_bn']
-        t1_shadow = t1_row['shadow_flow_bn']
+
+        # Kiểm tra xem lệnh này có phải là Thỏa thuận (Đã bị lọc) hay không
+        is_pt_f = t1_row.get('is_pt_f', False)
+        is_pt_p = t1_row.get('is_pt_p', False)
+        
+        # Nếu là Thỏa thuận, ép giá trị về 0 để KHÔNG tính vào Xung đột Bảng điện
+        t1_f = 0 if is_pt_f else t1_row.get('f_net_bn', 0)
+        t1_p = 0 if is_pt_p else t1_row.get('p_net_bn', 0)
+        t1_shadow = t1_row.get('shadow_flow_bn', 0)
         
         pattern = "GIẰNG CO (Dòng tiền tuần không rõ ràng)"
         thesis = "NEUTRAL"
@@ -326,7 +345,7 @@ class TargetSniper:
             }
 
         sm_result = self.sm_engine.analyze_ticker(self.ticker, board_info)
-        mf_result = self.mf_analyzer.analyze_flow(self.ticker, df_full, self.df_foreign, self.df_prop, self.df_pt)
+        mf_result = self.mf_analyzer.analyze_flow(self.ticker, df_full, self.df_foreign, self.df_prop, self.df_pt, df_l2=self.df_price_l2)
         sm_vwap = mf_result.get('sm_vwap', 0)
         dtl = mf_result.get('dtl_days', 0)
 
@@ -581,9 +600,16 @@ class TargetSniper:
                 print(f"   🚫 KHÔNG MUA: {final_reason}")
 
         elif micro_flow and "BEARISH" in micro_flow['thesis']:
-             final_action = "REJECT"
-             final_reason = "ĐANG TẮM MÁU: Áp lực xả từ tuần trước vẫn tiếp diễn ở T0. Bắt đáy là cụt tay!"
-             print(f"   🩸 KHÔNG MUA: {final_reason}")
+            # Mở khóa Đảo pha Cấu trúc (Structural Reversal).
+            # Nếu T0 có lực Cầu chủ động kéo thốc (BULLISH), cho phép xí xóa quá khứ xấu.
+            is_reversal = omni_now and "BULLISH" in omni_now.get('verdict', '')
+
+            if not is_reversal:
+                final_action = "REJECT"
+                final_reason = "ĐANG TẮM MÁU: Áp lực xả từ tuần trước vẫn tiếp diễn. Bắt đáy là cụt tay!"
+                print(f"   🩸 KHÔNG MUA: {final_reason}")
+            else:
+                print(f"   🌟 ĐẢO PHA CẤU TRÚC: Quá khứ bị xả, nhưng T0 Cầu chủ động đã vào giải cứu. Cho phép ngắm bắn!")
              
         elif micro_flow and "BOTTOMING" in micro_flow['thesis'] and omni_now and "BEARISH" in omni_now.get('verdict',''):
             final_action = "CANCEL"

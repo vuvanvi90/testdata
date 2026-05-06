@@ -71,9 +71,22 @@ class LiveAssistant:
         # Nạp Tổng khối lượng lưu hành để đo lường Cung/Cầu
         self.out_shares_dict = {}
         df_comp = self._load_parquet_safe(self.parquet_dir / 'company/master_company.parquet')
+        # 1. Dự phòng: Nạp từ master_company
         if not df_comp.empty and 'ticker' in df_comp.columns and 'issue_share' in df_comp.columns:
             # Tạo dictionary O(1) tra cứu siêu tốc: { 'FPT': 1200000000, ... }
             self.out_shares_dict = df_comp.set_index('ticker')['issue_share'].to_dict()
+
+        # 2. Ưu tiên tuyệt đối: Nạp từ master_price_l2 (Cập nhật chuẩn theo ngày)
+        if not self.df_price_l2.empty and 'total_shares' in self.df_price_l2.columns:
+            df_price_l2_raw = self.df_price_l2.copy()
+            # Lọc bỏ các dòng bị rỗng
+            df_l2_shares = df_price_l2_raw.dropna(subset=['total_shares'])
+            if not df_l2_shares.empty:
+                # Lấy record ngày mới nhất của từng mã cổ phiếu
+                latest_shares = df_l2_shares.sort_values('time').groupby('ticker').tail(1)
+                l2_shares_dict = latest_shares.set_index('ticker')['total_shares'].to_dict()
+                # Cập nhật (ghi đè) vào dictionary tổng
+                self.out_shares_dict.update(l2_shares_dict)
 
         # Nạp quỹ trái phiếu
         self.df_funds = self._load_parquet_safe(self.parquet_dir / 'macro/bond_fund.parquet')
@@ -104,6 +117,7 @@ class LiveAssistant:
                 prop_dict=self.prop_dict, 
                 out_shares_dict=self.out_shares_dict, 
                 price_dict=self.price_dict, 
+                price_l2_dict=self.price_l2_dict,
                 universe=self.universe
             )
         except Exception as e:
@@ -1500,7 +1514,8 @@ class LiveAssistant:
             df_f_ticker = self.foreign_dict.get(ticker)
             df_pr_ticker = self.prop_dict.get(ticker)
             df_pt_ticker = self.pt_dict.get(ticker)
-            mf_info_dict[ticker] = mf_analyzer.analyze_flow(ticker, df_p_ticker, df_f_ticker, df_pr_ticker, df_pt_ticker)
+            df_l2_ticker = self.price_l2_dict.get(ticker)
+            mf_info_dict[ticker] = mf_analyzer.analyze_flow(ticker, df_p_ticker, df_f_ticker, df_pr_ticker, df_pt_ticker, df_l2=df_l2_ticker)
 
         # =====================================================================
         # 📡 EARLY RADAR (ĐƯA VÀO TẦM NGẮM CÁC KÈO TÂY CHỚM GOM)
@@ -1788,7 +1803,7 @@ class LiveAssistant:
                 score_details.append(f"An toàn thanh khoản (DTL: {dtl:.1f} ngày) (+3)")
             
             # Lọc theo ngưỡng linh hoạt của từng Quý
-            # if total_score < dynamic_threshold: continue
+            if total_score < dynamic_threshold: continue
 
             # Lưu lại row này vào danh sách được chọn
             row_dict = row.to_dict()
