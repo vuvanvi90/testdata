@@ -41,7 +41,7 @@ class BlacklistGuard:
         except Exception as e:
             print(f"[!] Lỗi khi lưu Blacklist {self.universe}: {e}")
 
-    def evaluate_pardons(self, current_blacklist, board_info_dict, sm_info_dict, foreign_dict, current_date_str):
+    def evaluate_pardons(self, current_blacklist, board_info_dict, sm_info_dict, price_l2_dict, current_date_str):
         """
         Lõi Logic: Quét và ra quyết định Ân Xá (Gỡ Blacklist)
         Sử dụng kết quả từ SmartMoneyEngine và Bảng điện T0.
@@ -71,12 +71,13 @@ class BlacklistGuard:
                 
             # Tính toán Tổng Lượng Xả (Total Dump)
             total_dump_bn = 0
-            df_f = foreign_dict.get(t)
+            # df_f = foreign_dict.get(t)
+            df_f = price_l2_dict.get(t)
             
             if df_f is not None and not df_f.empty:
                 df_dump = df_f[(df_f['time'] >= pd.to_datetime(info['date_added'])) & (df_f['time'] < current_date)]
-                
-                if not df_dump.empty and 'foreign_net_value' in df_dump.columns:
+                if not df_dump.empty:
+                    df_dump['foreign_net_value'] = df_dump['fr_buy_value_matched'] - df_dump['fr_sell_value_matched']
                     total_dump_bn = df_dump['foreign_net_value'].sum() / 1_000_000_000
             
             # Kiểm định Tỷ lệ Phủ lấp (Coverage Ratio >= 50%)

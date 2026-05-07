@@ -61,7 +61,7 @@ class VNStockDataPipeline:
         self.request_timestamps = deque()
         self.rate_lock = threading.Lock()
         self.total_requests_sent = 0
-        self.MAX_RPM = 200  # Ngưỡng an toàn tối đa (500 thay vì 600 để chừa hao phí cho thư viện)
+        self.MAX_RPM = 205  # Ngưỡng an toàn tối đa (500 thay vì 600 để chừa hao phí cho thư viện)
 
     def _load_master_data(self, folder_key, file_name):
         """Đọc file Parquet cũ và chia thành Dictionary theo Ticker để truy xuất O(1)"""
@@ -497,7 +497,16 @@ class VNStockDataPipeline:
             try:
                 trading = Trading(symbol=ticker, source='vci')
                 df_foreign = trading.foreign_trade(start=start_str, end=current_date_str)
-                required_cols = ['trading_date', 'fr_buy_volume_total', 'fr_buy_value_total', 'fr_sell_volume_total', 'fr_sell_value_total', 'fr_net_volume_total', 'fr_net_value_total']
+                required_cols = [
+                    'trading_date', 
+                    'fr_buy_volume_matched', 'fr_buy_value_matched', 
+                    'fr_sell_volume_matched', 'fr_sell_value_matched',
+                    'fr_net_volume_matched', 'fr_net_value_matched',
+                    'fr_buy_volume_deal', 'fr_buy_value_deal',
+                    'fr_sell_volume_deal', 'fr_sell_value_deal',
+                    'fr_net_volume_deal', 'fr_net_value_deal',
+                    'fr_net_volume_total', 'fr_net_value_total'
+                ]
                 df_foreign = self._validate_schema(df_foreign, required_cols, item_name=f"Foreign Flow - {ticker}")
                 if df_foreign is None: return None
                 if df_foreign is not None and not df_foreign.empty:
@@ -533,10 +542,19 @@ class VNStockDataPipeline:
         df_new = pd.concat(new_data_list, ignore_index=True)
         df_new = df_new.rename(columns={
             'trading_date': 'time',
-            'fr_buy_volume_total': 'foreign_buy_volume',
-            'fr_buy_value_total': 'foreign_buy_value',
-            'fr_sell_volume_total': 'foreign_sell_volume',
-            'fr_sell_value_total': 'foreign_sell_value',
+            # Khớp lệnh (Matched)
+            'fr_buy_volume_matched': 'foreign_buy_vol_matched', 
+            'fr_buy_value_matched': 'foreign_buy_val_matched', 
+            'fr_sell_volume_matched': 'foreign_sell_vol_matched', 
+            'fr_sell_value_matched': 'foreign_sell_val_matched', 
+            'fr_net_value_matched': 'foreign_net_val_matched',
+            # Thỏa thuận (Deal)
+            'fr_buy_volume_deal': 'foreign_buy_vol_deal', 
+            'fr_buy_value_deal': 'foreign_buy_val_deal',
+            'fr_sell_volume_deal': 'foreign_sell_vol_deal', 
+            'fr_sell_value_deal': 'foreign_sell_val_deal', 
+            'fr_net_value_deal': 'foreign_net_val_deal',
+            # Tổng hợp (Total)
             'fr_net_volume_total': 'foreign_net_volume',
             'fr_net_value_total': 'foreign_net_value'
         })
@@ -549,8 +567,14 @@ class VNStockDataPipeline:
                 df_new['time'] = pd.to_datetime(df_new['time']).dt.normalize()
                 
         # Lọc rác
-        cols_to_keep = ['time', 'ticker', 'foreign_buy_volume', 'foreign_buy_value', 'foreign_sell_volume', 'foreign_sell_value', 'foreign_net_volume', 'foreign_net_value']
+        cols_to_keep = ['time', 'ticker', 
+                        'foreign_buy_vol_matched', 'foreign_buy_val_matched', 
+                        'foreign_sell_vol_matched', 'foreign_sell_val_matched', 'foreign_net_val_matched',
+                        'foreign_buy_vol_deal', 'foreign_buy_val_deal', 
+                        'foreign_sell_vol_deal', 'foreign_sell_val_deal', 'foreign_net_val_deal',
+                        'foreign_net_volume', 'foreign_net_value']
         df_new = df_new[[c for c in cols_to_keep if c in df_new.columns]]
+        df_new.fillna(0, inplace=True)
         
         # 4. UPSERT VÀ KHỬ TRÙNG LẶP
         if not existing_df.empty:
@@ -593,7 +617,14 @@ class VNStockDataPipeline:
             try:
                 trading = Trading(symbol=ticker, source='vci')
                 df_prop = trading.prop_trade(start=start_str, end=current_date_str)
-                required_cols = ['trading_date', 'total_buy_trade_volume', 'total_buy_trade_value', 'total_sell_trade_volume', 'total_sell_trade_value', 'total_trade_net_volume', 'total_trade_net_value']
+                required_cols = [
+                    'trading_date', 'update_date',
+                    'total_match_buy_trade_volume', 'total_match_sell_trade_volume', 'total_match_buy_trade_value', 'total_match_sell_trade_value',
+                    'total_match_trade_net_volume', 'total_match_trade_net_value',
+                    'total_deal_buy_trade_volume', 'total_deal_sell_trade_volume', 'total_deal_buy_trade_value', 'total_deal_sell_trade_value',
+                    'total_deal_trade_net_volume', 'total_deal_trade_net_value',
+                    'total_trade_net_volume', 'total_trade_net_value'
+                ]
                 df_prop = self._validate_schema(df_prop, required_cols, item_name=f"Prop Flow - {ticker}")
                 if df_prop is None: return None
                 if df_prop is not None and not df_prop.empty:
@@ -630,10 +661,21 @@ class VNStockDataPipeline:
         # Đổi tên cột cho chuẩn với file JSON bạn gửi
         df_new = df_new.rename(columns={
             'trading_date': 'time',
-            'total_buy_trade_volume': 'prop_buy_volume',
-            'total_buy_trade_value': 'prop_buy_value',
-            'total_sell_trade_volume': 'prop_sell_volume',
-            'total_sell_trade_value': 'prop_sell_value',
+            # Khớp lệnh (Matched)
+            'total_match_buy_trade_volume': 'prop_buy_vol_matched',
+            'total_match_buy_trade_value': 'prop_buy_val_matched',
+            'total_match_sell_trade_volume': 'prop_sell_vol_matched',
+            'total_match_sell_trade_value': 'prop_sell_val_matched',
+            'total_match_trade_net_volume': 'prop_net_vol_matched',
+            'total_match_trade_net_value': 'prop_net_val_matched',
+            # Thỏa thuận (Deal)
+            'total_deal_buy_trade_volume': 'prop_buy_vol_deal',
+            'total_deal_buy_trade_value': 'prop_buy_val_deal',
+            'total_deal_sell_trade_volume': 'prop_sell_vol_deal',
+            'total_deal_sell_trade_value': 'prop_sell_val_deal',
+            'total_deal_trade_net_volume': 'prop_net_vol_deal',
+            'total_deal_trade_net_value': 'prop_net_val_deal',
+            # Tổng hợp (Total)
             'total_trade_net_volume': 'prop_net_volume',
             'total_trade_net_value': 'prop_net_value'
         })
@@ -646,8 +688,14 @@ class VNStockDataPipeline:
                 df_new['time'] = pd.to_datetime(df_new['time']).dt.normalize()
                 
         # Lọc rác, chỉ giữ lại các cột cốt lõi phục vụ tính toán
-        cols_to_keep = ['time', 'ticker', 'prop_buy_volume', 'prop_buy_value', 'prop_sell_volume', 'prop_sell_value', 'prop_net_volume', 'prop_net_value']
+        cols_to_keep = ['time', 'ticker', 
+                        'prop_buy_vol_matched', 'prop_buy_val_matched', 'prop_sell_vol_matched', 'prop_sell_val_matched', 
+                        'prop_net_vol_matched', 'prop_net_val_matched',
+                        'prop_buy_vol_deal', 'prop_buy_val_deal', 'prop_sell_vol_deal', 'prop_sell_val_deal', 
+                        'prop_net_vol_deal', 'prop_net_val_deal',
+                        'prop_net_volume', 'prop_net_value']
         df_new = df_new[[c for c in cols_to_keep if c in df_new.columns]]
+        df_new.fillna(0, inplace=True)
         
         # 4. UPSERT VÀ KHỬ TRÙNG LẶP
         if not existing_df.empty:
@@ -835,9 +883,11 @@ class VNStockDataPipeline:
                     # Cung Cầu Ngoại trực tiếp (Khớp lệnh)
                     'fr_buy_volume_matched', 'fr_sell_volume_matched',
                     'fr_buy_value_matched', 'fr_sell_value_matched',
+                    'fr_net_volume_matched', 'fr_net_value_matched',
                     # Ngoại thỏa thuận (Né thuế/Thoát hàng)
                     'fr_buy_volume_deal', 'fr_sell_volume_deal',
                     'fr_buy_value_deal', 'fr_sell_value_deal',
+                    'fr_net_volume_deal', 'fr_net_value_deal',
                     # Tổng Thỏa thuận chốt sổ của Sở Giao Dịch
                     'deal_volume', 'deal_value'
                 ]
@@ -849,7 +899,11 @@ class VNStockDataPipeline:
                 new_df = new_df[[c for c in core_cols if c in new_df.columns]].copy()
                 
                 # CHUẨN HÓA CỘT THỜI GIAN
-                new_df = new_df.rename(columns={'trading_date': 'time'})
+                new_df = new_df.rename(columns={
+                    'trading_date': 'time',
+                    'matched_volume': 'total_matched_vol',
+                    'matched_value': 'total_matched_val'
+                })
                 new_df['ticker'] = ticker
                 
                 if pd.api.types.is_numeric_dtype(new_df['time']):
@@ -859,6 +913,9 @@ class VNStockDataPipeline:
                 
                 if getattr(new_df['time'].dt, 'tz', None) is not None:
                     new_df['time'] = new_df['time'].dt.tz_localize(None)
+
+                # ĐIỀN SỐ 0 CHO CÁC TRƯỜNG NAN (Đề phòng Lỗi VWAP)
+                new_df.fillna(0, inplace=True)
 
                 # MERGE DỮ LIỆU CŨ VÀ MỚI (Tối ưu Khử Trùng Lặp)
                 if old_df is not None and not old_df.empty:

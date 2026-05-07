@@ -4,10 +4,9 @@ from datetime import datetime
 class SmartMoneyEngine:
     """
     Động cơ Phân tích Dòng tiền Thông minh (Smart Money) Đa Khung Thời Gian
-    Bản Nâng Cấp: Tra cứu Phiên gần nhất bằng Ngày Giao Dịch Tuyệt Đối (Absolute Timestamp).
+    KIẾN TRÚC LEVEL-2: Ưu tiên dữ liệu Khớp lệnh tuyệt đối.
     """
-    def __init__(self, foreign_dict, prop_dict, out_shares_dict, price_dict=None, price_l2_dict=None, universe="VN30"):
-        self.foreign_dict = foreign_dict
+    def __init__(self, prop_dict, out_shares_dict, price_dict=None, price_l2_dict=None, universe="VN30"):
         self.prop_dict = prop_dict
         self.out_shares_dict = out_shares_dict
         self.price_dict = price_dict
@@ -57,7 +56,6 @@ class SmartMoneyEngine:
             "last_trade_date": None   
         }
 
-        df_f = self.foreign_dict.get(ticker)
         df_p = self.prop_dict.get(ticker)
         df_price = self.price_dict.get(ticker) if self.price_dict else None
         df_l2 = self.price_l2_dict.get(ticker) if self.price_l2_dict else None
@@ -65,84 +63,52 @@ class SmartMoneyEngine:
         shares_out = self.out_shares_dict.get(ticker, 0)
 
         # TẠO BẢN SAO ĐỂ KHÔNG LÀM ẢNH HƯỞNG DATA GỐC TRÊN RAM
-        df_f_valid = df_f[df_f['time'] <= current_date].copy() if (df_f is not None and not df_f.empty) else pd.DataFrame()
-        df_p_valid = df_p[df_p['time'] <= current_date].copy() if (df_p is not None and not df_p.empty) else pd.DataFrame()
-        df_l2_valid = df_l2[df_l2['time'] <= current_date].copy() if (df_l2 is not None and not df_l2.empty) else pd.DataFrame()
+        df_l2_v = df_l2[df_l2['time'] <= current_date].copy() if (df_l2 is not None and not df_l2.empty) else pd.DataFrame()
+        df_p_v = df_p[df_p['time'] <= current_date].copy() if (df_p is not None and not df_p.empty) else pd.DataFrame()
 
         # =====================================================================
-        # BƯỚC 0: TẠO THƯỚC ĐO THỜI GIAN CHUẨN (TRUE-TIME WINDOWS)
+        # 🛡️ BƯỚC 0: QUY HOẠCH DÒNG TIỀN "SẠCH" (MATCHED FLOW ONLY)
         # =====================================================================
+        
+        # 1. KHỐI NGOẠI: Chiết xuất trực tiếp từ Level-2 (Không dùng file Foreign riêng)
+        if not df_l2_v.empty and 'fr_buy_value_matched' in df_l2_v.columns:
+            df_f_clean = df_l2_v[['time']].copy()
+            df_f_clean['foreign_net_value'] = df_l2_v['fr_buy_value_matched'] - df_l2_v['fr_sell_value_matched']
+            df_f_clean['foreign_net_volume'] = df_l2_v['fr_buy_volume_matched'] - df_l2_v['fr_sell_volume_matched']
+            df_f_valid = df_f_clean
+            result["valid_f"] = True
+        else:
+            df_f_valid = pd.DataFrame()
+
+        # 2. TỰ DOANH: Ưu tiên cột Matched từ Premium Collector
+        if not df_p_v.empty:
+            if 'prop_net_val_matched' in df_p_v.columns:
+                df_p_v['prop_net_value'] = df_p_v['prop_net_val_matched']
+                df_p_v['prop_net_volume'] = df_p_v.get('prop_net_vol_matched', 0)
+            df_p_valid = df_p_v
+            result["valid_p"] = True
+        else:
+            df_p_valid = pd.DataFrame()
+
+        # Xác định các mốc thời gian
         cutoff_6m = current_date - pd.DateOffset(months=6)
         cutoff_1m = current_date - pd.Timedelta(days=30)
-        cutoff_1w = current_date - pd.Timedelta(days=7)
         cutoff_3d = current_date - pd.Timedelta(days=4)
-        cutoff_10d = current_date - pd.Timedelta(days=14)
         
         total_liq_20d_bn = 0
         latest_trading_date = current_date # Mặc định
 
         if df_price is not None and not df_price.empty:
-            df_price_valid = df_price[df_price['time'] <= current_date].copy()
-            if not df_price_valid.empty:
-                # Lấy CHÍNH XÁC ngày giao dịch gần nhất của thị trường
-                latest_trading_date = df_price_valid['time'].max()
-                
-                trading_dates = df_price_valid['time'].sort_values().unique()
+            df_price_v = df_price[df_price['time'] <= current_date].copy()
+            if not df_price_v.empty:
+                latest_trading_date = df_price_v['time'].max()
+                trading_dates = df_price_v['time'].sort_values().unique()
                 if len(trading_dates) >= 130: cutoff_6m = trading_dates[-130]
                 if len(trading_dates) >= 20:  cutoff_1m = trading_dates[-20]
-                if len(trading_dates) >= 10:  cutoff_10d = trading_dates[-10]
-                if len(trading_dates) >= 5:   cutoff_1w = trading_dates[-5]
                 if len(trading_dates) >= 3:   cutoff_3d = trading_dates[-3]
                 
-                df_price_20d = df_price_valid[df_price_valid['time'] >= cutoff_1m]
-                total_liq_20d_bn = (df_price_20d['close'] * df_price_20d['volume']).sum() / 1_000_000_000
-
-                df_price_valid['total_val'] = df_price_valid['close'] * df_price_valid['volume']
-
-                # BỘ LỌC CHÂN LÝ TUYỆT ĐỐI (L2 AUDIT)
-                if not df_l2_valid.empty and 'fr_buy_value_matched' in df_l2_valid.columns:
-                    temp_l2 = df_l2_valid[['time', 'fr_buy_value_matched', 'fr_sell_value_matched', 
-                                           'fr_buy_volume_matched', 'fr_sell_volume_matched', 'deal_value']]
-                    
-                    # 1. Khối Ngoại: Lấy 100% Khớp lệnh thực tế, xóa sổ Thỏa thuận
-                    if not df_f_valid.empty:
-                        df_f_valid = pd.merge(df_f_valid, temp_l2, on='time', how='left').fillna(0)
-                        df_f_valid['foreign_net_value'] = df_f_valid['fr_buy_value_matched'] - df_f_valid['fr_sell_value_matched']
-                        df_f_valid['foreign_net_volume'] = df_f_valid['fr_buy_volume_matched'] - df_f_valid['fr_sell_volume_matched']
-                        if 'foreign_net_vol' in df_f_valid.columns:
-                            df_f_valid['foreign_net_vol'] = df_f_valid['foreign_net_volume']
-
-                    # 2. Tự Doanh: Khấu trừ thông minh từ Tổng Thỏa Thuận Sở Giao Dịch
-                    if not df_p_valid.empty:
-                        df_p_valid = pd.merge(df_p_valid, temp_l2[['time', 'deal_value']], on='time', how='left').fillna(0)
-                        df_p_valid = pd.merge(df_p_valid, df_price_valid[['time', 'total_val']], on='time', how='left').fillna(0)
-                        
-                        # Nếu Tự doanh giao dịch giá trị LỚN HƠN 40% TỔNG DEAL CỦA SỞ -> 99% là Sang tay ngầm
-                        cond_p_deal = (df_p_valid['prop_net_value'].abs() > df_p_valid['total_val'] * 0.8) | \
-                                      ((df_p_valid['deal_value'] > 0) & (df_p_valid['prop_net_value'].abs() >= df_p_valid['deal_value'] * 0.15))
-                        
-                        df_p_valid.loc[cond_p_deal, 'prop_net_value'] = 0
-                        df_p_valid.loc[cond_p_deal, 'prop_net_volume'] = 0
-                        if 'prop_net_vol' in df_p_valid.columns:
-                            df_p_valid.loc[cond_p_deal, 'prop_net_vol'] = 0
-
-                else:
-                    # Rơi về Thuật toán Phỏng đoán nếu chưa có file L2 (Fallback)
-                    df_price_valid['vol_ma20'] = df_price_valid['volume'].rolling(20, min_periods=1).mean()
-                    df_price_valid['price_spread_pct'] = (df_price_valid['high'] - df_price_valid['low']) / df_price_valid['low'] * 100
-                    temp_f = df_f_valid[['time', 'foreign_net_value']] if not df_f_valid.empty else pd.DataFrame(columns=['time', 'foreign_net_value'])
-                    temp_p = df_p_valid[['time', 'prop_net_value']] if not df_p_valid.empty else pd.DataFrame(columns=['time', 'prop_net_value'])
-                    temp_merge = pd.merge(df_price_valid[['time', 'total_val', 'volume', 'vol_ma20', 'price_spread_pct']], temp_f, on='time', how='left')
-                    temp_merge = pd.merge(temp_merge, temp_p, on='time', how='left').fillna(0)
-                    cond_on = (temp_merge['volume'] > temp_merge['vol_ma20'] * 3) & (temp_merge['price_spread_pct'] < 2.0)
-                    cond_off_f = temp_merge['foreign_net_value'].abs() > (temp_merge['total_val'] * 0.8)
-                    cond_off_p = temp_merge['prop_net_value'].abs() > (temp_merge['total_val'] * 0.8)
-                    pt_f_dates = temp_merge[cond_on | cond_off_f]['time'].tolist()
-                    pt_p_dates = temp_merge[cond_on | cond_off_p]['time'].tolist()
-                    if pt_f_dates and not df_f_valid.empty:
-                        df_f_valid.loc[df_f_valid['time'].isin(pt_f_dates), ['foreign_net_volume', 'foreign_net_value', 'foreign_net_vol']] = 0
-                    if pt_p_dates and not df_p_valid.empty:
-                        df_p_valid.loc[df_p_valid['time'].isin(pt_p_dates), ['prop_net_volume', 'prop_net_value', 'prop_net_vol']] = 0
+                df_p_20d = df_price_v[df_price_v['time'] >= cutoff_1m]
+                total_liq_20d_bn = (df_p_20d['close'] * df_p_20d['volume']).sum() / 1_000_000_000
 
         # =====================================================================
         # LỚP 1: TẦM NHÌN DÀI HẠN (130 PHIÊN GẦN NHẤT)

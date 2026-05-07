@@ -42,10 +42,6 @@ class LiveAssistant:
         self.df_board = self._load_parquet_safe(self.parquet_dir / 'board/master_board.parquet')
         self.df_fin = self._load_parquet_safe(self.parquet_dir / 'financial/master_financial.parquet')
 
-        # Nạp Khối ngoại
-        self.df_foreign = self._load_parquet_safe(self.parquet_dir / 'macro/foreign_flow.parquet')
-        self.foreign_dict = self._load_foreign_flow_dict(self.parquet_dir / 'macro/foreign_flow.parquet')
-
         # Nạp Tự doanh
         self.df_prop = self._load_parquet_safe(self.parquet_dir / 'macro/prop_flow.parquet')
         self.prop_dict = self._load_prop_flow_dict(self.parquet_dir / 'macro/prop_flow.parquet')
@@ -113,7 +109,6 @@ class LiveAssistant:
         # Khởi tạo Động cơ Smart Money
         try:
             self.sm_engine = SmartMoneyEngine(
-                foreign_dict=self.foreign_dict, 
                 prop_dict=self.prop_dict, 
                 out_shares_dict=self.out_shares_dict, 
                 price_dict=self.price_dict, 
@@ -157,7 +152,6 @@ class LiveAssistant:
         try:
             data_frames = {
                 'price': self.df_price,
-                'foreign': self.df_foreign,
                 'prop': self.df_prop,
                 'comp': df_comp,
                 'idx': self._load_parquet_safe(self.parquet_dir / 'macro/index_components.parquet'),
@@ -215,9 +209,6 @@ class LiveAssistant:
             if not self.df_fin.empty and 'ticker' in self.df_fin.columns:
                 self.df_fin = self.df_fin[self.df_fin['ticker'].isin(valid_tickers)]
                 
-            if not self.df_foreign.empty and 'ticker' in self.df_foreign.columns:
-                self.df_foreign = self.df_foreign[self.df_foreign['ticker'].isin(valid_tickers)]
-                
             if not self.df_prop.empty and 'ticker' in self.df_prop.columns:
                 self.df_prop = self.df_prop[self.df_prop['ticker'].isin(valid_tickers)]
                 
@@ -239,9 +230,6 @@ class LiveAssistant:
 
             if hasattr(self, 'price_l2_dict'):
                 self.price_l2_dict = {k: v for k, v in self.price_l2_dict.items() if k in valid_set}
-                
-            if hasattr(self, 'foreign_dict'):
-                self.foreign_dict = {k: v for k, v in self.foreign_dict.items() if k in valid_set}
                 
             if hasattr(self, 'prop_dict'):
                 self.prop_dict = {k: v for k, v in self.prop_dict.items() if k in valid_set}
@@ -330,21 +318,6 @@ class LiveAssistant:
                 print(f"Could NOT read {path}")
                 return pd.DataFrame()
         return pd.DataFrame()
-
-    def _load_foreign_flow_dict(self, path):
-        """Đọc file Parquet khối ngoại và băm thành Dictionary O(1) chỉ giữ 20 phiên"""
-        df = self._load_parquet_safe(path)
-        if df.empty or 'ticker' not in df.columns:
-            return {}
-            
-        foreign_dict = {}
-        # Gom nhóm và cắt ngọn (Tail)
-        for ticker, group in df.groupby('ticker'):
-            # CHỈ GIỮ 130 DÒNG CUỐI (Tương đương 6 tháng giao dịch)
-            group = group.sort_values('time').tail(130)
-            foreign_dict[ticker] = group
-            
-        return foreign_dict
 
     def _load_prop_flow_dict(self, path):
         """Đọc file Parquet Tự doanh và băm thành Dictionary O(1) chỉ giữ 20 phiên"""
@@ -537,7 +510,7 @@ class LiveAssistant:
             print(" 💸 ĐÁNH GIÁ DÒNG TIỀN VÀ SÓNG NGÀNH - TRONG 5 PHIÊN GẦN NHẤT")
             print("="*65)
             
-            reporter = GroupCashFlowReporter(self.df_foreign, self.df_prop, self.df_ind, self.df_price, verbose=False)
+            reporter = GroupCashFlowReporter(self.df_prop, self.df_ind, self.df_price, self.df_price_l2, verbose=False)
             sector_flow, flow_report_df = reporter.generate_report(timeframe='week')
             
             if sector_flow is not None and not sector_flow.empty:
@@ -1042,11 +1015,9 @@ class LiveAssistant:
                 score += 10; details.append("Vol Uy tín (+10)")
             elif signal == 'TEST_CUNG':
                 if row.get('VPA_Status') == 'Low':
-                    score += 10
-                    details.append("Thanh khoản cạn kiệt (< 60% MA20) (+10 điểm)")
+                    score += 10; details.append("Thanh khoản cạn kiệt (< 60% MA20) (+10 điểm)")
                 elif row.get('VPA_Status') == 'Normal':
-                    score += 5
-                    details.append("Cầu đang chờ xác nhận (+5 điểm)")
+                    score += 5; details.append("Cầu đang chờ xác nhận (+5 điểm)")
                 elif row.get('VPA_Status') in ['High', 'Ultra High']:
                     # Nếu Test Cung mà Volume lại cao, chứng tỏ thuật toán nhận diện bị nhiễu 
                     # Hoặc đây là lực Bán ngầm (Hidden Supply) chứ không phải Test Cung.
@@ -1511,11 +1482,9 @@ class LiveAssistant:
             sm_info_dict[ticker] = self.sm_engine.analyze_ticker(ticker, board_info_dict[ticker])
             # Quét X-Quang Tồn kho Cá mập
             df_p_ticker = df_full_price[df_full_price['ticker'] == ticker]
-            df_f_ticker = self.foreign_dict.get(ticker)
             df_pr_ticker = self.prop_dict.get(ticker)
-            df_pt_ticker = self.pt_dict.get(ticker)
             df_l2_ticker = self.price_l2_dict.get(ticker)
-            mf_info_dict[ticker] = mf_analyzer.analyze_flow(ticker, df_p_ticker, df_f_ticker, df_pr_ticker, df_pt_ticker, df_l2=df_l2_ticker)
+            mf_info_dict[ticker] = mf_analyzer.analyze_flow(ticker, df_p_ticker, df_pr_ticker, df_l2=df_l2_ticker)
 
         # =====================================================================
         # 📡 EARLY RADAR (ĐƯA VÀO TẦM NGẮM CÁC KÈO TÂY CHỚM GOM)
@@ -1639,7 +1608,7 @@ class LiveAssistant:
             current_blacklist=next_blacklist,
             board_info_dict=board_info_dict,
             sm_info_dict=sm_info_dict,
-            foreign_dict=self.foreign_dict,
+            price_l2_dict=self.price_l2_dict,
             current_date_str=current_date_str
         )
         

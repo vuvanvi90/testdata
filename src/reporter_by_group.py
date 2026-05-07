@@ -3,25 +3,25 @@ import os
 from datetime import datetime
 
 class GroupCashFlowReporter:
-    def __init__(self, foreign_df, prop_df, industry_df, price_df, verbose=True):
+    def __init__(self, prop_df, industry_df, price_df, price_l2_df, verbose=True):
         """
         Khởi tạo Reporter với dữ liệu Dòng tiền và Danh mục Ngành (ICB)
         """
         if verbose:
             print(f"[{datetime.now().strftime('%H:%M:%S')}] Đang nạp dữ liệu Dòng tiền và Sóng Ngành...")
-        self.df_foreign = foreign_df
         self.df_prop = prop_df
         self.df_ind = industry_df
         self.df_price = price_df
+        self.df_price_l2 = price_l2_df
         self.verbose = verbose
         
         # Chuẩn hóa thời gian
-        for df in [self.df_foreign, self.df_prop, self.df_price]:
+        for df in [self.df_prop, self.df_price, self.df_price_l2]:
             if df is not None and not df.empty and 'time' in df.columns:
                 df['time'] = pd.to_datetime(df['time']).dt.normalize()
 
     def generate_report(self, timeframe='week', target_date=None):
-        if (self.df_foreign is None or self.df_foreign.empty) and (self.df_prop is None or self.df_prop.empty):
+        if (self.df_price_l2 is None or self.df_price_l2.empty) and (self.df_prop is None or self.df_prop.empty):
             print("[!] Thiếu dữ liệu để tạo báo cáo.")
             return None, None
 
@@ -34,9 +34,9 @@ class GroupCashFlowReporter:
         # Ưu tiên tuyệt đối dùng df_price làm Trục thời gian
         if self.df_price is not None and not self.df_price.empty:
             trading_days = sorted(self.df_price['time'].dropna().unique())
-        elif self.df_foreign is not None and not self.df_foreign.empty:
-            trading_days = sorted(self.df_foreign['time'].dropna().unique())
-            if self.verbose: print("   [⚠️] Cảnh báo: Đang dùng Lịch Khối Ngoại thay cho Lịch Bảng Giá.")
+        elif self.df_price_l2 is not None and not self.df_price_l2.empty:
+            trading_days = sorted(self.df_price_l2['time'].dropna().unique())
+            if self.verbose: print("   [⚠️] Cảnh báo: Đang dùng Lịch Price L2 thay cho Lịch Bảng Giá.")
         else:
             trading_days = sorted(self.df_prop['time'].dropna().unique())
             if self.verbose: print("   [⚠️] Cảnh báo: Đang dùng Lịch Tự Doanh thay cho Lịch Bảng Giá.")
@@ -58,13 +58,15 @@ class GroupCashFlowReporter:
 
         # 2. LỌC VÀ TÍNH TỔNG (SUM) DỰA TRÊN TRỤC THỜI GIAN CHUẨN
         df_f_agg = pd.DataFrame()
-        if self.df_foreign is not None and not self.df_foreign.empty:
-            df_f = self.df_foreign[(self.df_foreign['time'] >= start_date) & (self.df_foreign['time'] <= latest_date)]
+        if self.df_price_l2 is not None and not self.df_price_l2.empty:
+            df_f = self.df_price_l2[(self.df_price_l2['time'] >= start_date) & (self.df_price_l2['time'] <= latest_date)]
+            df_f['foreign_net_value'] = df_f['fr_buy_value_matched'] - df_f['fr_sell_value_matched']
             df_f_agg = df_f.groupby('ticker')['foreign_net_value'].sum().reset_index()
         
         df_pr_agg = pd.DataFrame()
         if self.df_prop is not None and not self.df_prop.empty:
             df_pr = self.df_prop[(self.df_prop['time'] >= start_date) & (self.df_prop['time'] <= latest_date)]
+            df_pr['prop_net_value'] = df_pr['prop_net_val_matched']
             df_pr_agg = df_pr.groupby('ticker')['prop_net_value'].sum().reset_index()
 
         # 3. HỢP NHẤT DỮ LIỆU
@@ -176,11 +178,12 @@ class GroupCashFlowReporter:
 # KHỐI CHẠY THỬ NGHIỆM
 # ==========================================
 if __name__ == "__main__":
-    FOREIGN_PATH = 'data/parquet/macro/foreign_flow.parquet'
     PROP_PATH = 'data/parquet/macro/prop_flow.parquet'
-    IND_PATH = 'data/parquet/macro/groups_by_industries.parquet' # File Sóng Ngành của anh
+    IND_PATH = 'data/parquet/macro/groups_by_industries.parquet'
+    PRICE_PATH = 'data/parquet/price/master_price.parquet'
+    PRICE_L2_PATH = 'data/parquet/price/master_price_l2.parquet'
     
-    reporter = GroupCashFlowReporter(FOREIGN_PATH, PROP_PATH, IND_PATH)
+    reporter = GroupCashFlowReporter(PROP_PATH, IND_PATH, PRICE_PATH, PRICE_L2_PATH)
     
     # In báo cáo dòng tiền theo Tuần (5 phiên gần nhất)
     reporter.generate_report(timeframe='week')

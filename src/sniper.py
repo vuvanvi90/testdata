@@ -52,7 +52,6 @@ class TargetSniper:
         # Đọc Master Data
         df_price_raw = self._load_parquet_safe(self.data_dir / 'price/master_price.parquet')
         df_price_l2_raw = self._load_parquet_safe(self.data_dir / 'price/master_price_l2.parquet')
-        df_foreign_raw = self._load_parquet_safe(self.data_dir / 'macro/foreign_flow.parquet')
         df_prop_raw = self._load_parquet_safe(self.data_dir / 'macro/prop_flow.parquet')
         df_intra_raw = self._load_parquet_safe(self.data_dir / 'intraday/master_intraday.parquet')
         df_board_raw = self._load_parquet_safe(self.data_dir / 'board/master_board.parquet')
@@ -64,7 +63,6 @@ class TargetSniper:
         # Lọc siêu tốc (Chỉ lấy ticker)
         self.df_price = df_price_raw[df_price_raw['ticker'] == self.ticker].copy() if not df_price_raw.empty else pd.DataFrame()
         self.df_price_l2 = df_price_l2_raw[df_price_l2_raw['ticker'] == self.ticker].copy() if not df_price_l2_raw.empty else pd.DataFrame()
-        self.df_foreign = df_foreign_raw[df_foreign_raw['ticker'] == self.ticker].copy() if not df_foreign_raw.empty else pd.DataFrame()
         self.df_prop = df_prop_raw[df_prop_raw['ticker'] == self.ticker].copy() if not df_prop_raw.empty else pd.DataFrame()
         self.df_intra = df_intra_raw[df_intra_raw['ticker'] == self.ticker].copy() if not df_intra_raw.empty else pd.DataFrame()
         
@@ -83,7 +81,6 @@ class TargetSniper:
         # Build Dict (Để tương thích với các Engine)
         self.price_dict = {self.ticker: self.df_price}
         self.price_l2_dict = {self.ticker: self.df_price_l2}
-        self.foreign_dict = {self.ticker: self.df_foreign}
         self.prop_dict = {self.ticker: self.df_prop}
 
         # Khởi tạo Dict chứa Số lượng Cổ phiếu
@@ -112,7 +109,7 @@ class TargetSniper:
     def _init_engines(self):
         """Khởi động toàn bộ vũ khí hạng nặng"""
         self.sm_engine = SmartMoneyEngine(
-            foreign_dict=self.foreign_dict, prop_dict=self.prop_dict, 
+            prop_dict=self.prop_dict, 
             out_shares_dict=self.out_shares_dict, price_dict=self.price_dict, 
             price_l2_dict=self.price_l2_dict, universe=self.universe
         )
@@ -121,7 +118,7 @@ class TargetSniper:
         
         # Băm OmniMatrix
         data_frames = {
-            'price': self.df_price, 'foreign': self.df_foreign, 'prop': self.df_prop,
+            'price': self.df_price, 'prop': self.df_prop,
             'comp': self.df_comp, 'idx': self.df_idx, 'board': self.df_board, 
             'intra': self.df_intra, 'put_through': self.df_pt, 'price_l2': self.df_price_l2
         }
@@ -345,7 +342,7 @@ class TargetSniper:
             }
 
         sm_result = self.sm_engine.analyze_ticker(self.ticker, board_info)
-        mf_result = self.mf_analyzer.analyze_flow(self.ticker, df_full, self.df_foreign, self.df_prop, self.df_pt, df_l2=self.df_price_l2)
+        mf_result = self.mf_analyzer.analyze_flow(self.ticker, df_full, self.df_prop, df_l2=self.df_price_l2)
         sm_vwap = mf_result.get('sm_vwap', 0)
         dtl = mf_result.get('dtl_days', 0)
 
@@ -594,10 +591,17 @@ class TargetSniper:
             
         elif sm_result.get("is_danger", False):
             is_validated_bull = micro_flow and ("BULLISH" in micro_flow['thesis'] or "BOTTOMING" in micro_flow['thesis'] or "TILT BULL" in micro_flow['thesis'])
-            if not is_validated_bull:
+            
+            # Ghi đè Cờ Đỏ nếu T0 có lực Cầu chủ động Bùng nổ (Đảo pha)
+            is_reversal = omni_now and "BULLISH" in omni_now.get('verdict', '')
+
+            if not is_validated_bull and not is_reversal:
                 final_action = "REJECT"
                 final_reason = "Cá mập dài hạn đang tháo cống. Bỏ qua mọi tín hiệu kỹ thuật."
                 print(f"   🚫 KHÔNG MUA: {final_reason}")
+            elif is_reversal:
+                # Nếu T0 Bullish, xí xóa cờ đỏ và cho phép lệnh mua đi tiếp
+                print(f"   🌟 GIẢI CỨU BÁO ĐỘNG ĐỎ: T0 Cầu chủ động bùng nổ, bẻ gãy áp lực xả 3D của Cá mập!")
 
         elif micro_flow and "BEARISH" in micro_flow['thesis']:
             # Mở khóa Đảo pha Cấu trúc (Structural Reversal).

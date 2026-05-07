@@ -16,7 +16,6 @@ class OmniFlowMatrix:
         # 1. Nạp các DataFrame từ RAM
         self.df_price = data_frames.get('price', pd.DataFrame())
         self.df_price_l2 = data_frames.get('price_l2', pd.DataFrame())
-        self.df_foreign = data_frames.get('foreign', pd.DataFrame())
         self.df_prop = data_frames.get('prop', pd.DataFrame())
         self.df_comp = data_frames.get('comp', pd.DataFrame())
         self.df_idx = data_frames.get('idx', pd.DataFrame())
@@ -170,73 +169,74 @@ class OmniFlowMatrix:
         if self.df_price.empty: return
 
         # 1. Chuẩn hóa & Lọc 30 phiên gần nhất để nhẹ RAM
-        df_p = self.df_price.copy()
-        df_p['time'] = pd.to_datetime(df_p['time']).dt.normalize()
+        df = self.df_price.copy()
+        df['time'] = pd.to_datetime(df['time']).dt.normalize()
         
         if self.past_dates:
             cutoff_date = self.past_dates[-self.lookback_days] if len(self.past_dates) > self.lookback_days else self.past_dates[0]
-            df_p = df_p[df_p['time'].dt.date >= cutoff_date]
+            df = df[df['time'].dt.date >= cutoff_date]
 
-        # 2. Xử lý Foreign & Prop EOD
-        df_f = self.df_foreign.copy() if not self.df_foreign.empty else pd.DataFrame(columns=['ticker', 'time', 'foreign_net_value'])
-        df_pr = self.df_prop.copy() if not self.df_prop.empty else pd.DataFrame(columns=['ticker', 'time', 'prop_net_value'])
-        
-        for df in [df_f, df_pr]:
-            if not df.empty: df['time'] = pd.to_datetime(df['time']).dt.normalize()
+        # 2. Xử lý Foreign (lấy từ price_l2) & Prop EOD
+        if not self.df_price_l2.empty:
+            l2 = self.df_price_l2.copy()
+            l2['time'] = pd.to_datetime(l2['time']).dt.normalize()
+            # Lấy các cột tinh hoa từ L2 (Bao gồm cả Khối Ngoại)
+            l2_cols = ['ticker', 'time', 'deal_value', 'fr_net_value_matched', 'fr_net_value_deal']
+            l2_merge = l2[[c for c in l2_cols if c in l2.columns]]
+            df = pd.merge(df, l2_merge, on=['ticker', 'time'], how='left')
 
-        # 3. MERGE KHỔNG LỒ (THE GREAT MERGE)
-        cube = pd.merge(df_p[['ticker', 'time', 'open', 'high', 'low', 'close', 'volume']], 
-                        df_f[['ticker', 'time', 'foreign_net_value']], 
-                        on=['ticker', 'time'], how='left')
-        cube = pd.merge(cube, 
-                        df_pr[['ticker', 'time', 'prop_net_value']], 
-                        on=['ticker', 'time'], how='left').fillna(0)
+        if not self.df_prop.empty:
+            prop = self.df_prop.copy()
+            prop['time'] = pd.to_datetime(prop['time']).dt.normalize()
+            # Lấy các cột bóc tách của Tự Doanh
+            prop_cols = ['ticker', 'time', 'prop_net_val_matched', 'prop_net_val_deal', 'prop_net_value']
+            prop_merge = prop[[c for c in prop_cols if c in prop.columns]]
+            df = pd.merge(df, prop_merge, on=['ticker', 'time'], how='left')
 
-        # 4. TÍNH TOÁN CÁC METRICS ĐỊNH LƯỢNG (Vectorized)
-        cube['total_val_bn'] = (cube['close'] * cube['volume']) / self.DIVISOR
-        cube['f_net_bn'] = cube['foreign_net_value'] / self.DIVISOR
-        cube['p_net_bn'] = cube['prop_net_value'] / self.DIVISOR
-        cube['sm_net_bn'] = cube['f_net_bn'] + cube['p_net_bn']
+        # Điền 0 cho các ngày không có giao dịch để tránh lỗi NaN
+        df.fillna(0, inplace=True)
 
-        # 5. NHẬN DIỆN SANG TAY BẰNG DỮ LIỆU SỰ THẬT (GROUND TRUTH)
-        cube['vol_ma20'] = cube.groupby('ticker')['volume'].transform(lambda x: x.rolling(20, min_periods=1).mean())
-        cube['price_spread_pct'] = (cube['high'] - cube['low']) / cube['low'] * 100
-        cond_on_book = (cube['volume'] > cube['vol_ma20'] * 3) & (cube['price_spread_pct'] < 2.0)
-        
-        # Đọc dữ liệu Thỏa thuận truyền vào từ data_frames
-        if not self.df_pt.empty:
-            # Nhóm tổng giá trị thỏa thuận theo Ngày và Mã
-            df_pt_agg = self.df_pt.groupby(['symbol', 'time'])['match_value'].sum().reset_index()
-            df_pt_agg = df_pt_agg.rename(columns={'symbol': 'ticker', 'match_value': 'pt_val_total'})
-            df_pt_agg['pt_val_bn'] = df_pt_agg['pt_val_total'] / self.DIVISOR
-            # Merge vào Ma trận Lịch sử
-            cube = pd.merge(cube, df_pt_agg, on=['ticker', 'time'], how='left').fillna({'pt_val_bn': 0})
+        # 3. TÍNH TOÁN CÁC METRICS ĐỊNH LƯỢNG (Vectorized)
+        df['total_val_bn'] = (df['close'] * df['volume']) / self.DIVISOR
+
+        # --- KHỐI NGOẠI ---
+        # Ưu tiên lấy từ L2, nếu không có thì lấy Fallback
+        if 'fr_net_value_matched' in df.columns:
+            df['f_net_bn'] = df['fr_net_value_matched'] / self.DIVISOR
+            df['f_deal_bn'] = df.get('fr_net_value_deal', 0) / self.DIVISOR
         else:
-            cube['pt_val_bn'] = 0
+            df['f_net_bn'] = 0
+            df['f_deal_bn'] = 0
 
-        # LỌC KÉP: Dùng cả Công thức Heuristic VÀ Dữ liệu Sự thật
-        # Nếu Dòng tiền Thể chế > 80% Thanh khoản HOẶC Dòng tiền Thể chế trùng khớp với giá trị Thỏa thuận thật
-        cond_off_book_f = (cube['f_net_bn'].abs() > (cube['total_val_bn'] * 0.8)) | ((cube['pt_val_bn'] > 0) & (cube['f_net_bn'].abs() >= cube['pt_val_bn'] * 0.15))
-        cond_off_book_p = (cube['p_net_bn'].abs() > (cube['total_val_bn'] * 0.8)) | ((cube['pt_val_bn'] > 0) & (cube['p_net_bn'].abs() >= cube['pt_val_bn'] * 0.15))
-        
-        cube['is_pt_f'] = np.where(cond_on_book | cond_off_book_f, True, False)
-        cube['is_pt_p'] = np.where(cond_on_book | cond_off_book_p, True, False)
-        
-        # Làm sạch Dòng tiền
-        cube['f_net_adj'] = np.where(cube['is_pt_f'], 0, cube['f_net_bn'])
-        cube['p_net_adj'] = np.where(cube['is_pt_p'], 0, cube['p_net_bn'])
-        cube['sm_net_adj'] = cube['f_net_adj'] + cube['p_net_adj']
+        # --- TỰ DOANH ---
+        # Lấy trực tiếp từ file Prop Premium
+        if 'prop_net_val_matched' in df.columns:
+            df['p_net_bn'] = df['prop_net_val_matched'] / self.DIVISOR
+            df['p_deal_bn'] = df.get('prop_net_val_deal', 0) / self.DIVISOR
+        else:
+            df['p_net_bn'] = 0
+            df['p_deal_bn'] = 0
 
-        cube['shadow_flow_bn'] = (cube['total_val_bn'] - cube['f_net_adj'].abs() - cube['p_net_adj'].abs()).clip(lower=0)
+        # --- DÒNG TIỀN TỔNG HỢP & DẤU CHÂN ---
+        df['sm_net_adj'] = df['f_net_bn'] + df['p_net_bn']
+        df['deal_val_bn'] = df.get('deal_value', 0) / self.DIVISOR
 
-        # 6. GẮN MÁC RỔ & NGÀNH
-        cube['universe'] = cube['ticker'].map(lambda x: self.ticker_to_universe.get(x, 'HOSE'))
-        cube['sector'] = cube['ticker'].map(lambda x: self.ticker_to_sector.get(x, 'Unknown'))
+        # Shadow Flow: Dòng tiền ngầm của Cổ đông lớn/Lái nội = Tổng Thỏa Thuận - (Tây Deal + Tự Doanh Deal)
+        df['shadow_flow_bn'] = df['deal_val_bn'] - df['f_deal_bn'].abs() - df['p_deal_bn'].abs()
+        df.loc[df['shadow_flow_bn'] < 0, 'shadow_flow_bn'] = 0 # Fix sai số nhỏ
+
+        # Đánh cờ (Flags) báo hiệu Sang tay cho Sniper.py in ra báo cáo
+        df['is_pt_f'] = df['f_deal_bn'].abs() > 0
+        df['is_pt_p'] = df['p_deal_bn'].abs() > 0
+
+        # 4. GẮN MÁC RỔ & NGÀNH
+        df['universe'] = df['ticker'].map(lambda x: self.ticker_to_universe.get(x, 'HOSE'))
+        df['sector'] = df['ticker'].map(lambda x: self.ticker_to_sector.get(x, 'Unknown'))
 
         # Chuẩn hóa Date để dễ tra cứu sau này
-        cube['date'] = cube['time'].dt.date
+        df['date'] = df['time'].dt.date
 
-        self.history_cube = cube.sort_values(['ticker', 'time']).reset_index(drop=True)
+        self.history_cube = df.sort_values(['ticker', 'time']).reset_index(drop=True)
         print(f"[OK] Ma trận hoàn tất: {len(self.history_cube)} records, sẵn sàng cho Inference Engine.")
 
     def _get_intraday_t0_metrics(self, ticker):
@@ -363,10 +363,9 @@ class OmniFlowMatrix:
         end_price = df_t['close'].iloc[-1]
         price_change_pct = (end_price - start_price) / start_price * 100
 
-        # 2. TỔNG HỢP DÒNG TIỀN TRONG KỲ (SỬ DỤNG DỮ LIỆU ĐÃ LÀM SẠCH)
-        # Thay thế _bn bằng _adj để không bị nhiễu bởi các cục sang tay ngàn tỷ
+        # 2. TỔNG HỢP DÒNG TIỀN TRONG KỲ (SỬ DỤNG DỮ LIỆU KHỚP LỆNH L2)
         total_sm_net = df_t['sm_net_adj'].sum()
-        total_f_net = df_t['f_net_adj'].sum()
+        total_f_net = df_t['f_net_bn'].sum()
         total_shadow = df_t['shadow_flow_bn'].sum()
         total_val = df_t['total_val_bn'].sum()
 
@@ -583,7 +582,7 @@ if __name__ == "__main__":
 
     omni = OmniFlowMatrix(data_frames, lookback_days=30)
     
-    test_tickers = ['HPG', 'DIG', 'GMD'] # Thử với VN30, MidCap và SmallCap
+    test_tickers = ['GMD'] # Thử với VN30, MidCap và SmallCap
     
     for ticker in test_tickers:
         print("\n" + "="*95)

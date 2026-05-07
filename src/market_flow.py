@@ -8,7 +8,7 @@ class MarketFlowAnalyzer:
         # Đồng bộ Bộ lọc Hạn sử dụng với Smart Money
         self.MAX_DELAY_DAYS = 15 
 
-    def analyze_flow(self, ticker, df_p, df_f, df_pr, df_pt, df_l2=None, target_date_str=None, lookback_sessions=130):
+    def analyze_flow(self, ticker, df_p, df_pr, df_l2=None, target_date_str=None, lookback_sessions=130):
         result = {
             "ticker": ticker,
             "anchor_date": None,
@@ -59,70 +59,33 @@ class MarketFlowAnalyzer:
         start_date = df_flow['time'].iloc[0] 
 
         # =====================================================================
-        # 2. GHÉP NỐI DÒNG TIỀN (SMART MONEY)
+        # CHIẾT XUẤT DÒNG TIỀN "SẠCH" (MATCHED ONLY)
         # =====================================================================
-        if df_f is not None and not df_f.empty:
-            df_f_valid = df_f[(df_f['time'] >= start_date) & (df_f['time'] <= target_date)]
-            df_flow = pd.merge(df_flow, df_f_valid[['time', 'foreign_net_volume', 'foreign_net_value']].rename(columns={'foreign_net_volume': 'f_net'}), on='time', how='left')
-        else:
-            df_flow['f_net'] = 0
-            df_flow['foreign_net_value'] = 0
 
-        if df_pr is not None and not df_pr.empty:
-            df_pr_valid = df_pr[(df_pr['time'] >= start_date) & (df_pr['time'] <= target_date)]
-            df_flow = pd.merge(df_flow, df_pr_valid[['time', 'prop_net_volume', 'prop_net_value']].rename(columns={'prop_net_volume': 'p_net'}), on='time', how='left')
+        # 1. Dòng tiền Ngoại (Lấy từ L2)
+        if df_l2 is not None and not df_l2.empty:
+            l2_v = df_l2[(df_l2['time'] >= start_date) & (df_l2['time'] <= target_date)]
+            df_flow = pd.merge(df_flow, l2_v[['time', 'fr_buy_value_matched', 'fr_sell_value_matched', 
+                                             'fr_buy_volume_matched', 'fr_sell_volume_matched']], on='time', how='left')
+            df_flow['val_f'] = df_flow['fr_buy_value_matched'] - df_flow['fr_sell_value_matched']
+            df_flow['net_f'] = df_flow['fr_buy_volume_matched'] - df_flow['fr_sell_volume_matched']
         else:
-            df_flow['p_net'] = 0
-            df_flow['prop_net_value'] = 0
+            df_flow['val_f'] = 0; df_flow['net_f'] = 0
+
+        # 2. Dòng tiền Tự doanh (Lấy từ Prop Premium)
+        if df_pr is not None and not df_pr.empty:
+            pr_v = df_pr[(df_pr['time'] >= start_date) & (df_pr['time'] <= target_date)]
+            df_flow = pd.merge(df_flow, pr_v[['time', 'prop_net_val_matched', 'prop_net_vol_matched']], on='time', how='left')
+            df_flow['val_p'] = df_flow['prop_net_val_matched']
+            df_flow['net_p'] = df_flow['prop_net_vol_matched']
+        else:
+            df_flow['val_p'] = 0; df_flow['net_p'] = 0
 
         df_flow.fillna(0, inplace=True)
-        
-        # TÍNH TOÁN GIÁ TRỊ VÀ KHẤU TRỪ BẰNG LEVEL 2 (NẾU CÓ)
-        df_flow['val_f'] = df_flow.get('foreign_net_value', 0)
-        df_flow['val_p'] = df_flow.get('prop_net_value', 0)
-        df_flow['total_val'] = df_flow['close'] * df_flow['volume']
 
-        if df_l2 is not None and not df_l2.empty:
-            df_l2_valid = df_l2[(df_l2['time'] >= start_date) & (df_l2['time'] <= target_date)]
-            df_flow = pd.merge(df_flow, df_l2_valid[['time', 'fr_buy_value_matched', 'fr_sell_value_matched', 
-                                                     'fr_buy_volume_matched', 'fr_sell_volume_matched', 'deal_value']], 
-                               on='time', how='left').fillna(0)
-            
-            # Khối ngoại: Dùng 100% Khớp lệnh thực tế
-            df_flow['net_f_adj'] = df_flow['fr_buy_volume_matched'] - df_flow['fr_sell_volume_matched']
-            df_flow['val_f_adj'] = df_flow['fr_buy_value_matched'] - df_flow['fr_sell_value_matched']
-            
-            # Tự doanh: Khấu trừ qua Deal của Sở
-            cond_off_p = (df_flow['val_p'].abs() > df_flow['total_val'] * 0.8) | \
-                         ((df_flow['deal_value'] > 0) & (df_flow['val_p'].abs() >= df_flow['deal_value'] * 0.15))
-            df_flow['net_p_adj'] = np.where(cond_off_p, 0, df_flow['p_net'])
-            df_flow['val_p_adj'] = np.where(cond_off_p, 0, df_flow['val_p'])
-        else:
-            # Rơi về Thuật toán Phỏng đoán nếu mất kết nối L2
-            df_flow['vol_ma20'] = df_flow['volume'].rolling(20, min_periods=1).mean()
-            df_flow['price_spread_pct'] = (df_flow['high'] - df_flow['low']) / df_flow['low'] * 100
-            
-            if df_pt is not None and not df_pt.empty:
-                sym_col = 'symbol' if 'symbol' in df_pt.columns else ('ticker' if 'ticker' in df_pt.columns else None)
-                df_pt_ticker = df_pt[df_pt[sym_col] == ticker].copy() if sym_col else df_pt.copy()
-                df_pt_valid = df_pt_ticker[(df_pt_ticker['time'] >= start_date) & (df_pt_ticker['time'] <= target_date)].copy()
-                if not df_pt_valid.empty:
-                    df_pt_agg = df_pt_valid.groupby('time')['match_value'].sum().reset_index()
-                    df_flow = pd.merge(df_flow, df_pt_agg[['time', 'match_value']].rename(columns={'match_value': 'pt_val'}), on='time', how='left').fillna({'pt_val': 0})
-                else: df_flow['pt_val'] = 0
-            else: df_flow['pt_val'] = 0
-
-            cond_on = (df_flow['volume'] > df_flow['vol_ma20'] * 3) & (df_flow['price_spread_pct'] < 2.0)
-            cond_off_f = (df_flow['val_f'].abs() > (df_flow['total_val'] * 0.8)) | ((df_flow['pt_val'] > 0) & (df_flow['val_f'].abs() >= df_flow['pt_val'] * 0.15))
-            cond_off_p = (df_flow['val_p'].abs() > (df_flow['total_val'] * 0.8)) | ((df_flow['pt_val'] > 0) & (df_flow['val_p'].abs() >= df_flow['pt_val'] * 0.15))
-
-            df_flow['net_f_adj'] = np.where(cond_on | cond_off_f, 0, df_flow['f_net'])
-            df_flow['val_f_adj'] = np.where(cond_on | cond_off_f, 0, df_flow['val_f'])
-            df_flow['net_p_adj'] = np.where(cond_on | cond_off_p, 0, df_flow['p_net'])
-            df_flow['val_p_adj'] = np.where(cond_on | cond_off_p, 0, df_flow['val_p'])
-
-        df_flow['net_sm'] = df_flow['net_f_adj'] + df_flow['net_p_adj']
-        df_flow['val_sm'] = df_flow['val_f_adj'] + df_flow['val_p_adj']
+        # 3. Hợp nhất Dòng tiền Thông minh (SM)
+        df_flow['net_sm'] = df_flow['net_f'] + df_flow['net_p']
+        df_flow['val_sm'] = df_flow['val_f'] + df_flow['val_p']
         df_flow['cum_sm'] = df_flow['net_sm'].cumsum()
 
         # XÁC ĐỊNH ANCHOR DATE
