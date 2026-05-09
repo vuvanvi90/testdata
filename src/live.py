@@ -44,25 +44,26 @@ class LiveAssistant:
 
         # Nạp Tự doanh
         self.df_prop = self._load_parquet_safe(self.parquet_dir / 'macro/prop_flow.parquet')
-        self.prop_dict = self._load_prop_flow_dict(self.parquet_dir / 'macro/prop_flow.parquet')
-
-        # Nạp OHLCV
-        self.df_price = self._load_parquet_safe(self.parquet_dir / 'price/master_price.parquet')
-        self.price_dict = self._load_price_dict(self.parquet_dir / 'price/master_price.parquet')
+        self.prop_dict = {}
 
         # Nạp Price L2
         self.df_price_l2 = self._load_parquet_safe(self.parquet_dir / 'price/master_price_l2.parquet')
-        self.price_l2_dict = self._load_price_dict(self.parquet_dir / 'price/master_price_l2.parquet')
+        self.price_l2_dict = {}
 
         # Nạp Intraday
         self.df_intra = self._load_parquet_safe(self.parquet_dir / 'intraday/master_intraday.parquet')
 
         # Nạp Put-through
         self.df_pt = self._load_parquet_safe(self.parquet_dir / 'intraday/master_put_through.parquet')
-        self.pt_dict = self._load_pt_dict(self.parquet_dir / 'intraday/master_put_through.parquet')
 
         # Nạp danh sách mã theo ngành
         self.df_ind = self._load_parquet_safe(self.parquet_dir / 'macro/groups_by_industries.parquet')
+
+        # Nạp quỹ trái phiếu
+        self.df_funds = self._load_parquet_safe(self.parquet_dir / 'macro/bond_fund.parquet')
+
+        # Lọc rổ Cổ phiếu
+        self._filter_universe()
 
         # Nạp Tổng khối lượng lưu hành để đo lường Cung/Cầu
         self.out_shares_dict = {}
@@ -84,12 +85,6 @@ class LiveAssistant:
                 # Cập nhật (ghi đè) vào dictionary tổng
                 self.out_shares_dict.update(l2_shares_dict)
 
-        # Nạp quỹ trái phiếu
-        self.df_funds = self._load_parquet_safe(self.parquet_dir / 'macro/bond_fund.parquet')
-
-        # Lọc rổ Cổ phiếu
-        self._filter_universe()
-
         # Đánh giá Ma trận Thanh khoản Vĩ mô
         self.macro_buy_threshold_adj = 0
         self.macro_risk_factor = 1.0
@@ -109,10 +104,9 @@ class LiveAssistant:
         # Khởi tạo Động cơ Smart Money
         try:
             self.sm_engine = SmartMoneyEngine(
+                price_l2_dict=self.price_l2_dict,
                 prop_dict=self.prop_dict, 
                 out_shares_dict=self.out_shares_dict, 
-                price_dict=self.price_dict, 
-                price_l2_dict=self.price_l2_dict,
                 universe=self.universe
             )
         except Exception as e:
@@ -120,11 +114,11 @@ class LiveAssistant:
 
         # KHỞI ĐỘNG BỘ NÃO SĂN LÁI NỘI
         try:
-            self.shadow_profiler = ShadowProfiler(price_df=self.df_price, verbose=False)
+            self.shadow_profiler = ShadowProfiler(df_l2=self.df_price_l2, verbose=False)
             all_tickers = self.shadow_profiler.df_price['ticker'].unique().tolist()
             market_tickers = [t for t in all_tickers if len(str(t)) == 3]
             self.shadow_candidates = self.shadow_profiler._filter_shadow_candidates(market_tickers)
-            self.shadow_rules = self.shadow_profiler.build_criminal_profile(self.shadow_candidates, lookback_days=250)
+            self.shadow_rules = self.shadow_profiler.build_criminal_profile(self.shadow_candidates, lookback_days=130)
         except Exception as e:
             print(f"[!] Lỗi khởi động Shadow Profiler: {e}")
 
@@ -151,7 +145,6 @@ class LiveAssistant:
         # KHỞI ĐỘNG HỆ THỐNG X-QUANG ĐA CHIỀU (OMNI-MATRIX)
         try:
             data_frames = {
-                'price': self.df_price,
                 'prop': self.df_prop,
                 'comp': df_comp,
                 'idx': self._load_parquet_safe(self.parquet_dir / 'macro/index_components.parquet'),
@@ -174,7 +167,7 @@ class LiveAssistant:
 
     def _filter_universe(self):
         """Lọc Master Price theo Rổ cổ phiếu Chuẩn MECE (HOSE, VN30, VNMID, VNSMALL)"""
-        if self.df_price.empty: return
+        if self.df_price_l2.empty: return
 
         valid_tickers = []
         index_path = self.parquet_dir / 'macro/index_components.parquet' 
@@ -197,11 +190,11 @@ class LiveAssistant:
                 
         if valid_tickers:
             # 1. LỌC ĐỒNG LOẠT CÁC DATAFRAME (GIẢI PHÓNG RAM)
-            if not self.df_price.empty and 'ticker' in self.df_price.columns:
-                self.df_price = self.df_price[self.df_price['ticker'].isin(valid_tickers)]
-
             if not self.df_price_l2.empty and 'ticker' in self.df_price_l2.columns:
                 self.df_price_l2 = self.df_price_l2[self.df_price_l2['ticker'].isin(valid_tickers)]
+
+                if 'matched_volume' in self.df_price_l2.columns and 'volume' not in self.df_price_l2.columns:
+                    self.df_price_l2 = self.df_price_l2.rename(columns={'matched_volume': 'volume'})
                 
             if not self.df_intra.empty and 'ticker' in self.df_intra.columns:
                 self.df_intra = self.df_intra[self.df_intra['ticker'].isin(valid_tickers)]
@@ -224,15 +217,12 @@ class LiveAssistant:
 
             # 2. LỌC ĐỒNG LOẠT CÁC DICTIONARY BẰNG SET (TRA CỨU O(1))
             valid_set = set(valid_tickers) # Chuyển list thành set để tăng tốc độ lặp lên 100 lần
-            
-            if hasattr(self, 'price_dict'):
-                self.price_dict = {k: v for k, v in self.price_dict.items() if k in valid_set}
 
             if hasattr(self, 'price_l2_dict'):
-                self.price_l2_dict = {k: v for k, v in self.price_l2_dict.items() if k in valid_set}
+                self.price_l2_dict = self._filterd_dict(df=self.df_price_l2)
                 
             if hasattr(self, 'prop_dict'):
-                self.prop_dict = {k: v for k, v in self.prop_dict.items() if k in valid_set}
+                self.prop_dict = self._filterd_dict(df=self.df_prop)
                 
             if hasattr(self, 'out_shares_dict'):
                 self.out_shares_dict = {k: v for k, v in self.out_shares_dict.items() if k in valid_set}
@@ -248,7 +238,7 @@ class LiveAssistant:
             return None
 
         # 1. Lấy trục thời gian giao dịch thực tế từ Bảng giá
-        df_price = self.price_dict.get(ticker)
+        df_price = self.price_l2_dict.get(ticker)
         if df_price is None or df_price.empty:
             return None
 
@@ -319,45 +309,16 @@ class LiveAssistant:
                 return pd.DataFrame()
         return pd.DataFrame()
 
-    def _load_prop_flow_dict(self, path):
-        """Đọc file Parquet Tự doanh và băm thành Dictionary O(1) chỉ giữ 20 phiên"""
-        df = self._load_parquet_safe(path)
+    def _filterd_dict(self, df):
         if df.empty or 'ticker' not in df.columns:
             return {}
             
-        prop_dict = {}
+        d_dict = {}
         for ticker, group in df.groupby('ticker'):
-            # CHỈ GIỮ 130 DÒNG CUỐI (Tương đương 6 tháng giao dịch)
             group = group.sort_values('time').tail(130)
-            prop_dict[ticker] = group
+            d_dict[ticker] = group
             
-        return prop_dict
-
-    def _load_price_dict(self, path):
-        df = self._load_parquet_safe(path)
-        if df.empty or 'ticker' not in df.columns:
-            return {}
-            
-        price_dict = {}
-        for ticker, group in df.groupby('ticker'):
-            # CHỈ GIỮ 130 DÒNG CUỐI (Tương đương 6 tháng giao dịch)
-            group = group.sort_values('time').tail(130)
-            price_dict[ticker] = group
-            
-        return price_dict
-
-    def _load_pt_dict(self, path):
-        df = self._load_parquet_safe(path)
-        if df.empty or 'symbol' not in df.columns:
-            return {}
-            
-        pt_dict = {}
-        for ticker, group in df.groupby('symbol'):
-            # CHỈ GIỮ 130 DÒNG CUỐI (Tương đương 6 tháng giao dịch)
-            group = group.sort_values('time').tail(130)
-            pt_dict[ticker] = group
-            
-        return pt_dict
+        return d_dict
 
     def _evaluate_macro_environment(self):
         """Phân tích Ma trận Thanh khoản từ dữ liệu Vĩ mô (CPI & Tín dụng)"""
@@ -510,7 +471,7 @@ class LiveAssistant:
             print(" 💸 ĐÁNH GIÁ DÒNG TIỀN VÀ SÓNG NGÀNH - TRONG 5 PHIÊN GẦN NHẤT")
             print("="*65)
             
-            reporter = GroupCashFlowReporter(self.df_prop, self.df_ind, self.df_price, self.df_price_l2, verbose=False)
+            reporter = GroupCashFlowReporter(self.df_prop, self.df_ind, self.df_price_l2, verbose=False)
             sector_flow, flow_report_df = reporter.generate_report(timeframe='week')
             
             if sector_flow is not None and not sector_flow.empty:
@@ -1280,37 +1241,33 @@ class LiveAssistant:
         """
         Đo lường Tồn kho Lũy kế (6 tháng) và Tỷ lệ chi phối (Phiên hiện tại)
         """
-        df_price = self.price_dict.get(ticker)
-        df_f = self.foreign_dict.get(ticker)
+        df_p_l2 = self.price_l2_dict.get(ticker)
         df_p = self.prop_dict.get(ticker)
 
-        if df_price is None or df_price.empty:
+        if df_p_l2 is None or df_p_l2.empty:
             return 0, 0, 0 # cum_inventory, dominance_pct, shadow_flow
 
         # Lấy khung thời gian 6 tháng gần nhất
-        df_price_recent = df_price.tail(lookback_days).copy()
+        df_price_v = df_p_l2[['time', 'close', 'volume', 'fr_net_value_total']].tail(lookback_days).copy()
         
         DIVISOR = 1_000_000_000
-        df_price_recent['market_val_bn'] = (df_price_recent['close'] * df_price_recent['volume']) / DIVISOR
+        df_price_v['market_val_bn'] = (df_price_v['close'] * df_price_v['volume']) / DIVISOR
 
-        # Merge dữ liệu Dòng tiền
-        df_merged = pd.merge(df_price_recent[['time', 'market_val_bn']], 
-                             df_f[['time', 'foreign_net_value', 'foreign_buy_value', 'foreign_sell_value']] if df_f is not None else pd.DataFrame(columns=['time', 'foreign_net_value', 'foreign_buy_value', 'foreign_sell_value']), 
-                             on='time', how='left')
-        df_merged = pd.merge(df_merged, 
-                             df_p[['time', 'prop_net_value', 'prop_buy_value', 'prop_sell_value']] if df_p is not None else pd.DataFrame(columns=['time', 'prop_net_value', 'prop_buy_value', 'prop_sell_value']), 
+        # Merge dữ liệu Dòng tiền Ngoại + Nội
+        df_merged = pd.merge(df_price_v, 
+                             df_p[['time', 'prop_net_value']] if df_p is not None else pd.DataFrame(columns=['time', 'prop_net_value']), 
                              on='time', how='left').fillna(0)
 
         # 1. Tính Tồn kho lũy kế (Cumulative Inventory)
-        df_merged['total_net_bn'] = (df_merged['foreign_net_value'] + df_merged['prop_net_value']) / DIVISOR
+        df_merged['total_net_bn'] = (df_merged['fr_net_value_total'] + df_merged['prop_net_value']) / DIVISOR
         cum_inventory = df_merged['total_net_bn'].sum() # Tổng gom/xả trong 6 tháng qua
 
         # 2. Tính Tỷ lệ chi phối phiên cuối cùng (Signal Day Dominance)
         last_row = df_merged.iloc[-1]
         mkt_val = last_row['market_val_bn']
         
-        f_gross = (last_row['foreign_buy_value'] + last_row['foreign_sell_value']) / DIVISOR
-        p_gross = (last_row['prop_buy_value'] + last_row['prop_sell_value']) / DIVISOR
+        f_gross = last_row['fr_net_value_total'] / DIVISOR
+        p_gross = last_row['prop_net_value'] / DIVISOR
         sm_participation = (f_gross + p_gross) / 2
         
         dominance_pct = (sm_participation / mkt_val) * 100 if mkt_val > 0 else 0
@@ -1408,7 +1365,7 @@ class LiveAssistant:
         # 0. Gọi bộ lọc thị trường chung TRƯỚC TIÊN
         is_uptrend = self._check_market_regime()
 
-        temp_price_df = self.update_and_prepare_data(self.df_price, self.df_intra)
+        temp_price_df = self.update_and_prepare_data(self.df_price_l2, self.df_intra)
         if not temp_price_df.empty:
             df_full_price = temp_price_df
         else:
@@ -1481,10 +1438,9 @@ class LiveAssistant:
             fund_info_dict[ticker] = self._get_fundamental_data(ticker)
             sm_info_dict[ticker] = self.sm_engine.analyze_ticker(ticker, board_info_dict[ticker])
             # Quét X-Quang Tồn kho Cá mập
-            df_p_ticker = df_full_price[df_full_price['ticker'] == ticker]
             df_pr_ticker = self.prop_dict.get(ticker)
             df_l2_ticker = self.price_l2_dict.get(ticker)
-            mf_info_dict[ticker] = mf_analyzer.analyze_flow(ticker, df_p_ticker, df_pr_ticker, df_l2=df_l2_ticker)
+            mf_info_dict[ticker] = mf_analyzer.analyze_flow(ticker, df_pr_ticker, df_l2=df_l2_ticker)
 
         # =====================================================================
         # 📡 EARLY RADAR (ĐƯA VÀO TẦM NGẮM CÁC KÈO TÂY CHỚM GOM)

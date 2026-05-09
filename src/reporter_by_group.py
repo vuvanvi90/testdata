@@ -3,7 +3,7 @@ import os
 from datetime import datetime
 
 class GroupCashFlowReporter:
-    def __init__(self, prop_df, industry_df, price_df, price_l2_df, verbose=True):
+    def __init__(self, prop_df, industry_df, price_l2_df, verbose=True):
         """
         Khởi tạo Reporter với dữ liệu Dòng tiền và Danh mục Ngành (ICB)
         """
@@ -11,12 +11,11 @@ class GroupCashFlowReporter:
             print(f"[{datetime.now().strftime('%H:%M:%S')}] Đang nạp dữ liệu Dòng tiền và Sóng Ngành...")
         self.df_prop = prop_df
         self.df_ind = industry_df
-        self.df_price = price_df
         self.df_price_l2 = price_l2_df
         self.verbose = verbose
         
         # Chuẩn hóa thời gian
-        for df in [self.df_prop, self.df_price, self.df_price_l2]:
+        for df in [self.df_price_l2, self.df_prop]:
             if df is not None and not df.empty and 'time' in df.columns:
                 df['time'] = pd.to_datetime(df['time']).dt.normalize()
 
@@ -31,12 +30,9 @@ class GroupCashFlowReporter:
         elif timeframe == 'month': days, title_prefix = 20, "BÁO CÁO DÒNG TIỀN: 1 THÁNG (20 PHIÊN)"
         else: days, title_prefix = 5, "BÁO CÁO DÒNG TIỀN"
 
-        # Ưu tiên tuyệt đối dùng df_price làm Trục thời gian
-        if self.df_price is not None and not self.df_price.empty:
-            trading_days = sorted(self.df_price['time'].dropna().unique())
-        elif self.df_price_l2 is not None and not self.df_price_l2.empty:
+        # Ưu tiên tuyệt đối dùng df_price_l2 làm Trục thời gian
+        if self.df_price_l2 is not None and not self.df_price_l2.empty:
             trading_days = sorted(self.df_price_l2['time'].dropna().unique())
-            if self.verbose: print("   [⚠️] Cảnh báo: Đang dùng Lịch Price L2 thay cho Lịch Bảng Giá.")
         else:
             trading_days = sorted(self.df_prop['time'].dropna().unique())
             if self.verbose: print("   [⚠️] Cảnh báo: Đang dùng Lịch Tự Doanh thay cho Lịch Bảng Giá.")
@@ -60,7 +56,7 @@ class GroupCashFlowReporter:
         df_f_agg = pd.DataFrame()
         if self.df_price_l2 is not None and not self.df_price_l2.empty:
             df_f = self.df_price_l2[(self.df_price_l2['time'] >= start_date) & (self.df_price_l2['time'] <= latest_date)]
-            df_f['foreign_net_value'] = df_f['fr_buy_value_matched'] - df_f['fr_sell_value_matched']
+            df_f['foreign_net_value'] = df_f['fr_net_value_matched']
             df_f_agg = df_f.groupby('ticker')['foreign_net_value'].sum().reset_index()
         
         df_pr_agg = pd.DataFrame()

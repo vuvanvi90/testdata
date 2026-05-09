@@ -50,7 +50,6 @@ class TargetSniper:
     def _load_and_filter_data(self):
         """Chỉ nạp và giữ lại dữ liệu của ĐÚNG MÃ CẦN SOI để chạy với tốc độ ánh sáng"""
         # Đọc Master Data
-        df_price_raw = self._load_parquet_safe(self.data_dir / 'price/master_price.parquet')
         df_price_l2_raw = self._load_parquet_safe(self.data_dir / 'price/master_price_l2.parquet')
         df_prop_raw = self._load_parquet_safe(self.data_dir / 'macro/prop_flow.parquet')
         df_intra_raw = self._load_parquet_safe(self.data_dir / 'intraday/master_intraday.parquet')
@@ -61,8 +60,13 @@ class TargetSniper:
         self.df_idx = self._load_parquet_safe(self.data_dir / 'macro/index_components.parquet')
 
         # Lọc siêu tốc (Chỉ lấy ticker)
-        self.df_price = df_price_raw[df_price_raw['ticker'] == self.ticker].copy() if not df_price_raw.empty else pd.DataFrame()
-        self.df_price_l2 = df_price_l2_raw[df_price_l2_raw['ticker'] == self.ticker].copy() if not df_price_l2_raw.empty else pd.DataFrame()
+        if not df_price_l2_raw.empty:
+            self.df_price_l2 = df_price_l2_raw[df_price_l2_raw['ticker'] == self.ticker].copy() # đã clone
+            if not self.df_price_l2.empty and 'matched_volume' in self.df_price_l2.columns:
+                self.df_price_l2 = self.df_price_l2.rename(columns={'matched_volume': 'volume'})
+        else:
+            self.df_price_l2 = pd.DataFrame()
+
         self.df_prop = df_prop_raw[df_prop_raw['ticker'] == self.ticker].copy() if not df_prop_raw.empty else pd.DataFrame()
         self.df_intra = df_intra_raw[df_intra_raw['ticker'] == self.ticker].copy() if not df_intra_raw.empty else pd.DataFrame()
         
@@ -79,7 +83,6 @@ class TargetSniper:
             self.df_pt = pd.DataFrame()
 
         # Build Dict (Để tương thích với các Engine)
-        self.price_dict = {self.ticker: self.df_price}
         self.price_l2_dict = {self.ticker: self.df_price_l2}
         self.prop_dict = {self.ticker: self.df_prop}
 
@@ -109,24 +112,25 @@ class TargetSniper:
     def _init_engines(self):
         """Khởi động toàn bộ vũ khí hạng nặng"""
         self.sm_engine = SmartMoneyEngine(
+            price_l2_dict=self.price_l2_dict, 
             prop_dict=self.prop_dict, 
-            out_shares_dict=self.out_shares_dict, price_dict=self.price_dict, 
-            price_l2_dict=self.price_l2_dict, universe=self.universe
+            out_shares_dict=self.out_shares_dict, 
+            universe=self.universe
         )
         self.mf_analyzer = MarketFlowAnalyzer()
-        self.shadow_profiler = ShadowProfiler(price_df=self.df_price, verbose=False)
+        self.shadow_profiler = ShadowProfiler(df_l2=self.df_price_l2, verbose=False)
         
         # Băm OmniMatrix
         data_frames = {
-            'price': self.df_price, 'prop': self.df_prop,
+            'price_l2': self.df_price_l2, 'prop': self.df_prop,
             'comp': self.df_comp, 'idx': self.df_idx, 'board': self.df_board, 
-            'intra': self.df_intra, 'put_through': self.df_pt, 'price_l2': self.df_price_l2
+            'intra': self.df_intra, 'put_through': self.df_pt
         }
         self.omni_matrix = OmniFlowMatrix(data_frames, lookback_days=30)
 
     def _prepare_latest_ohlcv(self):
         """Gộp nến Intraday vào EOD để ra nến cập nhật nhất"""
-        df_p = self.df_price.copy()
+        df_p = self.df_price_l2[['time', 'open', 'high', 'low', 'close', 'volume', 'ticker']].copy()
         if df_p.empty: return df_p
         
         df_p['time'] = pd.to_datetime(df_p['time']).dt.normalize()
@@ -342,7 +346,7 @@ class TargetSniper:
             }
 
         sm_result = self.sm_engine.analyze_ticker(self.ticker, board_info)
-        mf_result = self.mf_analyzer.analyze_flow(self.ticker, df_full, self.df_prop, df_l2=self.df_price_l2)
+        mf_result = self.mf_analyzer.analyze_flow(self.ticker, self.df_prop, df_l2=self.df_price_l2)
         sm_vwap = mf_result.get('sm_vwap', 0)
         dtl = mf_result.get('dtl_days', 0)
 
@@ -444,7 +448,7 @@ class TargetSniper:
 
         if not self.df_pt.empty:
             # XÁC ĐỊNH CHUẨN PHIÊN GIAO DỊCH T-5 ĐẾN T0
-            past_sessions = sorted(self.df_price['time'].unique())
+            past_sessions = sorted(self.df_price_l2['time'].unique())
             if len(past_sessions) >= 5:
                 if past_sessions[-1].date() == self.omni_matrix.t0_date:
                     trading_days = past_sessions[-6:] 
@@ -510,7 +514,7 @@ class TargetSniper:
                 whale_node = df_pt_recent.groupby('price')['volume'].sum().idxmax()
                 print(f"    - Cụm Giá Tập Trung (Node)     : {whale_node:,.0f} đ (Vùng Nam châm hút giá lớn nhất 30D)")
 
-                avg_vol_20d = self.df_price['volume'].tail(20).mean() if not self.df_price.empty else 0
+                avg_vol_20d = self.df_price_l2['volume'].tail(20).mean() if not self.df_price_l2.empty else 0
                 t0_pt = df_pt_recent[df_pt_recent['time'].dt.date == self.omni_matrix.t0_date].copy()
                 pt_vol_today = t0_pt['volume'].sum()
                 
@@ -534,8 +538,8 @@ class TargetSniper:
                 else:
                     print("    - Chu kỳ Nhịp đập (Pulse)      : Không có thỏa thuận Khủng (>10 Tỷ) nào")
 
-                if not t0_pt.empty and not self.df_price.empty:
-                    t0_price_row = self.df_price.iloc[-1] 
+                if not t0_pt.empty and not self.df_price_l2.empty:
+                    t0_price_row = self.df_price_l2.iloc[-1] 
                     price_change_today = (t0_price_row['close'] - t0_price_row['open']) / t0_price_row['open'] * 100 if t0_price_row['open'] > 0 else 0
                     
                     t0_pt['weighted_change'] = t0_pt['change_percent'] * t0_pt['match_value']

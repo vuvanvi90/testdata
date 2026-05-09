@@ -4,13 +4,23 @@ import os
 from datetime import datetime
 
 class ShadowProfiler:
-    def __init__(self, price_df, verbose=True):
+    def __init__(self, df_l2, verbose=True):
         """Khởi tạo Hệ thống Nhận diện Đội lái (Shadow Profiler)"""
         if verbose:
             print(f"[{datetime.now().strftime('%H:%M:%S')}] Khởi động Radar Săn Lái Nội (Shadow Profiler)...")
-        self.df_price = price_df
+
+        # clone để ko thay đổi dữ liệu gốc trên RAM
+        if df_l2 is not None and not df_l2.empty:
+            filterd_cols = ['time', 'open', 'high', 'low', 'close', 'volume', 'matched_volume', 'ticker']
+            self.df_price = df_l2[[c for c in filterd_cols if c in df_l2.columns]].copy()
+        else: 
+            self.df_price = pd.DataFrame(columns=['time', 'open', 'high', 'low', 'close', 'volume', 'ticker'])
         self.verbose = verbose
-        
+
+        if not self.df_price.empty and 'matched_volume' in self.df_price.columns and 'volume' in self.df_price.columns:
+            self.df_price = self.df_price.drop(columns=['volume'])
+            self.df_price = self.df_price.rename(columns={'matched_volume': 'volume'})
+
         if not self.df_price.empty and 'time' in self.df_price.columns:
             self.df_price['time'] = pd.to_datetime(self.df_price['time']).dt.normalize()
             self.df_price = self.df_price.sort_values(by=['ticker', 'time'])
@@ -42,7 +52,7 @@ class ShadowProfiler:
         valid_candidates = []
         
         for ticker in tickers:
-            df_t = self.df_price[self.df_price['ticker'] == ticker].tail(250).copy() # Quét 1 năm
+            df_t = self.df_price[self.df_price['ticker'] == ticker].tail(130).copy() # Quét nửa năm
             if len(df_t) < 100: continue
             
             # 1. TIÊU CHÍ VỐN HÓA & THANH KHOẢN (Loại bỏ hàng quá to, khó lái)
@@ -52,8 +62,7 @@ class ShadowProfiler:
             liquidity_bn = (avg_vol * avg_price) / 1_000_000_000
             
             # Lái nội thường không thích/không đủ tiền lái mã có thanh khoản > 150 tỷ/phiên hoặc giá > 60k
-            if liquidity_bn > 150.0 or avg_price > 60000 or liquidity_bn < 1.0:
-            # if liquidity_bn > 150.0 or avg_price > 60000:
+            if liquidity_bn > 150.0 or avg_price > 60000 or liquidity_bn < 15.0:
                 continue
                 
             # 2. TIÊU CHÍ 'TIỀN ÁN BƠM XẢ' (Historical Pump Factor)
@@ -71,7 +80,7 @@ class ShadowProfiler:
             print(f"   => [OK] Đã tự động chắt lọc được {len(valid_candidates)} mã thuần Đầu Cơ (Penny/Midcap).")
         return valid_candidates
 
-    def build_criminal_profile(self, tickers, lookback_days=250):
+    def build_criminal_profile(self, tickers, lookback_days=130):
         """
         Pha 1: "Học" hành vi của Đội lái trong quá khứ.
         Đã đồng bộ thuật toán Chống nhiễu (Robust Statistics) và Time-in-Zone.

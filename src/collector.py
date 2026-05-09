@@ -688,13 +688,14 @@ class VNStockDataPipeline:
                 df_new['time'] = pd.to_datetime(df_new['time']).dt.normalize()
                 
         # Lọc rác, chỉ giữ lại các cột cốt lõi phục vụ tính toán
-        cols_to_keep = ['time', 'ticker', 
-                        'prop_buy_vol_matched', 'prop_buy_val_matched', 'prop_sell_vol_matched', 'prop_sell_val_matched', 
-                        'prop_net_vol_matched', 'prop_net_val_matched',
-                        'prop_buy_vol_deal', 'prop_buy_val_deal', 'prop_sell_vol_deal', 'prop_sell_val_deal', 
-                        'prop_net_vol_deal', 'prop_net_val_deal',
-                        'prop_net_volume', 'prop_net_value']
-        df_new = df_new[[c for c in cols_to_keep if c in df_new.columns]]
+        # bỏ code này => lấy hết kết quả trả về để sử dụng
+        # cols_to_keep = ['time', 'ticker', 
+        #                 'prop_buy_vol_matched', 'prop_buy_val_matched', 'prop_sell_vol_matched', 'prop_sell_val_matched', 
+        #                 'prop_net_vol_matched', 'prop_net_val_matched',
+        #                 'prop_buy_vol_deal', 'prop_buy_val_deal', 'prop_sell_vol_deal', 'prop_sell_val_deal', 
+        #                 'prop_net_vol_deal', 'prop_net_val_deal',
+        #                 'prop_net_volume', 'prop_net_value']
+        # df_new = df_new[[c for c in cols_to_keep if c in df_new.columns]]
         df_new.fillna(0, inplace=True)
         
         # 4. UPSERT VÀ KHỬ TRÙNG LẶP
@@ -868,10 +869,12 @@ class VNStockDataPipeline:
 
                 # LỌC LẤY NHỮNG TRƯỜNG TINH HOA NHẤT (Lọc Rác)
                 core_cols = [
-                    'trading_date', 
-                    # Basic EOD & Động lượng hấp thụ
-                    'close_price_adjusted', 'total_net_trade_volume', 
-                    'matched_volume', 'matched_value', 
+                    'trading_date', 'open', 'high', 'low', 'close',
+                    # BỘ TỨ OHLC ĐÃ ĐIỀU CHỈNH CỔ TỨC (Thay thế master_price)
+                    'open_price_adjusted', 'highest_price_adjusted', 
+                    'lowest_price_adjusted', 'close_price_adjusted',
+                    # KHỐI LƯỢNG KHỚP LỆNH CHUẨN
+                    'total_net_trade_volume', 'matched_volume', 'matched_value', 
                     # Quy mô lệnh (Whale Ratio)
                     'average_buy_trade_volume', 'average_sell_trade_volume',
                     # Sổ lệnh ảo (Spoofing Ratio)
@@ -895,14 +898,16 @@ class VNStockDataPipeline:
                 new_df = self._validate_schema(new_df, core_cols, item_name=f"OHLCV L2 - {ticker}")
                 if new_df is None or new_df.empty: return None
                 
-                # Giữ lại các cột cốt lõi
-                new_df = new_df[[c for c in core_cols if c in new_df.columns]].copy()
+                # Xóa default open/high/low/close
+                new_df = new_df.drop(columns=['open', 'high', 'low', 'close'])
                 
-                # CHUẨN HÓA CỘT THỜI GIAN
+                # CHUẨN HÓA CỘT THỜI GIAN và dùng adjust cột thay cho default open/high/low/close
                 new_df = new_df.rename(columns={
                     'trading_date': 'time',
-                    'matched_volume': 'total_matched_vol',
-                    'matched_value': 'total_matched_val'
+                    'open_price_adjusted': 'open', 
+                    'highest_price_adjusted': 'high', 
+                    'lowest_price_adjusted': 'low', 
+                    'close_price_adjusted': 'close'
                 })
                 new_df['ticker'] = ticker
                 

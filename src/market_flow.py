@@ -8,7 +8,7 @@ class MarketFlowAnalyzer:
         # Đồng bộ Bộ lọc Hạn sử dụng với Smart Money
         self.MAX_DELAY_DAYS = 15 
 
-    def analyze_flow(self, ticker, df_p, df_pr, df_l2=None, target_date_str=None, lookback_sessions=130):
+    def analyze_flow(self, ticker, df_pr, df_l2=None, target_date_str=None, lookback_sessions=130):
         result = {
             "ticker": ticker,
             "anchor_date": None,
@@ -21,7 +21,7 @@ class MarketFlowAnalyzer:
             "correlation": 0.0
         }
 
-        if df_p is None or df_p.empty: return result
+        if df_l2 is None or df_l2.empty: return result
 
         # ÉP TARGET_DATE VỀ NAIVE (NẾU CÓ TIMEZONE)
         target_date = pd.to_datetime(target_date_str) if target_date_str else pd.Timestamp.now().normalize()
@@ -31,29 +31,37 @@ class MarketFlowAnalyzer:
         # =====================================================================
         # 1. TIỀN XỬ LÝ LƯỚI LỌC THỜI GIAN CHUẨN (TRUE-TIME WINDOW)
         # =====================================================================
-        df_p = df_p.copy()
         
-        # ÉP df_p VỀ NAIVE (BẢO HIỂM 2 LỚP)
-        if getattr(df_p['time'].dt, 'tz', None) is not None:
-            df_p['time'] = df_p['time'].dt.tz_localize(None)
+        # Lọc lấy các field cần thiết và clone data
+        filterd_cols = [
+            'time', 'ticker', 'close', 'volume', 'matched_volume',
+            'fr_net_value_matched', 'fr_net_volume_matched'
+        ]
+        df_l2_v = df_l2[[c for c in filterd_cols if c in df_l2.columns]].copy()
+        if 'matched_volume' in df_l2_v.columns and 'volume' not in df_l2_v.columns:
+            df_l2_v = df_l2_v.rename(columns={'matched_volume': 'volume'})
+        
+        # ÉP df_l2_v VỀ NAIVE (BẢO HIỂM 2 LỚP)
+        if getattr(df_l2_v['time'].dt, 'tz', None) is not None:
+            df_l2_v['time'] = df_l2_v['time'].dt.tz_localize(None)
 
-        df_p = df_p[df_p['time'] <= target_date].sort_values('time')
-        if df_p.empty: return result
+        df_l2_v = df_l2_v[df_l2_v['time'] <= target_date].sort_values('time')
+        if df_l2_v.empty: return result
 
         # CHẶN ĐỨNG LỖI "ZOMBIE STOCK"
-        last_price_date = df_p['time'].iloc[-1]
+        last_price_date = df_l2_v['time'].iloc[-1]
         if (target_date - last_price_date).days > self.MAX_DELAY_DAYS:
             result["status"] = "OUTDATED_DATA"
             return result
 
         # CẮT ĐÚNG N PHIÊN GIAO DỊCH THỰC TẾ (Mặc định 130 phiên ~ 6 tháng)
-        df_p = df_p.tail(lookback_sessions).copy()
-        if len(df_p) < 20:
+        df_l2_v = df_l2_v.tail(lookback_sessions).copy()
+        if len(df_l2_v) < 20:
             result["status"] = "INSUFFICIENT_DATA"
             return result
-            
-        result["adv_20"] = df_p.tail(20)['volume'].mean()
-        df_flow = df_p[['time', 'open', 'high', 'low', 'close', 'volume']].copy()
+
+        result["adv_20"] = df_l2_v.tail(20)['volume'].mean()
+        df_flow = df_l2_v[['time', 'close', 'volume', 'fr_net_value_matched', 'fr_net_volume_matched']].copy()
         
         # Lấy ngày bắt đầu chính xác từ tập df_p đã cắt để khớp với Dòng tiền
         start_date = df_flow['time'].iloc[0] 
@@ -62,15 +70,9 @@ class MarketFlowAnalyzer:
         # CHIẾT XUẤT DÒNG TIỀN "SẠCH" (MATCHED ONLY)
         # =====================================================================
 
-        # 1. Dòng tiền Ngoại (Lấy từ L2)
-        if df_l2 is not None and not df_l2.empty:
-            l2_v = df_l2[(df_l2['time'] >= start_date) & (df_l2['time'] <= target_date)]
-            df_flow = pd.merge(df_flow, l2_v[['time', 'fr_buy_value_matched', 'fr_sell_value_matched', 
-                                             'fr_buy_volume_matched', 'fr_sell_volume_matched']], on='time', how='left')
-            df_flow['val_f'] = df_flow['fr_buy_value_matched'] - df_flow['fr_sell_value_matched']
-            df_flow['net_f'] = df_flow['fr_buy_volume_matched'] - df_flow['fr_sell_volume_matched']
-        else:
-            df_flow['val_f'] = 0; df_flow['net_f'] = 0
+        # 1. Dòng tiền Ngoại
+        df_flow['val_f'] = df_flow['fr_net_value_matched']
+        df_flow['net_f'] = df_flow['fr_net_volume_matched']
 
         # 2. Dòng tiền Tự doanh (Lấy từ Prop Premium)
         if df_pr is not None and not df_pr.empty:
@@ -153,3 +155,28 @@ class MarketFlowAnalyzer:
 
         result["status"] = "SUCCESS"
         return result
+
+    def format_report(self, res):
+        """In báo cáo đẹp mắt ra Terminal"""
+        if res['status'] != 'SUCCESS':
+            return f"[-] Không đủ dữ liệu phân tích cho {res['ticker']}."
+            
+        rpt = f"\n🔍 HỒ SƠ TẠO LẬP: {res['ticker']} (Tính đến {res['target_date']})\n"
+        rpt += "-"*50 + "\n"
+        rpt += f"📍 Ngày Khởi Thủy (Bắt đầu gom) : {res['anchor_date']}\n"
+        rpt += f"📦 Tồn kho Cá Mập (Inventory)   : {res['inventory']:,.0f} cổ phiếu\n"
+        rpt += f"💰 Giá vốn Trung bình (VWAP)    : {res['sm_vwap']:,.0f} đ\n"
+        rpt += f"🌊 Thanh khoản TT (ADV 20)      : {res['adv_20']:,.0f} cổ/phiên\n"
+        
+        # Đánh giá rủi ro
+        dtl = res['dtl_days']
+        if dtl > 5:
+            rpt += f"⏳ Sức ép Hấp thụ (DTL)         : {dtl:.1f} ngày 🟢 (An Toàn - Cá mập bị nhốt)\n"
+        elif dtl < 1 and res['inventory'] > 0:
+            rpt += f"⏳ Sức ép Hấp thụ (DTL)         : {dtl:.1f} ngày 🔴 (Nguy Hiểm - Xả cái một)\n"
+        else:
+            rpt += f"⏳ Sức ép Hấp thụ (DTL)         : {dtl:.1f} ngày 🟡 (Trung lập)\n"
+            
+        rpt += f"⚡ Phân kỳ Dòng tiền            : {res['divergence']}\n"
+        rpt += "-"*50
+        return rpt

@@ -14,10 +14,13 @@ class DarkPoolRadar:
         
         self.df_intra = self._load_parquet_safe(self.data_dir / 'intraday/master_intraday.parquet')
         self.df_pt = self._load_parquet_safe(self.data_dir / 'intraday/master_put_through.parquet')
-        self.df_price = self._load_parquet_safe(self.data_dir / 'price/master_price.parquet')
         self.df_price_l2 = self._load_parquet_safe(self.data_dir / 'price/master_price_l2.parquet')
         self.df_idx = self._load_parquet_safe(self.data_dir / 'macro/index_components.parquet')
         
+        if not self.df_price_l2.empty:
+            if 'matched_volume' in self.df_price_l2.columns and 'volume' not in self.df_price_l2.columns:
+                self.df_price_l2 = self.df_price_l2.rename(columns={'matched_volume': 'volume'})
+
         self.t0_date = self._identify_system_t0()
 
         # Biến lưu trữ kết quả
@@ -60,19 +63,19 @@ class DarkPoolRadar:
             latest_date = self.df_pt['time'].dt.date.max()
             
         # 2. Backup: Lấy từ dữ liệu Giá EOD
-        if not latest_date and not getattr(self, 'df_price', pd.DataFrame()).empty and 'time' in self.df_price.columns:
-            latest_date = self.df_price['time'].dt.date.max()
+        if not latest_date and not getattr(self, 'df_price', pd.DataFrame()).empty and 'time' in self.df_price_l2.columns:
+            latest_date = self.df_price_l2['time'].dt.date.max()
             
         return latest_date if latest_date else datetime.now().date()
 
     def _prepare_data(self):
         """Xử lý dữ liệu nền tảng"""
-        if self.df_pt.empty or self.df_price.empty or self.df_idx.empty:
+        if self.df_pt.empty or self.df_price_l2.empty or self.df_idx.empty:
             return False
 
         # 1. Xác định 5 phiên giao dịch gần nhất từ Bảng giá
-        self.df_price['time'] = self.df_price['time'].dt.normalize()
-        trading_days = sorted(self.df_price['time'].dt.date.unique())
+        self.df_price_l2['time'] = self.df_price_l2['time'].dt.normalize()
+        trading_days = sorted(self.df_price_l2['time'].dt.date.unique())
         # Chỉ lấy những ngày quá khứ <= T0
         valid_days = [d for d in trading_days if d <= self.t0_date]
         self.last_5_days = valid_days[-5:] if len(valid_days) >= 5 else valid_days
@@ -92,13 +95,13 @@ class DarkPoolRadar:
         # 3. Tính Khối lượng Khớp lệnh Trung bình 20 phiên (MA20 Volume) cho TẤT CẢ các mã
         # Lấy 20 ngày gần nhất
         recent_20_days = valid_days[-20:] if len(valid_days) >= 20 else valid_days
-        df_price_20d = self.df_price[self.df_price['time'].dt.date.isin(recent_20_days)]
+        df_price_20d = self.df_price_l2[self.df_price_l2['time'].dt.date.isin(recent_20_days)]
         
         self.vol_ma20_dict = df_price_20d.groupby('ticker')['volume'].mean().to_dict()
         
         # Lưu lại Giá Đóng cửa cuối cùng để so sánh
         last_day = valid_days[-1] if valid_days else None
-        self.last_price_dict = self.df_price[self.df_price['time'].dt.date == last_day].set_index('ticker')['close'].to_dict()
+        self.last_price_dict = self.df_price_l2[self.df_price_l2['time'].dt.date == last_day].set_index('ticker')['close'].to_dict()
 
         return True
 

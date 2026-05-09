@@ -6,11 +6,10 @@ class SmartMoneyEngine:
     Động cơ Phân tích Dòng tiền Thông minh (Smart Money) Đa Khung Thời Gian
     KIẾN TRÚC LEVEL-2: Ưu tiên dữ liệu Khớp lệnh tuyệt đối.
     """
-    def __init__(self, prop_dict, out_shares_dict, price_dict=None, price_l2_dict=None, universe="VN30"):
+    def __init__(self, price_l2_dict, prop_dict, out_shares_dict, universe="VN30"):
+        self.price_l2_dict = price_l2_dict
         self.prop_dict = prop_dict
         self.out_shares_dict = out_shares_dict
-        self.price_dict = price_dict
-        self.price_l2_dict = price_l2_dict
         self.universe = universe
         
         self.MAX_DELAY_DAYS = 15
@@ -56,8 +55,7 @@ class SmartMoneyEngine:
             "last_trade_date": None   
         }
 
-        df_p = self.prop_dict.get(ticker)
-        df_price = self.price_dict.get(ticker) if self.price_dict else None
+        df_p = self.prop_dict.get(ticker) if self.prop_dict else None
         df_l2 = self.price_l2_dict.get(ticker) if self.price_l2_dict else None
 
         shares_out = self.out_shares_dict.get(ticker, 0)
@@ -66,27 +64,34 @@ class SmartMoneyEngine:
         df_l2_v = df_l2[df_l2['time'] <= current_date].copy() if (df_l2 is not None and not df_l2.empty) else pd.DataFrame()
         df_p_v = df_p[df_p['time'] <= current_date].copy() if (df_p is not None and not df_p.empty) else pd.DataFrame()
 
+        # Lọc lấy các field cần thiết
+        if df_l2_v is not None and not df_l2_v.empty:
+            df_l2_v = df_l2_v[['time', 'fr_net_value_matched', 'fr_net_volume_matched', 'close', 'volume']]
+            df_l2_v = df_l2_v.rename(columns={
+                'fr_net_value_matched': 'foreign_net_value',
+                'fr_net_volume_matched': 'foreign_net_volume'
+            })
+
+        if df_p_v is not None and not df_p_v.empty:
+            df_p_v = df_p_v[['time', 'prop_net_val_matched', 'prop_net_vol_matched']]
+            df_p_v = df_p_v.rename(columns={
+                'prop_net_val_matched': 'prop_net_value',
+                'prop_net_vol_matched': 'prop_net_volume'
+            })
+
         # =====================================================================
         # 🛡️ BƯỚC 0: QUY HOẠCH DÒNG TIỀN "SẠCH" (MATCHED FLOW ONLY)
         # =====================================================================
         
-        # 1. KHỐI NGOẠI: Chiết xuất trực tiếp từ Level-2 (Không dùng file Foreign riêng)
-        if not df_l2_v.empty and 'fr_buy_value_matched' in df_l2_v.columns:
-            df_f_clean = df_l2_v[['time']].copy()
-            df_f_clean['foreign_net_value'] = df_l2_v['fr_buy_value_matched'] - df_l2_v['fr_sell_value_matched']
-            df_f_clean['foreign_net_volume'] = df_l2_v['fr_buy_volume_matched'] - df_l2_v['fr_sell_volume_matched']
-            df_f_valid = df_f_clean
-            result["valid_f"] = True
+        # 1. KHỐI NGOẠI: Chiết xuất trực tiếp từ Level-2
+        if not df_l2_v.empty:
+            df_f_valid = df_l2_v[['time', 'foreign_net_value', 'foreign_net_volume']].copy()
         else:
             df_f_valid = pd.DataFrame()
 
         # 2. TỰ DOANH: Ưu tiên cột Matched từ Premium Collector
         if not df_p_v.empty:
-            if 'prop_net_val_matched' in df_p_v.columns:
-                df_p_v['prop_net_value'] = df_p_v['prop_net_val_matched']
-                df_p_v['prop_net_volume'] = df_p_v.get('prop_net_vol_matched', 0)
-            df_p_valid = df_p_v
-            result["valid_p"] = True
+            df_p_valid = df_p_v[['time', 'prop_net_value', 'prop_net_volume']].copy()
         else:
             df_p_valid = pd.DataFrame()
 
@@ -98,17 +103,15 @@ class SmartMoneyEngine:
         total_liq_20d_bn = 0
         latest_trading_date = current_date # Mặc định
 
-        if df_price is not None and not df_price.empty:
-            df_price_v = df_price[df_price['time'] <= current_date].copy()
-            if not df_price_v.empty:
-                latest_trading_date = df_price_v['time'].max()
-                trading_dates = df_price_v['time'].sort_values().unique()
-                if len(trading_dates) >= 130: cutoff_6m = trading_dates[-130]
-                if len(trading_dates) >= 20:  cutoff_1m = trading_dates[-20]
-                if len(trading_dates) >= 3:   cutoff_3d = trading_dates[-3]
-                
-                df_p_20d = df_price_v[df_price_v['time'] >= cutoff_1m]
-                total_liq_20d_bn = (df_p_20d['close'] * df_p_20d['volume']).sum() / 1_000_000_000
+        if not df_l2_v.empty:
+            latest_trading_date = df_l2_v['time'].max()
+            trading_dates = df_l2_v['time'].sort_values().unique()
+            if len(trading_dates) >= 130: cutoff_6m = trading_dates[-130]
+            if len(trading_dates) >= 20:  cutoff_1m = trading_dates[-20]
+            if len(trading_dates) >= 3:   cutoff_3d = trading_dates[-3]
+            
+            df_p_20d = df_l2_v[df_l2_v['time'] >= cutoff_1m]
+            total_liq_20d_bn = (df_p_20d['close'] * df_p_20d['volume']).sum() / 1_000_000_000
 
         # =====================================================================
         # LỚP 1: TẦM NHÌN DÀI HẠN (130 PHIÊN GẦN NHẤT)
@@ -117,16 +120,13 @@ class SmartMoneyEngine:
         
         if not df_f_valid.empty:
             df_f_6m = df_f_valid[df_f_valid['time'] >= cutoff_6m]
-            col_vol_f = 'foreign_net_volume' if 'foreign_net_volume' in df_f_6m.columns else 'foreign_net_vol'
-            total_net_f_6m = df_f_6m[col_vol_f].sum() if col_vol_f in df_f_6m.columns else 0
+            total_net_f_6m = df_f_6m['foreign_net_volume'].sum() if 'foreign_net_volume' in df_f_6m.columns else 0
             
         if not df_p_valid.empty:
             df_p_6m = df_p_valid[df_p_valid['time'] >= cutoff_6m]
-            col_vol_p = 'prop_net_volume' if 'prop_net_volume' in df_p_6m.columns else 'prop_net_vol'
-            total_net_p_6m = df_p_6m[col_vol_p].sum() if col_vol_p in df_p_6m.columns else 0
+            total_net_p_6m = df_p_6m['prop_net_volume'].sum() if 'prop_net_volume' in df_p_6m.columns else 0
             
         total_net_6m = total_net_f_6m + total_net_p_6m
-        
         if shares_out > 0:
             absorption_rate = (total_net_6m / shares_out) * 100
             if absorption_rate >= 5.0:

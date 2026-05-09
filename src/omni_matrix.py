@@ -14,7 +14,6 @@ class OmniFlowMatrix:
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Khởi động Lò phản ứng OmniFlowMatrix...")
         
         # 1. Nạp các DataFrame từ RAM
-        self.df_price = data_frames.get('price', pd.DataFrame())
         self.df_price_l2 = data_frames.get('price_l2', pd.DataFrame())
         self.df_prop = data_frames.get('prop', pd.DataFrame())
         self.df_comp = data_frames.get('comp', pd.DataFrame())
@@ -30,23 +29,23 @@ class OmniFlowMatrix:
         self.calendar = self._build_trading_calendar()
         self._set_absolute_timeline()
 
-        # 2. Xây dựng Bản đồ (Mapping) O(1)
+        # 3. Xây dựng Bản đồ (Mapping) O(1)
         self.ticker_to_universe = {}
         self.ticker_to_sector = {}
         self._build_mappings()
         
-        # 3. Trích xuất Snapshot T0 từ Bảng điện
+        # 4. Trích xuất Snapshot T0 từ Bảng điện
         self.t0_snapshot = self._extract_t0_snapshot()
         
-        # 4. Xây dựng Khối dữ liệu Lịch sử (Historical Data Cube)
+        # 5. Xây dựng Khối dữ liệu Lịch sử (Historical Data Cube)
         self.history_cube = pd.DataFrame()
         self._build_historical_cube()
 
     def _build_trading_calendar(self):
         """Trích xuất lịch giao dịch thực tế từ dữ liệu Master Price"""
         dates = set()
-        if not self.df_price.empty and 'time' in self.df_price.columns:
-            time_col = pd.to_datetime(self.df_price['time'], unit='ms' if pd.api.types.is_numeric_dtype(self.df_price['time']) else None)
+        if not self.df_price_l2.empty and 'time' in self.df_price_l2.columns:
+            time_col = pd.to_datetime(self.df_price_l2['time'], unit='ms' if pd.api.types.is_numeric_dtype(self.df_price_l2['time']) else None)
             dates.update(time_col.dt.date.unique())
         return sorted(list(dates))
 
@@ -65,18 +64,12 @@ class OmniFlowMatrix:
         if not self.df_price_l2.empty and 'time' in self.df_price_l2.columns:
             time_col = pd.to_datetime(self.df_price_l2['time'], unit='ms' if pd.api.types.is_numeric_dtype(self.df_price_l2['time']) else None)
             latest_l2_date = time_col.dt.date.max()
-
-        latest_price_date = None
-        if not self.df_price.empty and 'time' in self.df_price.columns:
-            time_col = pd.to_datetime(self.df_price['time'], unit='ms' if pd.api.types.is_numeric_dtype(self.df_price['time']) else None)
-            latest_price_date = time_col.dt.date.max()
             
         # Một phiên được coi là ĐÃ KẾT THÚC (Post-Market) khi:
         # 1. Đã qua 15h00 chiều.
         # 2. VÀ Dữ liệu CAO CẤP LEVEL-2 của ngày hôm đó đã được tải về thành công.
         is_post_market = False
         if current_time.hour >= 15:
-            # BẢN VÁ: Bỏ điều kiện "latest_price_date", chỉ dùng "latest_l2_date" làm mỏ neo chốt sổ.
             if latest_l2_date == current_sys_date:
                 is_post_market = True
 
@@ -113,6 +106,18 @@ class OmniFlowMatrix:
             sector_col = 'icb_name2' if 'icb_name2' in self.df_comp.columns else 'icb_name'
             for _, row in self.df_comp.dropna(subset=[sector_col]).iterrows():
                 self.ticker_to_sector[row['symbol']] = row[sector_col]
+
+        # Lọc lại dữ liệu của price_l2 (chỉ lấy các field cần và rename open/high/low/close)
+        filterd_cols = [
+            'time', 'ticker', 'open', 'high', 'low', 'close', 'volume', 'matched_volume',
+            'fr_net_value_matched', 'fr_net_value_deal', 'average_buy_trade_volume', 'average_sell_trade_volume',
+            'total_buy_unmatched_volume', 'total_sell_unmatched_volume', 'total_net_trade_volume', 'fr_available_percentage',
+            'fr_owned_percentage', 'fr_buy_value_deal', 'fr_sell_value_deal', 'market_cap'
+        ]
+        df_price_l2_v = self.df_price_l2[[c for c in filterd_cols if c in self.df_price_l2.columns]].copy()
+        if 'matched_volume' in df_price_l2_v.columns and 'volume' not in df_price_l2_v.columns:
+            df_price_l2_v = df_price_l2_v.rename(columns={'matched_volume': 'volume'})
+        self.df_price_l2 = df_price_l2_v
 
     def _extract_t0_snapshot(self):
         """BÓC TÁCH DỮ LIỆU T0 TỪ BẢNG ĐIỆN (REAL-TIME SNAPSHOT)"""
@@ -166,25 +171,17 @@ class OmniFlowMatrix:
         KHỐI 1 & 2: ÉP TOÀN BỘ DỮ LIỆU VÀO MỘT MA TRẬN DUY NHẤT
         """
         print("[*] Đang xây dựng Ma trận Lịch sử (Historical Cube)...")
-        if self.df_price.empty: return
+        if self.df_price_l2.empty: return
 
         # 1. Chuẩn hóa & Lọc 30 phiên gần nhất để nhẹ RAM
-        df = self.df_price.copy()
+        df = self.df_price_l2.copy()
         df['time'] = pd.to_datetime(df['time']).dt.normalize()
         
         if self.past_dates:
             cutoff_date = self.past_dates[-self.lookback_days] if len(self.past_dates) > self.lookback_days else self.past_dates[0]
             df = df[df['time'].dt.date >= cutoff_date]
 
-        # 2. Xử lý Foreign (lấy từ price_l2) & Prop EOD
-        if not self.df_price_l2.empty:
-            l2 = self.df_price_l2.copy()
-            l2['time'] = pd.to_datetime(l2['time']).dt.normalize()
-            # Lấy các cột tinh hoa từ L2 (Bao gồm cả Khối Ngoại)
-            l2_cols = ['ticker', 'time', 'deal_value', 'fr_net_value_matched', 'fr_net_value_deal']
-            l2_merge = l2[[c for c in l2_cols if c in l2.columns]]
-            df = pd.merge(df, l2_merge, on=['ticker', 'time'], how='left')
-
+        # 2. Xử lý Prop EOD
         if not self.df_prop.empty:
             prop = self.df_prop.copy()
             prop['time'] = pd.to_datetime(prop['time']).dt.normalize()
@@ -241,11 +238,11 @@ class OmniFlowMatrix:
 
     def _get_intraday_t0_metrics(self, ticker):
         """Hàm nội bộ: Trích xuất siêu tốc Lực Mua/Bán chủ động T0 từ df_intra"""
-        if self.df_intra.empty: return 0, 0
+        if self.df_intra.empty: return 0, 0, 0
         
         # 1. Lọc đúng mã
         df_i = self.df_intra[self.df_intra['ticker'] == ticker]
-        if df_i.empty: return 0, 0
+        if df_i.empty: return 0, 0, 0
 
         # Lọc đúng mã và đúng ngày mỏ neo
         df_today = df_i[df_i['time'].dt.date == self.t0_date]
@@ -312,8 +309,8 @@ class OmniFlowMatrix:
         # 4. FOREIGN INTENT & OWNERSHIP
         fr_room_avail = safe_num(t1_row.get('fr_available_percentage', 1.0))
         fr_owned_pct = safe_num(t1_row.get('fr_owned_percentage', 0))
-        fr_deal_net_bn = safe_num(t1_row.get('fr_buy_volume_deal', 0) - t1_row.get('fr_sell_volume_deal', 0)) * safe_num(t1_row.get('close_price_adjusted', 0)) / self.DIVISOR
-        
+        fr_deal_net_bn = (safe_num(t1_row.get('fr_buy_value_deal', 0)) - safe_num(t1_row.get('fr_sell_value_deal', 0))) / self.DIVISOR
+
         # 5. MARKET CAP & SUPPLY
         market_cap = safe_num(t1_row.get('market_cap', 0)) / self.DIVISOR # Tỷ VNĐ
         
@@ -361,7 +358,7 @@ class OmniFlowMatrix:
         # 1. Tính toán Biến động Giá
         start_price = df_t['close'].iloc[0]
         end_price = df_t['close'].iloc[-1]
-        price_change_pct = (end_price - start_price) / start_price * 100
+        price_change_pct = (end_price - start_price) / start_price * 100 if start_price > 0 else 0
 
         # 2. TỔNG HỢP DÒNG TIỀN TRONG KỲ (SỬ DỤNG DỮ LIỆU KHỚP LỆNH L2)
         total_sm_net = df_t['sm_net_adj'].sum()
@@ -447,8 +444,8 @@ class OmniFlowMatrix:
         
         # Lấy giá gần nhất từ Bảng điện, nếu rỗng thì mượn tạm giá EOD từ Lịch sử
         last_price = t0_data.get('t0_last_price', 0)
-        if last_price == 0 and not self.df_price.empty:
-            df_p_ticker = self.df_price[self.df_price['ticker'] == ticker]
+        if last_price == 0 and not self.df_price_l2.empty:
+            df_p_ticker = self.df_price_l2[self.df_price_l2['ticker'] == ticker]
             if not df_p_ticker.empty:
                 last_price = df_p_ticker.iloc[-1]['close']
         
@@ -570,9 +567,7 @@ if __name__ == "__main__":
         return pd.read_parquet(p) if p.exists() else pd.DataFrame()
 
     data_frames = {
-        'price': load_pq('price/master_price.parquet'),
         'price_l2': load_pq('price/master_price_l2.parquet'),
-        'foreign': load_pq('macro/foreign_flow.parquet'),
         'prop': load_pq('macro/prop_flow.parquet'),
         'comp': load_pq('company/master_company.parquet'),
         'idx': load_pq('macro/index_components.parquet'),
