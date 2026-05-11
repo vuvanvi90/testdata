@@ -4,26 +4,158 @@ import os
 from datetime import datetime
 
 class ShadowProfiler:
-    def __init__(self, df_l2, verbose=True):
-        """Khởi tạo Hệ thống Nhận diện Đội lái (Shadow Profiler)"""
+    def __init__(self, df_l2, df_prop=None, verbose=True):
+        """Khởi tạo Hệ thống Nhận diện Đội lái (Shadow Profiler V3.0)"""
         if verbose:
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] Khởi động Radar Săn Lái Nội (Shadow Profiler)...")
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Khởi động Radar Săn Lái & Thâu tóm ngầm (Shadow Profiler V3)...")
 
-        # clone để ko thay đổi dữ liệu gốc trên RAM
+        self.verbose = verbose
+        
+        # 1. NẠP VÀ CHUẨN HÓA L2 DATA
         if df_l2 is not None and not df_l2.empty:
-            filterd_cols = ['time', 'open', 'high', 'low', 'close', 'volume', 'matched_volume', 'ticker']
+            # Lọc các trường cần thiết cho cả Kỹ thuật và Phân tách Thỏa thuận
+            filterd_cols = [
+                'time', 'open', 'high', 'low', 'close', 'volume', 'matched_volume', 'ticker',
+                'deal_value', 'deal_volume', 'fr_buy_value_deal', 'fr_sell_value_deal', 
+                'fr_buy_volume_deal', 'fr_sell_volume_deal', 'fr_available_percentage'
+            ]
             self.df_price = df_l2[[c for c in filterd_cols if c in df_l2.columns]].copy()
         else: 
             self.df_price = pd.DataFrame(columns=['time', 'open', 'high', 'low', 'close', 'volume', 'ticker'])
-        self.verbose = verbose
 
-        if not self.df_price.empty and 'matched_volume' in self.df_price.columns and 'volume' in self.df_price.columns:
-            self.df_price = self.df_price.drop(columns=['volume'])
-            self.df_price = self.df_price.rename(columns={'matched_volume': 'volume'})
+        # Ghi đè Matched Volume cho Phân tích Hành vi Giá
+        if not self.df_price.empty:
+            if 'matched_volume' in self.df_price.columns and 'volume' in self.df_price.columns:
+                self.df_price = self.df_price.drop(columns=['volume'])
+                self.df_price = self.df_price.rename(columns={'matched_volume': 'volume'})
+            elif 'matched_volume' in self.df_price.columns and 'volume' not in self.df_price.columns:
+                self.df_price = self.df_price.rename(columns={'matched_volume': 'volume'})
 
         if not self.df_price.empty and 'time' in self.df_price.columns:
             self.df_price['time'] = pd.to_datetime(self.df_price['time']).dt.normalize()
+            if getattr(self.df_price['time'].dt, 'tz', None) is not None:
+                self.df_price['time'] = self.df_price['time'].dt.tz_localize(None)
             self.df_price = self.df_price.sort_values(by=['ticker', 'time'])
+
+        # 2. NẠP DỮ LIỆU TỰ DOANH (Nếu có)
+        self.df_prop = pd.DataFrame()
+        if df_prop is not None and not df_prop.empty:
+            self.df_prop = df_prop.copy()
+            if 'time' in self.df_prop.columns:
+                self.df_prop['time'] = pd.to_datetime(self.df_prop['time']).dt.normalize()
+                if getattr(self.df_prop['time'].dt, 'tz', None) is not None:
+                    self.df_prop['time'] = self.df_prop['time'].dt.tz_localize(None)
+
+        # 3. KÍCH HOẠT ĐỘNG CƠ PHÂN TÁCH GIAO DỊCH NGẦM
+        self.shadow_matrix = pd.DataFrame()
+        self._build_shadow_matrix()
+
+    def _build_shadow_matrix(self):
+        """Phương trình Kế toán Kép bóc tách Shadow Buy và Shadow Sell"""
+        if self.df_price.empty: return
+        
+        self.shadow_matrix = self.df_price.copy()
+        
+        # Merge dữ liệu Deal của Tự doanh vào Ma trận
+        if not self.df_prop.empty:
+            prop_cols = [c for c in self.df_prop.columns if 'deal' in c or c in ['ticker', 'time']]
+            if len(prop_cols) > 2:
+                self.shadow_matrix = pd.merge(self.shadow_matrix, self.df_prop[prop_cols], on=['ticker', 'time'], how='left')
+        
+        self.shadow_matrix.fillna(0, inplace=True)
+        
+        # Hàm lấy cột an toàn hỗ trợ đa định dạng tên
+        def get_col(df, names):
+            for n in names:
+                if n in df.columns: return df[n]
+            return pd.Series(0, index=df.index)
+
+        # Trích xuất dữ liệu gốc
+        deal_val = get_col(self.shadow_matrix, ['deal_value'])
+        deal_vol = get_col(self.shadow_matrix, ['deal_volume'])
+        
+        f_buy_deal_val = get_col(self.shadow_matrix, ['fr_buy_value_deal'])
+        f_sell_deal_val = get_col(self.shadow_matrix, ['fr_sell_value_deal'])
+        
+        # Tự doanh có thể dùng tên từ JSON gốc hoặc tên đã gọt của Collector
+        p_buy_deal_val = get_col(self.shadow_matrix, ['prop_buy_val_deal', 'total_deal_buy_trade_value'])
+        p_sell_deal_val = get_col(self.shadow_matrix, ['prop_sell_val_deal', 'total_deal_sell_trade_value'])
+        
+        # 🚀 PHƯƠNG TRÌNH KHẤU TRỪ: ĐỊNH DANH Ý ĐỒ LÁI NỘI
+        self.shadow_matrix['shadow_buy_val'] = deal_val - f_buy_deal_val - p_buy_deal_val
+        self.shadow_matrix['shadow_sell_val'] = deal_val - f_sell_deal_val - p_sell_deal_val
+        
+        for col in ['shadow_buy_val', 'shadow_sell_val']:
+            self.shadow_matrix.loc[self.shadow_matrix[col] < 0, col] = 0 # Khử sai số
+
+        # 💎 RADAR THÂU TÓM PREMIUM (TÂY CẠN ROOM)
+        self.shadow_matrix['is_premium_deal'] = False
+        
+        if 'fr_available_percentage' in self.shadow_matrix.columns:
+            f_buy_deal_vol = get_col(self.shadow_matrix, ['fr_buy_volume_deal'])
+            
+            # Điều kiện: Room < 5%, Ngoại Mua Thỏa Thuận, và Giá Deal > Giá Đóng Cửa 5%
+            cond_room = self.shadow_matrix['fr_available_percentage'] < 0.05
+            cond_deal = f_buy_deal_vol > 0
+            
+            # np.divide có xử lý chia cho 0
+            deal_price = np.where(f_buy_deal_vol > 0, f_buy_deal_val / f_buy_deal_vol.replace(0, 1), 0)
+            cond_premium = deal_price > (self.shadow_matrix['close'] * 1.05)
+            
+            self.shadow_matrix['is_premium_deal'] = cond_room & cond_deal & cond_premium
+
+    def scan_dark_pool_deals(self, tickers, lookback_days=15):
+        """Quét bảng điện để tìm các thương vụ Thâu tóm ngầm & Sang tay Mờ ám"""
+        if self.verbose:
+            print("\n" + "="*95)
+            print(f" 🥷 KHỞI ĐỘNG RADAR ĐỌC VỊ DARK POOL (15 PHIÊN GẦN NHẤT)")
+            print("="*95)
+            
+        alerts = []
+        if self.shadow_matrix.empty: return alerts
+        
+        for ticker in tickers:
+            df_t = self.shadow_matrix[self.shadow_matrix['ticker'] == ticker].tail(lookback_days)
+            if df_t.empty: continue
+            
+            # 1. BẮT BẠCH TUỘC: THÂU TÓM PREMIUM
+            premium_deals = df_t[df_t['is_premium_deal']]
+            if not premium_deals.empty:
+                total_premium_val = premium_deals['fr_buy_value_deal'].sum() / 1_000_000_000
+                alerts.append({
+                    'Ticker': ticker,
+                    'Type': '💎 PREMIUM DEAL',
+                    'Note': f"Tây cạn room, múc thỏa thuận {total_premium_val:.1f} Tỷ với giá đắt hơn sàn >5%!"
+                })
+                
+            # 2. BẮT LÁI NỘI GOM/XẢ NGẦM
+            total_s_buy = df_t['shadow_buy_val'].sum() / 1_000_000_000
+            total_s_sell = df_t['shadow_sell_val'].sum() / 1_000_000_000
+            
+            # Tiêu chí: Deal đủ lớn (> 50 Tỷ) và Bất đối xứng (Mua áp đảo Bán hoặc ngược lại)
+            if total_s_buy > 50 and total_s_buy > (total_s_sell * 2):
+                alerts.append({
+                    'Ticker': ticker,
+                    'Type': '🥷 LÁI GOM NGẦM',
+                    'Note': f"Lái nội mua gom thỏa thuận {total_s_buy:.1f} Tỷ (Áp đảo chiều Bán)."
+                })
+            elif total_s_sell > 50 and total_s_sell > (total_s_buy * 2):
+                alerts.append({
+                    'Ticker': ticker,
+                    'Type': '🩸 LÁI XẢ NGẦM',
+                    'Note': f"Lái nội xả thỏa thuận {total_s_sell:.1f} Tỷ trao kho cho F0/Tổ chức khác."
+                })
+                
+        # In báo cáo
+        if self.verbose:
+            if not alerts:
+                print("[*] Không phát hiện Giao dịch ngầm đáng ngờ nào.")
+            else:
+                print(f"{'MÃ CP':<8} | {'LOẠI HÌNH ĐỘT BIẾN':<20} | {'CHI TIẾT Ý ĐỒ':<60}")
+                print("-" * 95)
+                for a in alerts:
+                    print(f"{a['Ticker']:<8} | {a['Type']:<20} | {a['Note']:<60}")
+        return alerts
 
     def _detect_upthrusts(self, df):
         """Nhận diện Nến Búa ngược / Upthrust (Kéo xả/Nổ xịt)"""
@@ -152,53 +284,23 @@ class ShadowProfiler:
                 # ---------------------------------------------------------
                 future_15d = df_t.iloc[b_idx : min(b_idx + 15, len(df_t))]
                 if not future_15d.empty:
-                    peak_idx = future_15d['high'].idxmax()
-                    markup_duration = peak_idx - b_idx
-                else:
-                    markup_duration = 0
+                    markup_duration = future_15d['high'].idxmax() - b_idx
+                else: markup_duration = 0
                 
                 profiles.append({
-                    'Ticker': ticker,
-                    'Pump_Date': df_t.iloc[b_idx]['time'].strftime('%Y-%m-%d'),
-                    'Yield_10D': df_t.iloc[b_idx]['pump_yield'] * 100,
-                    'Volatility_20D': base_volatility,
-                    'DryUp_Ratio': dry_up_ratio,
-                    'Upthrust_Count': upthrust_count,
-                    'Accumulation_Days': acc_days,
-                    'Markup_Duration': markup_duration
+                    'Volatility_20D': base_volatility, 'DryUp_Ratio': dry_up_ratio,
+                    'Upthrust_Count': upthrust_count, 'Accumulation_Days': acc_days, 'Markup_Duration': markup_duration
                 })
 
         df_profiles = pd.DataFrame(profiles)
-        
-        if df_profiles.empty:
-            if self.verbose:
-                print("[!] Không tìm thấy cú kéo giá >20% nào của các mã này trong lịch sử.")
-            return None
+        if df_profiles.empty: return None
             
-        # TÍNH TOÁN TRUNG VỊ (MEDIAN) CỦA TOÀN BỘ CHỈ SỐ
-        median_volatility = df_profiles['Volatility_20D'].median()
-        median_dry_up = df_profiles['DryUp_Ratio'].median()
-        median_upthrusts = df_profiles['Upthrust_Count'].median()
-        median_acc_days = df_profiles['Accumulation_Days'].median()
-        median_markup = df_profiles['Markup_Duration'].median()
-        
-        if self.verbose:
-            print(f"[*] Đã mổ xẻ {len(df_profiles)} siêu sóng đầu cơ. Rút ra BỘ LUẬT CHUẨN như sau:")
-            print(f"  1. Thời gian Gom hàng (Tích lũy) : Trung bình mất {median_acc_days:.0f} phiên nén giá.")
-            print(f"  2. Biên độ Nền nén               : Dao động quanh {median_volatility:.1f}%")
-            print(f"  3. Tỷ lệ Vắt kiệt Cung           : Volume tụt chỉ còn {median_dry_up:.1f}% so với MA20")
-            print(f"  4. Sức chịu đựng (Nổ xịt)        : Nhẫn nhịn {median_upthrusts:.0f} lần rũ bỏ.")
-            print("-" * 85)
-            print(f"  => 🚀 QUỸ ĐẠO KÉO GIÁ (MARKUP): Nhịp đánh sẽ đạt đỉnh và kết thúc sau trung bình {median_markup:.0f} phiên kể từ điểm nổ!")
-            print("="*85)
-        
-        # ÁP DỤNG CÁC HỆ SỐ NỚI LỎNG (CHỐNG OVERFITTING)
         return {
-            'max_volatility': median_volatility * 1.5,  # Cho phép biên độ lớn hơn 50% so với trung bình
-            'max_dry_up': median_dry_up * 1.5,          # Cạn cung không cần quá khắt khe
-            'max_upthrusts': 4,                         # Cho phép Lái rũ tối đa 4 lần
-            'min_acc_days': median_acc_days * 0.5,      # Chỉ cần nén được 50% thời gian trung bình là đạt
-            'markup_duration': median_markup
+            'max_volatility': df_profiles['Volatility_20D'].median() * 1.5,  
+            'max_dry_up': df_profiles['DryUp_Ratio'].median() * 1.5,          
+            'max_upthrusts': 4,                         
+            'min_acc_days': df_profiles['Accumulation_Days'].median() * 0.5,      
+            'markup_duration': df_profiles['Markup_Duration'].median()
         }
 
     def live_shadow_radar(self, tickers, profile_rules, target_date=None):
@@ -211,12 +313,12 @@ class ShadowProfiler:
         if self.verbose:
             date_label = target_date if target_date else "HÔM NAY"
             print("\n" + "="*95)
-            print(f" 🎯 GIAI ĐOẠN 2: RADAR CẢNH BÁO SÓNG ĐẦU CƠ - THỜI ĐIỂM QUÉT: [ {date_label} ]")
+            print(f" 🎯 GIAI ĐOẠN 3: RADAR CẢNH BÁO SÓNG ĐẦU CƠ - WYCKOFF NÉN NỀN")
             print("="*95)
         
-        if not profile_rules: return
-        
         alerts = []
+        if not profile_rules: return alerts
+        
         for ticker in tickers:
             df_full = self.df_price[self.df_price['ticker'] == ticker]
             # Cắt đứt tương lai nếu có target_date
@@ -259,30 +361,20 @@ class ShadowProfiler:
             
             live_upthrusts = df_live['is_upthrust'].sum()
             
-            # --- X-QUANG DEBUG (CHỈ HIỂN THỊ KHI QUÉT TRÚNG MÃ HRC) ---
-            if ticker == 'HRC' and self.verbose:
-                print(f"\n[🔬 DEBUG HRC - NGÀY {target_date if target_date else 'HIỆN TẠI'}]")
-                print(f"  + Độ nén nền (Volat): {live_volatility:.1f}% (Luật cho phép <= {profile_rules['max_volatility']:.1f}%) -> Pass: {live_volatility <= profile_rules['max_volatility']}")
-                print(f"  + Độ cạn cung (Dry) : {live_dry_up:.1f}% (Luật cho phép <= {profile_rules['max_dry_up']:.1f}%) -> Pass: {live_dry_up <= profile_rules['max_dry_up']}")
-                print(f"  + Số ngày gom (Acc) : {live_acc_days} ngày (Luật yêu cầu >= {profile_rules['min_acc_days']:.0f} ngày) -> Pass: {live_acc_days >= profile_rules['min_acc_days']}")
-                print(f"  + Số lần nổ xịt     : {live_upthrusts} lần (Luật cho phép <= {profile_rules['max_upthrusts']} lần)")
-            
-            # --- 3. CHẨN ĐOÁN SO VỚI BỘ LUẬT ---
             is_coiling = live_volatility <= profile_rules['max_volatility']
             is_dry = live_dry_up <= profile_rules['max_dry_up']
             is_ripe = live_acc_days >= profile_rules['min_acc_days']
             
             if is_coiling and is_dry:
                 if live_upthrusts >= profile_rules['max_upthrusts']:
-                    status = "🩸 NGUY HIỂM (Cạn kiên nhẫn)"
-                    note = f"Đã nổ xịt {live_upthrusts} lần. Đừng mua nền, lái sắp đạp gãy rũ!"
+                    status = "🩸 NGUY HIỂM"
+                    note = f"Nổ xịt {live_upthrusts} lần. Đừng mua nền, rủi ro gãy rũ cao!"
                 elif not is_ripe:
-                    status = "⏳ CHỜ ĐỢI (Nén chưa đủ)"
-                    note = f"Mới gom {live_acc_days}/{profile_rules['min_acc_days']:.0f} phiên. Nổ bây giờ 90% là bẫy sớm!"
+                    status = "⏳ CHỜ ĐỢI"
+                    note = f"Mới gom {live_acc_days}/{profile_rules['min_acc_days']:.0f} phiên. Nổ sớm dễ gặp bẫy!"
                 else:
-                    status = "🌟 CHÍN MUỒI (Sẵn sàng nổ)"
-                    markup_t = profile_rules['markup_duration']
-                    note = f"Đã gom {live_acc_days} phiên. Cạn cung {live_dry_up:.1f}%. Nếu nổ -> Mục tiêu chốt T+{markup_t:.0f}"
+                    status = "🌟 CHÍN MUỒI"
+                    note = f"Đã gom {live_acc_days} phiên. Cạn cung {live_dry_up:.1f}%. Sẵn sàng chờ nổ!"
                     
                 alerts.append({
                     'Ticker': ticker,
@@ -295,27 +387,38 @@ class ShadowProfiler:
             if not alerts:
                 print("[*] Hiện tại không có mã nào lọt vào form nén sóng của Đội lái.")
             else:
-                print(f"{'MÃ CP':<8} | {'TRẠNG THÁI':<26} | {'CHIẾN LƯỢC & HÀNH VI':<60}")
+                print(f"{'MÃ CP':<8} | {'TRẠNG THÁI':<15} | {'CHIẾN LƯỢC WYCKOFF':<60}")
                 print("-" * 95)
                 for a in alerts:
-                    print(f"{a['Ticker']:<8} | {a['Status']:<26} | {a['Note']:<60}")
-            print("="*95)
-
+                    print(f"{a['Ticker']:<8} | {a['Status']:<15} | {a['Note']:<60}")
         return alerts
 
 # ==========================================
 # KHỐI CHẠY THỬ NGHIỆM
 # ==========================================
 if __name__ == "__main__":
-    PRICE_PATH = 'data/parquet/price/master_price.parquet'
-    profiler = ShadowProfiler(PRICE_PATH)
+    from pathlib import Path
     
-    # 1. Lấy toàn bộ danh sách mã có trên thị trường (3 ký tự)
+    # 1. Load File Parquet Chuẩn Mới
+    price_path = Path('data/parquet/price/master_price_l2.parquet')
+    prop_path = Path('data/parquet/macro/prop_flow.parquet')
+    
+    df_l2 = pd.read_parquet(price_path) if price_path.exists() else pd.DataFrame()
+    df_prop = pd.read_parquet(prop_path) if prop_path.exists() else pd.DataFrame()
+    
+    # 2. Khởi tạo Profiler
+    profiler = ShadowProfiler(df_l2, df_prop)
+    
+    # Lấy danh sách mã 
     all_tickers = profiler.df_price['ticker'].unique().tolist()
     market_tickers = [t for t in all_tickers if len(str(t)) == 3]
     
+    # 3. QUÉT DARK POOL (Chức năng MỚI ĐỈNH CAO)
+    dp_alerts = profiler.scan_dark_pool_deals(market_tickers, lookback_days=15)
+    
+    # 4. CHẠY RADAR ĐẦU CƠ
     print("\n" + "="*85)
-    print(" 🤖 BƯỚC 0: TỰ ĐỘNG LỌC TỆP HUẤN LUYỆN (AUTO-PURGE)")
+    print(" 🤖 BƯỚC 0: LỌC TỆP ĐẦU CƠ TRAINING (AUTO-PURGE)")
     print("="*85)
     
     # 2. Chạy qua Trạm Thanh trừng để lấy Tệp Training "Thuần chủng"

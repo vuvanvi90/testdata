@@ -1440,7 +1440,7 @@ class LiveAssistant:
             # Quét X-Quang Tồn kho Cá mập
             df_pr_ticker = self.prop_dict.get(ticker)
             df_l2_ticker = self.price_l2_dict.get(ticker)
-            mf_info_dict[ticker] = mf_analyzer.analyze_flow(ticker, df_pr_ticker, df_l2=df_l2_ticker)
+            mf_info_dict[ticker] = mf_analyzer.analyze_flow(ticker, df_l2_ticker, df_pr_ticker)
 
         # =====================================================================
         # 📡 EARLY RADAR (ĐƯA VÀO TẦM NGẮM CÁC KÈO TÂY CHỚM GOM)

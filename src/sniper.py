@@ -17,7 +17,7 @@ class TargetSniper:
     def __init__(self, ticker, data_dir='data/parquet'):
         self.ticker = ticker.upper()
         self.data_dir = Path(data_dir)
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] Kích hoạt Chế độ Bắn tỉa. Đang nạp đạn cho mục tiêu: [ {self.ticker} ]...")
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Kích hoạt Chế độ Bắn tỉa V3.0 (Level-2 Core). Đang nạp đạn cho mục tiêu: [ {self.ticker} ]...")
         
         self._load_and_filter_data()
         self._init_engines()
@@ -43,7 +43,7 @@ class TargetSniper:
                         df['time'] = df['time'].dt.tz_localize(None)
                 return df
             except Exception as e: 
-                print(f"[!] Lỗi đọc file cũ {path}: {e}")
+                print(f"[!] Lỗi đọc file {path}: {e}")
                 return pd.DataFrame()
         return pd.DataFrame()
 
@@ -118,7 +118,7 @@ class TargetSniper:
             universe=self.universe
         )
         self.mf_analyzer = MarketFlowAnalyzer()
-        self.shadow_profiler = ShadowProfiler(df_l2=self.df_price_l2, verbose=False)
+        self.shadow_profiler = ShadowProfiler(df_l2=self.df_price_l2, df_prop=self.df_prop, verbose=False)
         
         # Băm OmniMatrix
         data_frames = {
@@ -232,7 +232,7 @@ class TargetSniper:
 
         # 🚨 BẮT BẪY 2: SÓNG LÁI NỘI ĐẦU CƠ (Tay to đứng ngoài, Shadow Flow áp đảo)
         elif avg_dominance < 5.0 and t1_shadow > 50:
-            special_warning = f"🎭 SÓNG ĐẦU CƠ: Tay to vắng mặt (Chi phối {avg_dominance:.1f}%). Lái nội tự quay tay ({t1_shadow:.1f} Tỷ)!"
+            special_warning = f"🎭 SÓNG ĐẦU CƠ: Tay to vắng mặt (Chiếm {avg_dominance:.1f}%). Lái nội quay tay ({t1_shadow:.1f} Tỷ)!"
             thesis = "NEUTRAL (Cẩn thận bẫy thanh khoản)"
 
         # 🚨 BẮT BẪY 3: CẢNH BÁO SANG TAY ĐỘC LẬP
@@ -346,15 +346,19 @@ class TargetSniper:
             }
 
         sm_result = self.sm_engine.analyze_ticker(self.ticker, board_info)
-        mf_result = self.mf_analyzer.analyze_flow(self.ticker, self.df_prop, df_l2=self.df_price_l2)
+        mf_result = self.mf_analyzer.analyze_flow(self.ticker, self.df_price_l2, self.df_prop)
         sm_vwap = mf_result.get('sm_vwap', 0)
         dtl = mf_result.get('dtl_days', 0)
+        shark_status = mf_result.get('sm_status', 'NEUTRAL') # 🚀 Dữ liệu Vị thế Cá mập
 
         # 3. LÁI NỘI & QUÁ KHỨ (Shadow Profiler & Omni Past)
         past_ctx = self.omni_matrix.explain_past_movement(self.ticker, lookback_days=10)
         rules = self.shadow_profiler.build_criminal_profile([self.ticker], lookback_days=250)
         alerts = self.shadow_profiler.live_shadow_radar([self.ticker], rules)
-        shadow_msg = alerts[0]['Note'] if alerts else "Không phát hiện dấu vết ủ mưu."
+        shadow_msg = alerts[0]['Note'] if alerts else "Không phát hiện dấu vết nén nền đầu cơ."
+        
+        # 🚀 Radar Dark Pool V3.0
+        dp_alerts = self.shadow_profiler.scan_dark_pool_deals([self.ticker], lookback_days=15)
 
         # 4. DỰ BÁO T0 (Omni Now)
         omni_now = self.omni_matrix.predict_t0_action(self.ticker, past_context=past_ctx)
@@ -380,6 +384,7 @@ class TargetSniper:
         print(f" 🐋 2. DÒNG TIỀN THỂ CHẾ (SMART MONEY & MARKET FLOW)")
         print(f"    - Điểm Đồng thuận  : {sm_result.get('total_sm_score', 0)}/100")
         print(f"    - Giá vốn Tay to   : ~{sm_vwap:,.0f} đ (VWAP)")
+        print(f"    - Vị thế Cá Mập    : 🎯 {shark_status}")
         print(f"    - Sức ép Xả (DTL)  : {dtl:.1f} ngày")
         
         if sm_result.get("is_danger", False):
@@ -387,7 +392,7 @@ class TargetSniper:
         elif sm_result.get("sm_details"):
             print(f"    - Hành vi Nổi bật  : {' | '.join(sm_result['sm_details'])}")
             
-        print(f"    - Radar Lái nội    : {shadow_msg}")
+        print(f"    - Radar Nén Nền    : {shadow_msg}")
         
         print("-" * 90)
 
@@ -431,6 +436,9 @@ class TargetSniper:
             is_offline = omni_now.get('is_offline') if omni_now else None
             if not is_offline:
                 print(f"    - Khớp chủ động T0       : {omni_now.get('net_active_bn', 0):+.1f} Tỷ VNĐ")
+                # 🚀 Lọc hiển thị Dòng tiền Ngoại T0 sạch sẽ
+                f_matched_t0 = omni_now.get('t0_f_matched_net_bn', omni_now.get('f_net_t0', 0))
+                print(f"    - Ngoại T0 (Khớp Lệnh)   : {f_matched_t0:+.1f} Tỷ VNĐ (Đã khấu trừ Deal)")
                 print(f"    - Sổ lệnh (Bid/Ask)      : Mất cân bằng {omni_now.get('imbalance', 0):+.2f} (Dương=Kê Mua / Âm=Chặn Bán)")
                 print(f"    => BẢN ÁN OMNI T0        : {omni_now.get('verdict', 'N/A')}")
                 print(f"    => LÝ DO CHI TIẾT        : {omni_now.get('details', 'N/A')}")
@@ -509,80 +517,26 @@ class TargetSniper:
                     print(f"    => 🛡️ TỌA ĐỘ PHÒNG THỦ   : Nếu giá rớt về sát {vwap_pt:,.0f}đ sẽ kích hoạt Lực đỡ Khổng lồ!")
 
                 print(f"    --------------------------------------------------------------------------------------")
-                print(f"    [PHÂN TÍCH CHUYÊN SÂU 4 CHIỀU (PUT-THROUGH EDGE)]")
                 
-                whale_node = df_pt_recent.groupby('price')['volume'].sum().idxmax()
-                print(f"    - Cụm Giá Tập Trung (Node)     : {whale_node:,.0f} đ (Vùng Nam châm hút giá lớn nhất 30D)")
-
-                avg_vol_20d = self.df_price_l2['volume'].tail(20).mean() if not self.df_price_l2.empty else 0
-                t0_pt = df_pt_recent[df_pt_recent['time'].dt.date == self.omni_matrix.t0_date].copy()
-                pt_vol_today = t0_pt['volume'].sum()
-                
-                if avg_vol_20d > 0 and pt_vol_today > 0:
-                    liqd_ratio = pt_vol_today / avg_vol_20d
-                    print(f"    - Cường độ Ẩn T0 (Liqd Ratio)  : {liqd_ratio:.2f}x so với Khớp lệnh MA20")
-                    if liqd_ratio > 2.0:
-                        print("      => 🚨 CẢNH BÁO ĐỘT BIẾN: Thỏa thuận bùng nổ! Rủi ro/Cơ hội thay máu Cổ đông lớn.")
+                # 🚀 TÍCH HỢP DARK POOL RADAR V3.0
+                if dp_alerts:
+                    print(f"    [📡 RADAR DARK POOL V3.0 - PHÁT HIỆN DẤU CHÂN]")
+                    for a in dp_alerts:
+                        print(f"    - {a['Type']:<15}: {a['Note']}")
+                        # Móc nối logic chặn mua nếu phát hiện Xả Ngầm
+                        if 'XẢ NGẦM' in a['Type']:
+                            dp_action_tag = 'DANGER'
                 else:
-                    print("    - Cường độ Ẩn T0 (Liqd Ratio)  : Không có thỏa thuận trong phiên hôm nay")
+                    print("    [📡 RADAR DARK POOL V3.0] Không phát hiện giao dịch ngầm đáng ngờ 15D.")
 
-                large_pts = df_pt_recent[df_pt_recent['match_value'] > 10_000_000_000]
-                if not large_pts.empty:
-                    unique_dates = sorted(large_pts['time'].dt.date.unique())
-                    if len(unique_dates) >= 2:
-                        diffs = [(unique_dates[i] - unique_dates[i-1]).days for i in range(1, len(unique_dates))]
-                        avg_pulse = sum(diffs) / len(diffs)
-                        print(f"    - Chu kỳ Nhịp đập (Pulse)      : ~{avg_pulse:.1f} ngày / một nhịp Thỏa thuận LỚN (>10 Tỷ)")
-                    else:
-                        print("    - Chu kỳ Nhịp đập (Pulse)      : Chưa đủ số phiên để đo nhịp điệu Tay to")
-                else:
-                    print("    - Chu kỳ Nhịp đập (Pulse)      : Không có thỏa thuận Khủng (>10 Tỷ) nào")
-
-                if not t0_pt.empty and not self.df_price_l2.empty:
-                    t0_price_row = self.df_price_l2.iloc[-1] 
-                    price_change_today = (t0_price_row['close'] - t0_price_row['open']) / t0_price_row['open'] * 100 if t0_price_row['open'] > 0 else 0
-                    
-                    t0_pt['weighted_change'] = t0_pt['change_percent'] * t0_pt['match_value']
-                    t0_avg_change = (t0_pt['weighted_change'].sum() / t0_pt['match_value'].sum()) * 100
-                    
-                    print(f"    - Lệch pha T0 (Timing Diverge) : Giá trên sàn {price_change_today:+.2f}% vs Thỏa thuận T0 {t0_avg_change:+.2f}%")
-                    
-                    if price_change_today < -1.0 and t0_avg_change > 1.0:
-                        print("      => 🌟 SIÊU TÍN HIỆU ĐẢO CHIỀU: Đạp sàn ép nhỏ lẻ, Thỏa thuận giá cao (Gom ngầm)!")
-                    elif price_change_today > 1.0 and t0_avg_change < -1.0:
-                        print("      => ⚠️ TÍN HIỆU BULL-TRAP: Kéo thốc trên sàn dụ FOMO, Thỏa thuận giá bèo táng nội bộ!")
-
-            # ĐỒNG BỘ DARK POOL RADAR VÀ KẾT LUẬN
-            dp_path = Path('data/live/darkpool_signals.json')
-            
-            if dp_path.exists():
-                with open(dp_path, 'r', encoding='utf-8') as f:
-                    dp_signals = json.load(f)
-                
-                if self.ticker in dp_signals:
-                    dp_data = dp_signals[self.ticker]
-                    system_t0_str = self.omni_matrix.t0_date.strftime('%Y-%m-%d')
-                    
-                    if dp_data.get('valid_for_date') == system_t0_str:
-                        dp_action_tag = dp_data.get('action', "NONE")
-                        print(f"    --------------------------------------------------------------------------------------")
-                        print(f"    [📡 KẾT NỐI HỆ SINH THÁI: TRÍCH XUẤT TỪ DARK POOL RADAR]")
-                        print(f"    - Cảnh báo T0      : {'🚨 CÓ THỎA THUẬN TRONG PHIÊN' if dp_data.get('t0_val_bn', 0) > 0 else 'Không có trong T0'}")
-                        print(f"    - Lệnh Tác chiến   : {dp_data.get('forecast', '')}")
-                        if dp_action_tag == 'DANGER':
-                            print("      => 🚫 HỆ THỐNG KHUYẾN NGHỊ: CẤM MUA DO CÓ RỦI RO NGẦM!")
         else:
             print("    - Không có dữ liệu Giao dịch Thỏa thuận.")
         print("═"*90)
 
-        # PHẦN 5: KẾT LUẬN ĐẦU TƯ & LƯU NHẬT KÝ HỘP ĐEN
+        # PHẦN 5: KẾT LUẬN ĐẦU TƯ
         print(" 🎯 HÀNH ĐỘNG KHUYẾN NGHỊ (SNIPER FINAL VERDICT):")
-        
-        final_action = "WAIT"
-        final_reason = ""
+        final_action, final_reason = "WAIT", ""
 
-        # 1. CÁC KỊCH BẢN BÁO ĐỘNG ĐỎ (TỪ CHỐI MUA)
-        # 🚀 BẢN VÁ LEVEL-2: Từ chối mua tuyệt đối nếu T-1 là Bẫy Kéo Xả Ảo
         if omni_now and "BEARISH (Bẫy Kéo Xả Ảo)" in omni_now.get('verdict', ''):
             final_action = "REJECT"
             final_reason = "BẪY KẾO XẢ LEVEL-2: Lệnh bán thực tế to gấp nhiều lần lệnh mua dù đang kê dư mua ảo."
@@ -590,7 +544,7 @@ class TargetSniper:
             
         elif dp_action_tag == 'DANGER':
             final_action = "REJECT"
-            final_reason = "DARK POOL CẢNH BÁO ĐỎ: Phát hiện rủi ro ngầm từ dữ liệu Thỏa thuận."
+            final_reason = "DARK POOL CẢNH BÁO ĐỎ: Phát hiện Lái Xả Ngầm khối lượng lớn (Trao tay phân phối)."
             print(f"   🚫 KHÔNG MUA: {final_reason}")
             
         elif sm_result.get("is_danger", False):
@@ -601,7 +555,7 @@ class TargetSniper:
 
             if not is_validated_bull and not is_reversal:
                 final_action = "REJECT"
-                final_reason = "Cá mập dài hạn đang tháo cống. Bỏ qua mọi tín hiệu kỹ thuật."
+                final_reason = "Cá mập dài hạn đang tháo cống (Hoặc áp lực xả > Ngưỡng Impact). Bỏ qua mọi kỹ thuật."
                 print(f"   🚫 KHÔNG MUA: {final_reason}")
             elif is_reversal:
                 # Nếu T0 Bullish, xí xóa cờ đỏ và cho phép lệnh mua đi tiếp

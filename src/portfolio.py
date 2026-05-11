@@ -5,7 +5,7 @@ from pathlib import Path
 
 class QuantPortfolioEngine:
     def __init__(self, price_dir=None, output_dir=None):
-        self.price_dir = Path(price_dir) / 'master_price.parquet' if price_dir else Path('data/parquet/price/master_price.parquet')
+        self.price_dir = Path(price_dir) / 'master_price_l2.parquet' if price_dir else Path('data/parquet/price/master_price_l2.parquet')
         self.output_dir = Path(output_dir) if output_dir else Path('data/portfolio')
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
@@ -26,7 +26,7 @@ class QuantPortfolioEngine:
                 df['time'] = pd.to_datetime(df['time']).dt.date
                 
             prices = df.pivot_table(index='time', columns='ticker', values='close')
-            prices = prices.sort_index().tail(252) # Cắt 1 năm (252 ngày giao dịch)
+            prices = prices.sort_index().tail(130) # Cắt nửa năm (130 ngày giao dịch)
             
             # Lọc các mã sống sót > 70% thời gian (Chống nhiễu mã mới lên sàn quá ngắn)
             threshold = len(prices) * 0.7 

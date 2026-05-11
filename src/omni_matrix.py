@@ -7,8 +7,10 @@ warnings.filterwarnings('ignore')
 
 class OmniFlowMatrix:
     """
-    HỆ THỐNG DATA CUBE ĐA CHIỀU (OMNI-FLOW MATRIX)
-    Kiến trúc phân rã Dòng tiền Thể chế & Lái nội xuyên suốt Rổ Vốn Hóa và Ngành Nghề.
+    HỆ THỐNG DATA CUBE ĐA CHIỀU (OMNI-FLOW MATRIX) VERSION 3.0
+    🚀 KIẾN TRÚC KÉP (LAMBDA): 
+       - Luồng EOD: Xây dựng Chân lý Tuyệt đối từ price_l2 + prop_flow.
+       - Luồng T0 (Real-time): Thuật toán Khấu trừ Thỏa thuận Ngoại + Bắt bẫy Sổ lệnh.
     """
     def __init__(self, data_frames: dict, lookback_days=30):
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Khởi động Lò phản ứng OmniFlowMatrix...")
@@ -120,7 +122,9 @@ class OmniFlowMatrix:
         self.df_price_l2 = df_price_l2_v
 
     def _extract_t0_snapshot(self):
-        """BÓC TÁCH DỮ LIỆU T0 TỪ BẢNG ĐIỆN (REAL-TIME SNAPSHOT)"""
+        """
+        LUỒNG T0 (REAL-TIME): TRÍCH XUẤT BẢNG ĐIỆN VÀ KHẤU TRỪ THỎA THUẬN NGAY TRONG PHIÊN
+        """
         if self.df_board.empty: return {}
         
         t0_dict = {}
@@ -151,6 +155,18 @@ class OmniFlowMatrix:
             # Quy đổi ra Tỷ VNĐ
             f_net_val_bn = ((f_buy_vol - f_sell_vol) * avg_price) / self.DIVISOR
             
+            # --- KIỂM TOÁN THỎA THUẬN T0 (RADAR PUT-THROUGH) ---
+            pt_val_bn = 0.0
+            if not self.df_pt.empty:
+                col_pt = 'symbol' if 'symbol' in self.df_pt.columns else 'ticker'
+                df_pt_ticker = self.df_pt[self.df_pt[col_pt] == ticker]
+                if not df_pt_ticker.empty:
+                    # Lọc Lệnh Thỏa thuận diễn ra đúng trong phiên T0
+                    pt_dates = pd.to_datetime(df_pt_ticker['time']).dt.date
+                    df_pt_t0 = df_pt_ticker[pt_dates == self.t0_date]
+                    if not df_pt_t0.empty:
+                        pt_val_bn = df_pt_t0['match_value'].sum() / self.DIVISOR
+
             # Tính toán Cán cân Sổ lệnh (Bid/Ask Imbalance)
             bid_vol = sum([safe_fl(row.get(f'bid_vol_{i}', 0)) for i in range(1, 4)])
             ask_vol = sum([safe_fl(row.get(f'ask_vol_{i}', 0)) for i in range(1, 4)])
@@ -158,6 +174,7 @@ class OmniFlowMatrix:
             t0_dict[ticker] = {
                 't0_date': self.t0_date,
                 't0_foreign_net_bn': f_net_val_bn,
+                't0_pt_val_bn': pt_val_bn, # Dữ liệu chuyển giao cho predict_t0_action
                 't0_bid_vol': bid_vol,
                 't0_ask_vol': ask_vol,
                 't0_imbalance': (bid_vol - ask_vol) / (bid_vol + ask_vol) if (bid_vol + ask_vol) > 0 else 0,
@@ -232,6 +249,12 @@ class OmniFlowMatrix:
 
         # Chuẩn hóa Date để dễ tra cứu sau này
         df['date'] = df['time'].dt.date
+
+        # LƯU TRỮ TỶ LỆ HỞ ROOM NGOẠI VÀO CUBE
+        if 'fr_available_percentage' in df.columns:
+            df['fr_avail_pct'] = df['fr_available_percentage']
+        else:
+            df['fr_avail_pct'] = 1.0 
 
         self.history_cube = df.sort_values(['ticker', 'time']).reset_index(drop=True)
         print(f"[OK] Ma trận hoàn tất: {len(self.history_cube)} records, sẵn sàng cho Inference Engine.")
@@ -375,7 +398,7 @@ class OmniFlowMatrix:
         if price_change_pct > 3.0: # XU HƯỚNG TĂNG
             trend = "TĂNG"
             if total_sm_net > (total_val * 0.15):
-                diagnosis.append(f"Sóng Thể chế: Khối ngoại & Tự doanh dẫn dắt (Gom {total_sm_net:.1f} Tỷ).")
+                diagnosis.append(f"Sóng Thể chế: Ngoại/Tự doanh dẫn dắt (Gom {total_sm_net:.1f} Tỷ).")
             elif total_shadow > (total_val * 0.7) and total_sm_net < -10.0:
                 diagnosis.append(f"Kéo Xả ảo: Lái nội kéo giá (Ẩn {total_shadow:.1f} Tỷ) để Tay to thoát hàng (Xả {total_sm_net:.1f} Tỷ). ⚠️ Rủi ro Bull-Trap!")
             else:
@@ -384,7 +407,7 @@ class OmniFlowMatrix:
         elif price_change_pct < -3.0: # XU HƯỚNG GIẢM
             trend = "GIẢM"
             if total_sm_net < -(total_val * 0.15):
-                diagnosis.append(f"Tắm Máu Thể chế: Áp lực bán tháo dữ dội từ Tay to (Xả {total_sm_net:.1f} Tỷ).")
+                diagnosis.append(f"Tắm Máu Thể chế: Áp lực bán tháo dữ dội (Xả {total_sm_net:.1f} Tỷ).")
             elif total_shadow > (total_val * 0.7) and total_sm_net > 10.0:
                 diagnosis.append(f"Đạp Gom (Washout): Nhỏ lẻ hoảng loạn, Lái nội đè giá nhưng Tay to đang âm thầm gom ({total_sm_net:.1f} Tỷ). 🌟 Tín hiệu Rũ bỏ!")
             else:
@@ -393,11 +416,11 @@ class OmniFlowMatrix:
         else: # TÍCH LŨY (ĐI NGANG)
             trend = "ĐI NGANG"
             if total_sm_net > 20.0:
-                diagnosis.append(f"Gom Ngầm (Stealth Accumulation): Neo giá để Tay to gom hàng ({total_sm_net:.1f} Tỷ). Chờ nổ!")
+                diagnosis.append(f"Gom Ngầm: Neo giá để Tay to gom hàng ({total_sm_net:.1f} Tỷ). Chờ nổ!")
             elif total_sm_net < -20.0:
-                diagnosis.append(f"Phân phối Ngầm (Stealth Distribution): Kéo xả trong biên độ hẹp để Tay to thoát hàng ({total_sm_net:.1f} Tỷ).")
+                diagnosis.append(f"Phân phối Ngầm: Kéo xả trong biên độ hẹp để Tay to thoát hàng ({total_sm_net:.1f} Tỷ).")
             else:
-                diagnosis.append("Siết nền (Base Building): Thanh khoản cạn, chờ gió đông.")
+                diagnosis.append("Siết nền: Thanh khoản cạn, chờ gió đông.")
 
         # GHI CHÚ SANG TAY CHI TIẾT
         if pt_f_days or pt_p_days:
@@ -440,6 +463,7 @@ class OmniFlowMatrix:
 
         # 1. FALLBACK GIÁ TRỊ KHI OFFLINE (Cuối tuần/Chưa mở cửa)
         f_net_t0 = t0_data.get('t0_foreign_net_bn', 0)
+        pt_t0 = t0_data.get('t0_pt_val_bn', 0)
         imbalance = t0_data.get('t0_imbalance', 0)
         
         # Lấy giá gần nhất từ Bảng điện, nếu rỗng thì mượn tạm giá EOD từ Lịch sử
@@ -459,7 +483,17 @@ class OmniFlowMatrix:
         # Cờ nhận diện trạng thái Thị trường đóng cửa
         is_offline = not t0_data and net_active_bn == 0
 
-        # --- PHẦN 1: ĐÁNH GIÁ VI CẤU TRÚC (MICROSTRUCTURE) ---
+        # =====================================================================
+        # 🚀 THUẬT TOÁN KHẤU TRỪ THỎA THUẬN T0 (FOREIGN DEDUCTION ALGORITHM)
+        # Lọc nhiễu từ các lệnh thỏa thuận ngàn tỷ để tìm Khớp lệnh Thực tế
+        # =====================================================================
+        f_matched_net_t0 = f_net_t0
+        if pt_t0 > 0:
+            if f_net_t0 > 0:
+                f_matched_net_t0 = max(0, f_net_t0 - pt_t0)
+            else:
+                f_matched_net_t0 = min(0, f_net_t0 + pt_t0)
+
         if is_offline:
             signals.append("Thị trường Đóng cửa/Chưa có GD T0")
         else:
@@ -491,13 +525,16 @@ class OmniFlowMatrix:
                     signals.append("Lái chặn lệnh Bán (Ask) dày đặc ép giá (Thiếu Vol)")
                     score -= 1
 
-            # Đánh giá Khối Ngoại Real-time (Snapshot)
-            if f_net_t0 > 5.0:
-                signals.append(f"Tây lông tiếp sức (+{f_net_t0:.1f} Tỷ)")
+            # Sử dụng KHỚP LỆNH NGOẠI SẠCH (Đã khấu trừ PT) để chấm điểm
+            if f_matched_net_t0 > 5.0:
+                signals.append(f"Tây lông Khớp lệnh Mua rát (+{f_matched_net_t0:.1f} Tỷ)")
                 score += 2
-            elif f_net_t0 < -5.0:
-                signals.append(f"Tây lông đang xả rát ({f_net_t0:.1f} Tỷ)")
+            elif f_matched_net_t0 < -5.0:
+                signals.append(f"Tây lông Khớp lệnh Xả rát ({f_matched_net_t0:.1f} Tỷ)")
                 score -= 2
+                
+            if pt_t0 > 0:
+                signals.append(f"Có Thỏa thuận T0 ({pt_t0:.1f} Tỷ) - Đã khấu trừ để làm sạch bảng điện")
 
             # ĐIỀU KIỆN VWAP
             if vwap_t0 > 0:
@@ -551,6 +588,7 @@ class OmniFlowMatrix:
             "last_price": last_price,
             "net_active_bn": net_active_bn,
             "f_net_t0": f_net_t0,
+            "t0_f_matched_net_bn": f_matched_net_t0, # Truyền số sạch ra ngoài cho báo cáo
             "imbalance": imbalance,
             "details": " | ".join(signals) if signals else "Chưa có dòng tiền đột biến.",
             # Trả ngược Level 2 data cho live.py/sniper.py đọc để hiển thị chi tiết (nếu cần)
@@ -572,7 +610,8 @@ if __name__ == "__main__":
         'comp': load_pq('company/master_company.parquet'),
         'idx': load_pq('macro/index_components.parquet'),
         'board': load_pq('board/master_board.parquet'),
-        'intra': load_pq('intraday/master_intraday.parquet')
+        'intra': load_pq('intraday/master_intraday.parquet'),
+        'put_through': load_pq('intraday/master_put_through.parquet') # Đã nạp Radar Thỏa thuận T0
     }
 
     omni = OmniFlowMatrix(data_frames, lookback_days=30)
@@ -601,7 +640,7 @@ if __name__ == "__main__":
         if "error" not in now:
             print(f" ⚡ DỰ BÁO HIỆN TẠI (PHIÊN T0): Giá {now['last_price']:,.0f}đ")
             print(f"    - Mua/Bán C.Động : {now['net_active_bn']:+.1f} Tỷ (Từ lệnh Khớp Intraday)")
-            print(f"    - Ngoại T0       : {now['f_net_t0']:+.1f} Tỷ (Từ Bảng điện Real-time)")
+            print(f"    - Ngoại T0       : {now['t0_f_matched_net_bn']:+.1f} Tỷ (Đã Khấu trừ Thỏa Thuận)")
             print(f"    - Sổ lệnh (Bid)  : Mất cân bằng {now['imbalance']:+.2f} (Dương = Kê mua, Âm = Chặn bán)")
             print(f"    - KẾT LUẬN       : 🎯 {now['verdict']}")
             print(f"    - Tín hiệu phụ   : {now['details']}")
