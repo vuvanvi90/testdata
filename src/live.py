@@ -1289,15 +1289,34 @@ class LiveAssistant:
             atr = float(row.get('ATR', current_price * 0.02))
             pnl_pct = (current_price - pos['entry_price']) / pos['entry_price'] * 100
             
-            # --- RADAR CÁ MẬP ---
+            # 1. KIỂM TOÁN T0 (REAL-TIME X-RAY) TỪ OMNI MATRIX
+            omni_now = {}
+            if hasattr(self, 'omni_matrix') and self.omni_matrix:
+                past_ctx = self.omni_matrix.explain_past_movement(ticker, lookback_days=10)
+                omni_now = self.omni_matrix.predict_t0_action(ticker, past_context=past_ctx)
+
+            t0_verdict = omni_now.get('verdict', 'N/A')
+            t0_driver = omni_now.get('driver_msg', 'N/A')
+            t0_net_active = omni_now.get('net_active_bn', 0)
+            t0_f_matched = omni_now.get('t0_f_matched_net_bn', omni_now.get('f_net_t0', 0))
+            t0_f_impact = omni_now.get('t0_f_impact_pct', 0)
+
+            # 2. KIỂM TOÁN LỊCH SỬ SMART MONEY
             sm_result = sm_info_dict.get(ticker, {})
             sm_warnings = sm_result.get("warnings", [])
+
             if sm_warnings:
                 print(f"   🚨 BÁO ĐỘNG ĐỎ [{ticker}] (Lãi/Lỗ: {pnl_pct:+.2f}%):")
                 print(f"      Lý do: {' | '.join(sm_warnings)}!")
-                print(f"      => HÀNH ĐỘNG: Smart Money đang thoát hàng. Cân nhắc hạ 50% tỷ trọng hoặc chốt lời NGAY LẬP TỨC để bảo toàn vốn!")
+                print(f"      => HÀNH ĐỘNG: Smart Money đang thoát hàng. Hạ 50% tỷ trọng hoặc chốt lời NGAY LẬP TỨC để bảo toàn vốn!")
 
-            # --- TRAILING STOP ---
+            if omni_now and not omni_now.get('is_offline', True):
+                print(f"   ⚡ X-Ray T0 [{ticker}]: {t0_verdict}")
+                print(f"      Khớp chủ động: {t0_net_active:+.1f} Tỷ")
+                print(f"      Ngoại T0 (Khớp Lệnh): {t0_f_matched:+.1f} Tỷ VNĐ (Impact: {t0_f_impact:.1f}%) (Đã khấu trừ Deal)")
+                print(f"      Tác nhân : {t0_driver}")
+
+            # 3. NÂNG CHẶN LÃI (TRAILING STOPLOSS)
             highest_price = float(pos.get('highest_price', pos.get('entry_price', current_price)))
             if current_price > highest_price:
                 pos['highest_price'] = current_price
@@ -1311,13 +1330,30 @@ class LiveAssistant:
                     if "REAL" in p_type_label:
                         self._log_trade(ticker, "UPDATE_SL_REAL", current_price, msg)
 
+            # 4. LOGIC QUYẾT ĐỊNH (BÁN HAY GIỮ?)
             sell_reasons = []
             action = "HOLD"
-            
+
+            # A. Kích hoạt Cắt lỗ/Chặn lãi cứng
             if current_price <= pos.get('sl_price', 0):
                 sell_reasons.append(f"Chạm SL/Trailing ({pos['sl_price']:,.0f})")
                 action = "SELL (STOP LOSS)"
 
+            # B. Kích hoạt Bán Khẩn Cấp dựa trên Vi Cấu Trúc T0 (L2 Trap)
+            if "BEARISH (Bẫy Kéo Xả Ảo)" in t0_verdict:
+                sell_reasons.append("🚨 Bẫy L2 T0 (Kê mua ảo dụ FOMO để xả thật)")
+                action = "SELL (EMERGENCY TAKE PROFIT/CUT LOSS)"
+
+            # C. Kích hoạt Chốt Lời Sớm T0 (Chống bị úp sọt cuối phiên)
+            if ("TÂY ÚP SỌT" in t0_driver or "NỘI TỰ DẪM ĐẠP" in t0_driver) and t0_net_active < -20.0:
+                if pnl_pct > 0:
+                    sell_reasons.append(f"T0 Lực xả cực đoan ({t0_driver}) -> Chốt lời khóa lợi nhuận")
+                    action = "SELL (PROACTIVE TAKE PROFIT)"
+                else:
+                    sell_reasons.append(f"T0 Gãy cấu trúc ({t0_driver}) -> Cắt lỗ sớm giảm thiệt hại")
+                    action = "SELL (PROACTIVE CUT LOSS)"
+
+            # D. Kích hoạt Bán dựa trên Kỹ thuật/Mùa vụ
             if self.season == "Q4_HARVEST" and pnl_pct > 5 and signal in ['UT', 'SOW']:
                 sell_reasons.append(f"Q4 Thu quân: {signal}")
                 action = "SELL (Q4 HARVEST)"
@@ -1325,12 +1361,18 @@ class LiveAssistant:
                 sell_reasons.append(f"Kỹ thuật Xấu: {signal}")
                 action = "SELL (WYCKOFF SIGNAL)"
 
+            # 5. XUẤT LỆNH VÀ CẬP NHẬT DANH MỤC
             if action != "HOLD":
-                print(f"   {ticker}: 🔴 SELL | PnL: {pnl_pct:+.2f}% | Lý do: {', '.join(sell_reasons)}")
-                if "REAL" in p_type_label:
+                print(f"   {ticker}: 🔴 LỆNH XUẤT QUỸ | PnL: {pnl_pct:+.2f}% | Lý do: {', '.join(sell_reasons)}")
+                if "REAL" in p_type_label: 
                     self._log_trade(ticker, "SELL_REAL", current_price, f"PnL: {pnl_pct:+.2f}%. Lý do: {', '.join(sell_reasons)}")
             else:
-                print(f"   {ticker}: 🟢 HOLD | PnL: {pnl_pct:+.2f}% | SL: {pos['sl_price']:,.0f}")
+                # Nếu T0 Đang đỡ giá, In lời động viên
+                if "NỘI CÂN TÂY" in t0_driver or "NGOẠI ĐỠ GIÁ" in t0_driver or "NGOẠI DẪN SÓNG" in t0_driver:
+                    print(f"   {ticker}: 🟢 GỒNG LÃI TỰ TIN | PnL: {pnl_pct:+.2f}% | T0 đang có Tay To bảo kê chặn dưới!")
+                else:
+                    print(f"   {ticker}: 🟢 HOLD | PnL: {pnl_pct:+.2f}% | SL: {pos['sl_price']:,.0f}")
+                
                 active_portfolio[ticker] = pos 
             print("  " + "-" * 50)
 
