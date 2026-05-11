@@ -572,6 +572,32 @@ class OmniFlowMatrix:
                 signals.insert(0, f"BẪY L2: Lệnh bán thực tế to gấp {1/l2_data['whale_ratio']:.1f}x. Lái kê lệnh ảo dụ Fomo!")
                 verdict = "BEARISH (Bẫy Kéo Xả Ảo)"
 
+        # --- THUẬT TOÁN ĐỌC VỊ TÁC NHÂN T0 (T0 DRIVER ENGINE) ---
+        driver_msg = "Chưa rõ tác nhân"
+        f_impact_pct = 0
+        if total_intra_val > 0:
+            # 1. Tính Trọng số chi phối của Ngoại (%)
+            f_impact_pct = (f_matched_net_t0 / total_intra_val) * 100
+            
+            # 2. Tính xu hướng giá T0 (Dùng last_price so với open_price, ở đây dùng tạm so với tham chiếu/vwap)
+            price_is_up = last_price > vwap_t0 if vwap_t0 > 0 else net_active_bn > 0
+            
+            # 3. Suy luận Logic
+            if price_is_up:
+                if f_impact_pct > 15.0:
+                    driver_msg = f"🌍 Ngoại dẫn sóng (Bao thầu {f_impact_pct:.1f}% thanh khoản mua)."
+                elif f_impact_pct < -10.0 and net_active_bn > 0:
+                    driver_msg = f"🔥 Nội Cân Tây: Ngoại xả {-f_impact_pct:.1f}%, nhưng Lái Nội hấp thụ hết đẩy giá lên."
+                elif net_active_bn > (total_intra_val * 0.1):
+                    driver_msg = f"🇻🇳 Sóng Thuần Nội: Tiền trong nước chủ động kéo giá, Ngoại đứng ngoài."
+            else:
+                if f_impact_pct < -15.0:
+                    driver_msg = f"🩸 Tây Úp Sọt: Ngoại táng rát (Chiếm {-f_impact_pct:.1f}% thanh khoản bán), Nội buông tay."
+                elif f_impact_pct > 10.0 and net_active_bn < 0:
+                    driver_msg = f"🛡️ Ngoại Đỡ Giá: Nội hoảng loạn xả, Tây nhặt giá rẻ ({f_impact_pct:.1f}% thanh khoản)."
+                elif net_active_bn < -(total_intra_val * 0.1):
+                    driver_msg = f"📉 Nội Tự Dẫm Đạp: Dòng tiền trong nước tự xả gãy giá."
+
         # --- PHẦN 3: CHỐT KẾT LUẬN ---
         if verdict == "NEUTRAL (Giằng co)": 
             if is_offline: 
@@ -589,9 +615,10 @@ class OmniFlowMatrix:
             "net_active_bn": net_active_bn,
             "f_net_t0": f_net_t0,
             "t0_f_matched_net_bn": f_matched_net_t0, # Truyền số sạch ra ngoài cho báo cáo
+            "t0_f_impact_pct": f_impact_pct, # Trả về % để Sniper hiển thị
+            "driver_msg": driver_msg,        # Trả về câu chẩn đoán
             "imbalance": imbalance,
             "details": " | ".join(signals) if signals else "Chưa có dòng tiền đột biến.",
-            # Trả ngược Level 2 data cho live.py/sniper.py đọc để hiển thị chi tiết (nếu cần)
             "l2_data": past_context.get('l2_data', None) if past_context else None, # dữ liệu t-1
             "is_offline": is_offline
         }

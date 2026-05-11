@@ -971,7 +971,7 @@ class VNStockDataPipeline:
             old_df = self.old_intraday.get(ticker, None)
             try:
                 quote = Quote(symbol=ticker, source=self.source)
-                new_df = quote.intraday()
+                new_df = quote.intraday(page_size=20000)
                 
                 required_cols = ['time', 'price', 'volume', 'match_type', 'id']
                 new_df = self._validate_schema(new_df, required_cols, item_name=f"INTRADAY - {ticker}")
@@ -989,25 +989,22 @@ class VNStockDataPipeline:
                         old_df['time'] = pd.to_datetime(old_df['time'], unit='ms' if pd.api.types.is_numeric_dtype(old_df['time']) else None)
                         new_df['time'] = pd.to_datetime(new_df['time'], unit='ms' if pd.api.types.is_numeric_dtype(new_df['time']) else None)
                         
-                        # 1. Gộp TOÀN BỘ dữ liệu cũ và mới (Không vứt bỏ T-1 nữa)
-                        combined = pd.concat([old_df, new_df])
+                        # Xác định ngày của lô dữ liệu mới kéo về
+                        new_date = new_df['time'].iloc[0].dt.date.max()
                         
-                        # 2. Xóa lệnh trùng (Giữ an toàn khi chạy Bot nhiều lần trong 1 ngày)
-                        subset_cols = [c for c in ['time', 'price', 'volume', 'match_type', 'id'] if c in combined.columns]
-                        combined = combined.drop_duplicates(subset=subset_cols, keep='last')
-                        
-                        combined = combined.sort_values('time')
-                        
-                        # 3. BẢO VỆ Ổ CỨNG & RAM: CHỈ GIỮ LẠI LỊCH SỬ 30 NGÀY GẦN NHẤT
-                        unique_dates = combined['time'].dt.date.unique()
-                        if len(unique_dates) > 30:
-                            # Lấy mốc cắt là ngày thứ 30 tính từ dưới lên
-                            cutoff_date = unique_dates[-30]
-                            # Chuyển cutoff_date (datetime.date) sang pd.Timestamp để so sánh
-                            cutoff_timestamp = pd.Timestamp(cutoff_date)
-                            combined = combined[combined['time'] >= cutoff_timestamp]
+                        # Lọc dữ liệu cũ: Chỉ lấy những lệnh cũ của CÙNG NGÀY hôm nay
+                        # (Để ghép với dữ liệu mới, tránh file phình to do chứa cả dữ liệu hôm qua)
+                        old_today_df = old_df[old_df['time'].dt.date == new_date]
+
+                        if not old_today_df.empty:
+                            combined = pd.concat([old_today_df, new_df])
                             
-                        return combined
+                            # Xóa lệnh trùng dựa trên thời gian, giá, khối lượng và loại lệnh
+                            subset_cols = [c for c in ['time', 'price', 'volume', 'match_type'] if c in combined.columns]
+                            combined = combined.drop_duplicates(subset=subset_cols, keep='last')
+                            
+                            combined = combined.sort_values('time')
+                            return combined
 
                     return new_df
             except Exception: pass

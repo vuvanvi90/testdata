@@ -142,7 +142,7 @@ class LiveAssistant:
         except Exception as e:
             print(f"[!] Lỗi khởi động Blacklist Guard: {e}")
 
-        # KHỞI ĐỘNG HỆ THỐNG X-QUANG ĐA CHIỀU (OMNI-MATRIX)
+        # KHỞI ĐỘNG HỆ THỐNG X-QUANG ĐA CHIỀU (OMNI-MATRIX V3.1)
         try:
             data_frames = {
                 'prop': self.df_prop,
@@ -179,14 +179,10 @@ class LiveAssistant:
             small_tickers = df_idx[df_idx['index_code'] == 'VNSmallCap']['ticker'].tolist()
             hose_tickers = df_idx[df_idx['index_code'] == 'HOSE']['ticker'].tolist()
 
-            if self.universe == "VN30":
-                valid_tickers = vn30_tickers
-            elif self.universe == "VNMidCap":
-                valid_tickers = mid_tickers
-            elif self.universe == "VNSmallCap":
-                valid_tickers = small_tickers
-            elif self.universe == "HOSE" or self.universe == "ALL":
-                valid_tickers = hose_tickers
+            if self.universe == "VN30": valid_tickers = vn30_tickers
+            elif self.universe == "VNMidCap": valid_tickers = mid_tickers
+            elif self.universe == "VNSmallCap": valid_tickers = small_tickers
+            elif self.universe in ["HOSE", "ALL"]: valid_tickers = hose_tickers
                 
         if valid_tickers:
             # 1. LỌC ĐỒNG LOẠT CÁC DATAFRAME (GIẢI PHÓNG RAM)
@@ -564,11 +560,7 @@ class LiveAssistant:
             # Lấy tên viết tắt (short_name) của quỹ
             fund_name = row.get('short_name', row.get('fund_code', 'Unknown'))
             yield_pct = row.get(return_col, 0) if return_col else 0
-            
-            top_funds.append({
-                'fund_name': fund_name,
-                'expected_yield': float(yield_pct)
-            })
+            top_funds.append({'fund_name': fund_name, 'expected_yield': float(yield_pct)})
             
         return top_funds
 
@@ -1135,7 +1127,7 @@ class LiveAssistant:
                     score += 10
                     details.append(f"🛡️ RE-TEST VAH: Giá kiểm định lại trần cũ thành công (+10)")
 
-        # OMNI-MATRIX T0 PREDICTION & L2 AUDIT (VŨ KHÍ TỐI THƯỢNG)
+        # OMNI-MATRIX T0 PREDICTION & L2 AUDIT V3.1
         if omni_result and "error" not in omni_result:
             verdict = omni_result.get('verdict', '')
             details_str = omni_result.get('details', '')
@@ -1172,7 +1164,6 @@ class LiveAssistant:
             dp_data = self.darkpool_signals[ticker]
             # CHỈ CỘNG ĐIỂM NẾU TÍN HIỆU CÒN HẠN SỬ DỤNG
             if dp_data.get('valid_for_date') == system_t0_str:
-                dp_data = self.darkpool_signals[ticker]
                 if dp_data['action'] == 'BUY_TARGET':
                     score += 15
                     details.append(f"📡 Dark Pool Radar (Gom Mạnh/Bắt Đáy) (+15)")
@@ -1436,7 +1427,7 @@ class LiveAssistant:
         for ticker in report['Ticker']:
             board_info_dict[ticker] = self._get_market_sentiment(ticker)
             fund_info_dict[ticker] = self._get_fundamental_data(ticker)
-            sm_info_dict[ticker] = self.sm_engine.analyze_ticker(ticker, board_info_dict[ticker])
+            sm_info_dict[ticker] = self.sm_engine.analyze_ticker(ticker)
             # Quét X-Quang Tồn kho Cá mập
             df_pr_ticker = self.prop_dict.get(ticker)
             df_l2_ticker = self.price_l2_dict.get(ticker)
@@ -1653,25 +1644,8 @@ class LiveAssistant:
                 print(f"🌐 VĨ MÔ THUẬN LỢI (ĐÈN XANH): Tiền vào dứt khoát toàn TT. Cờ tới tay!")
 
         if hasattr(self, 'market_net_active'):
-            if self.market_net_active > 0:
-                print(f"🔥 DÒNG TIỀN ĐANG VÀO {self.universe}: (+{self.market_net_active:.1f} Tỷ)")
-            elif self.market_net_active < 0:
-                print(f"🚨 DÒNG TIỀN ĐANG RÚT KHỎI {self.universe}: ({self.market_net_active:.1f} Tỷ)")
-
-        # X-QUANG LỆNH TỪNG MÃ (MICROSTRUCTURE)
-        if hasattr(self, 'intraday_dict') and ticker in self.intraday_dict:
-            intra_data = self.intraday_dict[ticker]
-            net_active = intra_data.get('net_active_bn', 0)
-            vwap = intra_data.get('vwap', 0)
-            last_price = intra_data.get('last_price', 0)
-            
-            if net_active > 0:
-                if last_price >= vwap:
-                    print(f"🌊 TIỀN VÀO CHỦ ĐỘNG: Cầu nuốt trọn cung (+{net_active:.1f} Tỷ), Giá neo trên VWAP vững chắc.")
-                else:
-                    print(f"⚖️ LỰC CẦU GIẰNG CO: Mua chủ động (+{net_active:.1f} Tỷ) nhưng Lái đang đè giá dưới VWAP.")
-            elif net_active <= 0:
-                print(f"🩸 BẪY LỆNH ẢO (SPOOFING): Breakout nhưng Bán chủ động áp đảo ({net_active:.1f} Tỷ). Lái đang kê mua xả bán!")
+            if self.market_net_active > 0: print(f"🔥 DÒNG TIỀN ĐANG VÀO {self.universe}: (+{self.market_net_active:.1f} Tỷ)")
+            elif self.market_net_active < 0: print(f"🚨 DÒNG TIỀN ĐANG RÚT KHỎI {self.universe}: ({self.market_net_active:.1f} Tỷ)")
 
         # Tạo list lưu các mã đã vượt qua vòng chấm điểm và các mã đã được chấm điểm
         selected_candidates, score_candidates = [], []
@@ -1805,15 +1779,20 @@ class LiveAssistant:
 
             # Lấy giá vốn Lái từ Market Flow
             sm_vwap = mf_result.get('sm_vwap', 0)
-
+            shark_status = mf_result.get('sm_status', 'NEUTRAL')
             poc_price, val, vah = vol_profile
 
             print("-" * 65)
             print(f"✅ MUA | {ticker} | Điểm: {total_score}/100 | Signal: {signal}")
             print(f"   Lý do: {', '.join(score_details)}")
-            print(f"   📊 X-Ray: Giá vốn Cá mập ~{sm_vwap:,.0f}đ | Sức ép xả (DTL): {mf_result.get('dtl_days',0):.1f} ngày")
+            print(f"   📊 X-Ray: Vị thế Tay to: 🎯 {shark_status}")
+            print(f"      => Giá vốn Cá mập ~{sm_vwap:,.0f}đ | Sức ép xả (DTL): {mf_result.get('dtl_days',0):.1f} ngày")
             if omni_now and "error" not in omni_now:
-                print(f"   ⚡ X-Ray T0: {omni_now['verdict']} | Khớp chủ động: {omni_now['net_active_bn']:+.1f} Tỷ")
+                f_matched_t0 = omni_now.get('t0_f_matched_net_bn', omni_now.get('f_net_t0', 0))
+                f_impact = omni_now.get('t0_f_impact_pct', 0)
+                driver_msg = omni_now.get('driver_msg', 'Chưa rõ tác nhân')
+                print(f"   ⚡ X-Ray T0: {omni_now['verdict']} | Tác nhân: {driver_msg}")
+                print(f"      => Khớp chủ động: {omni_now['net_active_bn']:+.1f} Tỷ | Ngoại khớp sạch: {f_matched_t0:+.1f} Tỷ (Impact: {f_impact:.1f}%)")
             print(f"   📊 Sổ lệnh hiện tại: Bán rẻ nhất {best_ask:,.0f} | Mua cao nhất {best_bid:,.0f}")
             print(f"   📊 Price: {price:,.0f} | VAL: {val:,.0f} | VAH {vah:,.0f}")
             print(f"   🎯 HÀNH ĐỘNG: {buy_strategy} {shares:,} cp quanh {suggested_buy:,.0f}đ {mc_sizing_note}")

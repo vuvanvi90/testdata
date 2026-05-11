@@ -345,7 +345,7 @@ class TargetSniper:
                 'best_ask': safe_float(row.get('ask_price_1', row.get('close_price', price)))
             }
 
-        sm_result = self.sm_engine.analyze_ticker(self.ticker, board_info)
+        sm_result = self.sm_engine.analyze_ticker(self.ticker)
         mf_result = self.mf_analyzer.analyze_flow(self.ticker, self.df_price_l2, self.df_prop)
         sm_vwap = mf_result.get('sm_vwap', 0)
         dtl = mf_result.get('dtl_days', 0)
@@ -436,10 +436,11 @@ class TargetSniper:
             is_offline = omni_now.get('is_offline') if omni_now else None
             if not is_offline:
                 print(f"    - Khớp chủ động T0       : {omni_now.get('net_active_bn', 0):+.1f} Tỷ VNĐ")
-                # 🚀 Lọc hiển thị Dòng tiền Ngoại T0 sạch sẽ
                 f_matched_t0 = omni_now.get('t0_f_matched_net_bn', omni_now.get('f_net_t0', 0))
-                print(f"    - Ngoại T0 (Khớp Lệnh)   : {f_matched_t0:+.1f} Tỷ VNĐ (Đã khấu trừ Deal)")
+                f_impact = omni_now.get('t0_f_impact_pct', 0)
+                print(f"    - Ngoại T0 (Khớp Lệnh)   : {f_matched_t0:+.1f} Tỷ VNĐ (Impact: {f_impact:.1f}%) (Đã khấu trừ Deal)")
                 print(f"    - Sổ lệnh (Bid/Ask)      : Mất cân bằng {omni_now.get('imbalance', 0):+.2f} (Dương=Kê Mua / Âm=Chặn Bán)")
+                print(f"    - Tác nhân T0            : {omni_now.get('driver_msg')}")
                 print(f"    => BẢN ÁN OMNI T0        : {omni_now.get('verdict', 'N/A')}")
                 print(f"    => LÝ DO CHI TIẾT        : {omni_now.get('details', 'N/A')}")
             else:

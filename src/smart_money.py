@@ -3,8 +3,9 @@ from datetime import datetime
 
 class SmartMoneyEngine:
     """
-    Động cơ Phân tích Dòng tiền Thông minh (Smart Money) V3.0
-    🚀 CẬP NHẬT: 
+    Động cơ Phân tích Dòng tiền Thông minh (Lịch sử & Vị thế) V3.0
+    Chỉ chuyên trách phân tích xu hướng EOD từ T-130 đến T-1. Tuyệt đối KHÔNG đụng chạm vào dữ liệu T0
+    CẬP NHẬT: 
        - Tích hợp Trọng số Chi phối (Impact Factor) để khử Nhiễu.
        - Tương thích 100% với master_price_l2 (Matched Flow).
     """
@@ -22,7 +23,6 @@ class SmartMoneyEngine:
         if self.universe == "VN30":
             return {
                 "t1_spike": 40.0,         # Cú giật T-1 siêu mạnh (Gom/Xả đột biến)
-                "intraday_danger": -20.0, # Phanh khẩn cấp T0
                 "short_term_acc": 20.0,   # Gom 5D 
                 "dump_3d": -80.0,         # Tháo cống 3D liên tục
                 "min_impact_pct": 5.0     # Tỷ trọng xả tối thiểu phải > 5% mới giật cờ đỏ
@@ -30,7 +30,6 @@ class SmartMoneyEngine:
         elif self.universe == "VNMidCap":
             return {
                 "t1_spike": 12.0,       
-                "intraday_danger": -10.0, 
                 "short_term_acc": 10.0,   
                 "dump_3d": -30.0,
                 "min_impact_pct": 4.0     # Midcap dễ bị tổn thương hơn, mốc là 4%
@@ -38,13 +37,12 @@ class SmartMoneyEngine:
         else: # VNSmallCap / Penny
             return {
                 "t1_spike": 3.0,        # Rất nhỏ nhưng bất thường với Penny
-                "intraday_danger": -3.0, 
                 "short_term_acc": 5.0,    
                 "dump_3d": -10.0,
                 "min_impact_pct": 3.0     # Penny chỉ cần Lái nhả 3% thanh khoản là sập
             }
 
-    def analyze_ticker(self, ticker, board_info=None, target_date=None):
+    def analyze_ticker(self, ticker, target_date=None):
         if target_date:
             current_date = pd.to_datetime(target_date).normalize()
         else:
@@ -305,22 +303,5 @@ class SmartMoneyEngine:
                 result["is_danger"] = True
                 result["warnings"].append("Deadly Combo Xả")
                 result["last_trade_date"] = current_date
-
-        # =====================================================================
-        # LỚP 4: TẦM NHÌN TỨC THỜI (BẢNG ĐIỆN INTRADAY T0)
-        # =====================================================================
-        if board_info:
-            net_f_intraday = board_info.get('net_foreign', 0)
-            
-            # CHỈ GIỮ LẠI CHỨC NĂNG PHANH KHẨN CẤP (EMERGENCY BRAKE)
-            if net_f_intraday <= self.thresh['intraday_danger']:
-                result["is_danger"] = True
-                result["warnings"].append(f"Tây tháo cống INTRADAY ({net_f_intraday:.1f} Tỷ)")
-                result["last_trade_date"] = current_date
-            
-            if net_f_intraday >= (self.thresh['t1_spike'] * 0.5): # T0 mua = nửa cú giật T-1 là đáng kể
-                result["sm_details"].append(f"Tây Mua Tức Thời T0 (+{net_f_intraday:.1f} Tỷ)")
-            elif net_f_intraday <= -(self.thresh['t1_spike'] * 0.5):
-                result["sm_details"].append(f"Tây Bán Tức Thời T0 ({net_f_intraday:.1f} Tỷ)")
 
         return result
