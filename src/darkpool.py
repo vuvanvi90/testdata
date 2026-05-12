@@ -8,6 +8,12 @@ from pathlib import Path
 warnings.filterwarnings('ignore')
 
 class DarkPoolRadar:
+    """
+    ĐÀI QUAN SÁT DÒNG TIỀN NGẦM (DARK POOL RADAR) V3.1
+    🚀 Áp dụng Kiến trúc Kép (Lambda):
+       - Luồng EOD (T-5 -> T-1): Khấu trừ price_l2 & prop_flow để định danh Lái Nội.
+       - Luồng T0 (Real-time): Quét put_through & board để bắt quả tang Premium/Discount.
+    """
     def __init__(self, data_dir='data/parquet'):
         self.data_dir = Path(data_dir)
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Khởi động Đài quan sát Dòng tiền Ngầm (Dark Pool Radar)...")
@@ -15,13 +21,15 @@ class DarkPoolRadar:
         self.df_intra = self._load_parquet_safe(self.data_dir / 'intraday/master_intraday.parquet')
         self.df_pt = self._load_parquet_safe(self.data_dir / 'intraday/master_put_through.parquet')
         self.df_price_l2 = self._load_parquet_safe(self.data_dir / 'price/master_price_l2.parquet')
+        self.df_prop = self._load_parquet_safe(self.data_dir / 'macro/prop_flow.parquet')
+        self.df_board = self._load_parquet_safe(self.data_dir / 'board/master_board.parquet')
         self.df_idx = self._load_parquet_safe(self.data_dir / 'macro/index_components.parquet')
         
         if not self.df_price_l2.empty:
             if 'matched_volume' in self.df_price_l2.columns and 'volume' not in self.df_price_l2.columns:
                 self.df_price_l2 = self.df_price_l2.rename(columns={'matched_volume': 'volume'})
 
-        self.t0_date = self._identify_system_t0()
+        self.t0_date, self.t1_date = self._identify_timelines()
 
         # Biến lưu trữ kết quả
         self.basket_stats = {}
@@ -50,329 +58,209 @@ class DarkPoolRadar:
                 return pd.DataFrame()
         return pd.DataFrame()
 
-    def _identify_system_t0(self):
-        """
-        Trục thời gian Hậu kiểm (Audit Timeline).
-        Luôn lấy ngày giao dịch MỚI NHẤT có trong dữ liệu làm mỏ neo T0.
-        Tránh tuyệt đối lỗi tìm kiếm ngày Chủ Nhật/Lễ trong file Parquet.
-        """
-        latest_date = None
+    def _identify_timelines(self):
+        """Xác định Ngày T0 (Live) và Ngày T-1 (EOD)"""
+        dates = set()
+        if not self.df_price_l2.empty and 'time' in self.df_price_l2.columns:
+            dates.update(self.df_price_l2['time'].dt.date.unique())
         
-        # 1. Ưu tiên lấy ngày mới nhất từ dữ liệu Thỏa thuận
-        if not getattr(self, 'df_pt', pd.DataFrame()).empty and 'time' in self.df_pt.columns:
-            latest_date = self.df_pt['time'].dt.date.max()
+        trading_dates = sorted(list(dates))
+        if not trading_dates: return datetime.now().date(), datetime.now().date()
             
-        # 2. Backup: Lấy từ dữ liệu Giá EOD
-        if not latest_date and not getattr(self, 'df_price', pd.DataFrame()).empty and 'time' in self.df_price_l2.columns:
-            latest_date = self.df_price_l2['time'].dt.date.max()
-            
-        return latest_date if latest_date else datetime.now().date()
+        t0 = datetime.now().date()
+        if not self.df_pt.empty and 'time' in self.df_pt.columns:
+            max_pt = self.df_pt['time'].dt.date.max()
+            if max_pt > trading_dates[-1]: t0 = max_pt
+            else: t0 = trading_dates[-1]
 
-    def _prepare_data(self):
-        """Xử lý dữ liệu nền tảng"""
-        if self.df_pt.empty or self.df_price_l2.empty or self.df_idx.empty:
-            return False
+        past_dates = [d for d in trading_dates if d < t0]
+        t1 = past_dates[-1] if past_dates else t0
+        return t0, t1
 
-        # 1. Xác định 5 phiên giao dịch gần nhất từ Bảng giá
-        self.df_price_l2['time'] = self.df_price_l2['time'].dt.normalize()
-        trading_days = sorted(self.df_price_l2['time'].dt.date.unique())
-        # Chỉ lấy những ngày quá khứ <= T0
-        valid_days = [d for d in trading_days if d <= self.t0_date]
-        self.last_5_days = valid_days[-5:] if len(valid_days) >= 5 else valid_days
-
-        # Lọc dữ liệu Thỏa thuận trong 5 ngày này
-        self.df_pt['time'] = self.df_pt['time'].dt.normalize()
-        self.pt_recent = self.df_pt[self.df_pt['time'].dt.date.isin(self.last_5_days)].copy()
-
-        # 2. Map Rổ chỉ số (VN30, VNMidCap, VNSmallCap) vào data Thỏa thuận
-        # Tạo dictionary { 'ACB': 'VN30', ... }
+    def _get_basket_mapping(self):
         idx_dict = self.df_idx.set_index('ticker')['index_code'].to_dict()
-        self.pt_recent['basket'] = self.pt_recent['symbol'].map(idx_dict).fillna('HOSE')
+        return idx_dict
 
-        # Chỉ giữ lại 3 rổ chính
-        self.pt_recent = self.pt_recent[self.pt_recent['basket'].isin(['VN30', 'VNMidCap', 'VNSmallCap'])]
+    def _analyze_historical_deals(self, ticker, df_l2_t, df_prop_t):
+        """Bóc tách Kế toán Kép T-1 (Săn tìm Lái Nội)"""
+        if df_l2_t.empty: return 0, 0, 0, 0, 0, "NO_DATA"
 
-        # 3. Tính Khối lượng Khớp lệnh Trung bình 20 phiên (MA20 Volume) cho TẤT CẢ các mã
-        # Lấy 20 ngày gần nhất
-        recent_20_days = valid_days[-20:] if len(valid_days) >= 20 else valid_days
-        df_price_20d = self.df_price_l2[self.df_price_l2['time'].dt.date.isin(recent_20_days)]
+        DIV = 1_000_000_000
+        total_deal_val = df_l2_t['deal_value'].sum() / DIV
+        if total_deal_val == 0: return 0, 0, 0, 0, 0, "NONE"
+
+        f_buy_deal = df_l2_t['fr_buy_value_deal'].sum() / DIV if 'fr_buy_value_deal' in df_l2_t.columns else 0
+        f_sell_deal = df_l2_t['fr_sell_value_deal'].sum() / DIV if 'fr_sell_value_deal' in df_l2_t.columns else 0
         
-        self.vol_ma20_dict = df_price_20d.groupby('ticker')['volume'].mean().to_dict()
+        p_buy_deal, p_sell_deal = 0, 0
+        if not df_prop_t.empty:
+            p_buy_deal = df_prop_t['total_deal_buy_trade_value'].sum() / DIV if 'total_deal_buy_trade_value' in df_prop_t.columns else 0
+            p_sell_deal = df_prop_t['total_deal_sell_trade_value'].sum() / DIV if 'total_deal_sell_trade_value' in df_prop_t.columns else 0
+
+        # Phương trình Khấu trừ Bóng tối (Shadow Deduction)
+        shadow_buy = max(0, total_deal_val - f_buy_deal - p_buy_deal)
+        shadow_sell = max(0, total_deal_val - f_sell_deal - p_sell_deal)
+
+        intent = "NEUTRAL"
+        if shadow_buy > (total_deal_val * 0.6): intent = "🥷 LÁI NỘI GOM NGẦM"
+        elif shadow_sell > (total_deal_val * 0.6): intent = "🩸 LÁI NỘI XẢ NGẦM"
+        elif f_buy_deal > (total_deal_val * 0.6): intent = "🌍 TÂY LÔNG GOM NGẦM"
+        elif f_sell_deal > (total_deal_val * 0.6): intent = "🏃 TÂY LÔNG XẢ NGẦM"
+        elif p_buy_deal > (total_deal_val * 0.6): intent = "🏢 TỰ DOANH GOM NGẦM"
+        elif p_sell_deal > (total_deal_val * 0.6): intent = "🏦 TỰ DOANH XẢ NGẦM"
+        else: intent = "🤝 TRAO TAY HỖN HỢP"
+
+        return total_deal_val, shadow_buy, shadow_sell, f_buy_deal, f_sell_deal, intent
+
+    def _analyze_t0_deals(self, ticker, df_pt_t0):
+        """Bóc tách Thỏa thuận T0 Real-time (Đo lường Khát máu)"""
+        if df_pt_t0.empty: return 0, 0, "NONE"
+
+        DIV = 1_000_000_000
+        t0_val = df_pt_t0['match_value'].sum() / DIV
         
-        # Lưu lại Giá Đóng cửa cuối cùng để so sánh
-        last_day = valid_days[-1] if valid_days else None
-        self.last_price_dict = self.df_price_l2[self.df_price_l2['time'].dt.date == last_day].set_index('ticker')['close'].to_dict()
+        # 1. Đo lường Premium/Discount so với Bảng điện
+        board_price = 0
+        if not self.df_board.empty:
+            b_col = 'symbol' if 'symbol' in self.df_board.columns else 'ticker'
+            b_df = self.df_board[self.df_board[b_col] == ticker]
+            if not b_df.empty:
+                board_price = b_df.iloc[0].get('close_price', 0)
 
-        return True
+        # 2. Đo lường với VWAP T0 Khớp lệnh
+        vwap_t0 = board_price
+        if not self.df_intra.empty:
+            i_df = self.df_intra[(self.df_intra['ticker'] == ticker) & (self.df_intra['time'].dt.date == self.t0_date)]
+            if not i_df.empty:
+                total_vol = i_df['volume'].sum()
+                vwap_t0 = (i_df['price'] * i_df['volume']).sum() / total_vol if total_vol > 0 else board_price
 
-    def _analyze_baskets(self):
-        """Tầng 1: Góc nhìn Vĩ mô theo Rổ (Basket Heatmap)"""
-        if self.pt_recent.empty: return
+        # 3. Chẩn đoán Lệnh T0
+        df_pt_t0['weighted_change'] = df_pt_t0['change_percent'] * df_pt_t0['match_value']
+        avg_change = (df_pt_t0['weighted_change'].sum() / df_pt_t0['match_value'].sum()) * 100
 
-        # Nhóm theo rổ
-        grouped = self.pt_recent.groupby('basket')
+        intent = "NEUTRAL"
+        if avg_change > 1.0 or (vwap_t0 > 0 and df_pt_t0['price'].mean() > vwap_t0 * 1.01):
+            intent = f"🔥 PREMIUM (+{avg_change:.1f}%)"
+        elif avg_change < -1.0 or (vwap_t0 > 0 and df_pt_t0['price'].mean() < vwap_t0 * 0.99):
+            intent = f"🧊 DISCOUNT ({avg_change:.1f}%)"
+        else:
+            intent = f"⚖️ THAM CHIẾU"
+
+        return t0_val, avg_change, intent
+
+    def run_radar(self):
+        if self.df_price_l2.empty:
+            print("[!] Thiếu dữ liệu L2.")
+
+        print(f"[*] Phân tích Dòng tiền Ngầm: EOD (T-1: {self.t1_date}) và Live (T0: {self.t0_date})")
         
-        for basket, group in grouped:
-            total_val_bn = group['match_value'].sum() / 1_000_000_000
-            
-            # Tính Weighted Premium/Discount
-            group['weighted_change'] = group['change_percent'] * group['match_value']
-            avg_change = (group['weighted_change'].sum() / group['match_value'].sum()) * 100
-            
-            if avg_change > 1.0:
-                status = f"🔥 PREMIUM (Lệch {avg_change:+.1f}%) -> Dòng tiền ngầm đang GOM ĐẮT!"
-            elif avg_change < -1.0:
-                status = f"🧊 DISCOUNT (Lệch {avg_change:+.1f}%) -> Áp lực phân phối/hoán đổi nội bộ."
-            else:
-                status = f"⚖️ NEUTRAL (Lệch {avg_change:+.1f}%) -> Sang tay quanh tham chiếu."
-                
-            self.basket_stats[basket] = {
-                'total_val': total_val_bn,
-                'status': status
-            }
+        idx_dict = self._get_basket_mapping()
+        all_tickers = self.df_price_l2['ticker'].unique()
+        
+        # Lấy 5 ngày trước T0
+        trading_days = sorted(self.df_price_l2['time'].dt.date.unique())
+        past_days = [d for d in trading_days if d < self.t0_date]
+        last_5d = past_days[-5:] if len(past_days) >= 5 else past_days
 
-    def _detect_anomalies(self):
-        """Tầng 2: Truy quét Dấu chân Cá mập (Anomaly Detection) - Bản nâng cấp V2"""
-        if self.pt_recent.empty: return
-
-        grouped = self.pt_recent.groupby('symbol')
         anomalies_temp = []
+        for ticker in all_tickers:
+            basket = idx_dict.get(ticker, 'HOSE')
+            # if basket not in ['VN30', 'VNMidCap', 'VNSmallCap']: continue
+            if basket not in ['VN30', 'VNMidCap']: continue
 
-        for ticker, group in grouped:
-            basket = group['basket'].iloc[0]
-            total_val_bn = group['match_value'].sum() / 1_000_000_000
+            # --- DỮ LIỆU ---
+            df_l2_5d = self.df_price_l2[(self.df_price_l2['ticker'] == ticker) & (self.df_price_l2['time'].dt.date.isin(last_5d))]
+            df_prop_5d = self.df_prop[(self.df_prop['ticker'] == ticker) & (self.df_prop['time'].dt.date.isin(last_5d))] if not self.df_prop.empty else pd.DataFrame()
             
-            # =================================================================
-            # THIẾT LẬP NGƯỠNG ĐỘNG (DYNAMIC THRESHOLDS) THEO TỪNG RỔ
-            # =================================================================
-            if basket == 'VN30':
-                min_val = 50.0       # VN30: Dưới 50 Tỷ là nhiễu, bỏ qua
-                extreme_val = 200.0  # Mốc Cá mập khổng lồ
-                surge_ratio = 1.0    # Chỉ cần Thỏa thuận = 1x MA20 là đã rất khủng khiếp
-            elif basket == 'VNMidCap':
-                min_val = 15.0       # MidCap: Tối thiểu 15 Tỷ
-                extreme_val = 50.0
-                surge_ratio = 1.5    # Cần gấp rưỡi thanh khoản sàn mới gọi là đột biến
-            else: # VNSmallCap
-                min_val = 3.0        # SmallCap/Penny: 3 Tỷ đã là đáng chú ý
-                extreme_val = 15.0
-                surge_ratio = 2.5    # Phải gấp 2.5 lần thanh khoản bình thường
-                
-            if total_val_bn < min_val: continue 
-            
-            # Tính Cường độ (Liquidity Ratio)
-            pt_vol = group['volume'].sum()
-            ma20_vol = self.vol_ma20_dict.get(ticker, 0)
-            liqd_ratio = (pt_vol / ma20_vol) if ma20_vol > 0 else 0
-            
-            # Tính Weighted Change
-            group['weighted_change'] = group['change_percent'] * group['match_value']
-            avg_change = (group['weighted_change'].sum() / group['match_value'].sum()) * 100
-            
-            # Khối lượng Thỏa thuận riêng phiên T0
-            t0_group = group[group['time'].dt.date == self.t0_date]
-            t0_val_bn = t0_group['match_value'].sum() / 1_000_000_000 if not t0_group.empty else 0
-            
-            # TÌM WHALE NODE
-            whale_node = float(group.groupby('price')['volume'].sum().idxmax())
-            
-            # =================================================================
-            # 🚀 LƯỚI LỌC CÁ MẬP ĐÃ CHUẨN HÓA (NORMALIZED STRICT FILTERS)
-            # =================================================================
-            is_vol_surge = liqd_ratio > surge_ratio # Bùng nổ khối lượng
-            is_price_extreme = abs(avg_change) >= 2.0 and total_val_bn > (min_val * 1.5) # Ép giá lộ liễu
-            is_true_whale = total_val_bn > extreme_val and liqd_ratio > (surge_ratio * 0.5) # Cá mập thực sự ra tay
-            
-            if is_vol_surge or is_price_extreme or is_true_whale:
-                # Phân loại Ý đồ
-                if avg_change > 1.0: intent = f"🔥 Premium ({avg_change:+.1f}%)"
-                elif avg_change < -1.0: intent = f"🧊 Discount ({avg_change:+.1f}%)"
-                else: intent = f"⚖️ Neutral ({avg_change:+.1f}%)"
-                
-                # =====================================================================
-                # 🚀 CROSS-REFERENCING (ĐỊNH VỊ TAM GIÁC) VỚI LEVEL-2 DATA
-                # =====================================================================
-                fr_deal_state = "SHADOW_FLOW" # Lái nội mặc định
-                
-                if not getattr(self, 'df_price_l2', pd.DataFrame()).empty:
-                    df_l2_ticker = self.df_price_l2[
-                        (self.df_price_l2['ticker'] == ticker) & 
-                        (self.df_price_l2['time'].dt.date.isin(self.last_5_days))
-                    ]
-                    if not df_l2_ticker.empty:
-                        # Tính tổng giá trị Thỏa thuận trong 5 ngày
-                        f_buy_deal_bn = df_l2_ticker['fr_buy_value_deal'].sum() / 1_000_000_000
-                        f_sell_deal_bn = df_l2_ticker['fr_sell_value_deal'].sum() / 1_000_000_000
-                        total_deal_l2_bn = df_l2_ticker['deal_value'].sum() / 1_000_000_000
-                        
-                        # Chỉ gán nhãn Tây nếu Tây tham gia > 30% Deal (Tránh nhiễu)
-                        if total_deal_l2_bn > 0:
-                            if f_buy_deal_bn > (total_deal_l2_bn * 0.3) and f_sell_deal_bn < (total_deal_l2_bn * 0.1):
-                                fr_deal_state = "FOREIGN_BUY"
-                                intent += " | 🕵️ TÂY GOM NGẦM"
-                            elif f_sell_deal_bn > (total_deal_l2_bn * 0.3) and f_buy_deal_bn < (total_deal_l2_bn * 0.1):
-                                fr_deal_state = "FOREIGN_SELL"
-                                intent += " | 🏃 TÂY XẢ NGẦM"
-                            elif f_buy_deal_bn > (total_deal_l2_bn * 0.3) and f_sell_deal_bn > (total_deal_l2_bn * 0.3):
-                                fr_deal_state = "FOREIGN_CROSS"
-                                intent += " | 🤝 TÂY SANG TAY"
-                            else:
-                                fr_deal_state = "SHADOW_FLOW"
-                                intent += " | 👻 LÁI NỘI TRAO TAY"
+            p_col = 'symbol' if 'symbol' in self.df_pt.columns else 'ticker'
+            df_pt_t0 = self.df_pt[(self.df_pt[p_col] == ticker) & (self.df_pt['time'].dt.date == self.t0_date)] if not self.df_pt.empty else pd.DataFrame()
 
-                # HỆ THỐNG CHẤM ĐIỂM ĐỘT BIẾN (NORMALIZED ANOMALY SCORE)
-                # Loại bỏ việc cộng giá trị tuyệt đối (total_val_bn) để SmallCap không bị Bluechip đè bẹp.
-                # Công thức chuẩn Quant: Score = (Tỷ lệ thanh khoản) + (Biên độ giá) + (Trọng số T0)
-                t0_weight = (t0_val_bn / total_val_bn) * 10 if total_val_bn > 0 else 0
-                anomaly_score = (liqd_ratio * 20) + (abs(avg_change) * 10) + t0_weight
+            # --- TÍNH TOÁN QUÁ KHỨ 5D (T-5 -> T-1) ---
+            val_5d, s_buy, s_sell, f_buy, f_sell, past_intent = self._analyze_historical_deals(ticker, df_l2_5d, df_prop_5d)
+            
+            # --- TÍNH TOÁN T0 LIVE ---
+            val_t0, t0_change, t0_intent = self._analyze_t0_deals(ticker, df_pt_t0)
 
-                # THƯỞNG ĐIỂM SÁT THỦ: Tây gom ngầm giá cao hoặc Xả ngầm giá rát
-                if fr_deal_state == "FOREIGN_BUY" and avg_change > 0:
-                    anomaly_score += 20
-                elif fr_deal_state == "FOREIGN_SELL" and avg_change < 0:
-                    anomaly_score += 20
+            total_val = val_5d + val_t0
+            if total_val < (50 if basket == 'VN30' else 15 if basket == 'VNMidCap' else 3): continue
+
+            # Thanh khoản trung bình khớp lệnh 20D
+            df_20d = self.df_price_l2[(self.df_price_l2['ticker'] == ticker) & (self.df_price_l2['time'].dt.date.isin(past_days[-20:]))]
+            ma20_vol = df_20d['volume'].mean() if not df_20d.empty else 0
+            
+            # Lấy Volume của riêng Deal 5D+T0
+            pt_vol_5d = df_l2_5d['deal_volume'].sum() if 'deal_volume' in df_l2_5d.columns else 0
+            pt_vol_t0 = df_pt_t0['volume'].sum() if not df_pt_t0.empty else 0
+            liqd_ratio = ((pt_vol_5d + pt_vol_t0) / ma20_vol) if ma20_vol > 0 else 0
+
+            # --- LƯỚI LỌC CÁ MẬP ---
+            if liqd_ratio > (1.0 if basket == 'VN30' else 1.5 if basket == 'VNMidCap' else 2.5) or val_t0 > 10.0:
+                score = (liqd_ratio * 20) + (abs(t0_change) * 10) + (val_t0 / total_val * 10 if total_val > 0 else 0)
                 
+                # Phán quyết gộp
+                if val_t0 > 0: final_intent = f"T0: {t0_intent} | T-1: {past_intent}"
+                else: final_intent = f"T-1: {past_intent}"
+
                 anomalies_temp.append({
-                    'ticker': ticker,
-                    'basket': basket,
-                    'val_bn': total_val_bn,
-                    't0_val_bn': t0_val_bn, 
-                    'ratio': liqd_ratio,
-                    'intent': intent,
-                    'whale_node': whale_node,
-                    'avg_change': avg_change,
-                    'score': anomaly_score,
-                    'fr_deal_state': fr_deal_state
+                    'ticker': ticker, 'basket': basket, 'val_bn': val_5d, 't0_val_bn': val_t0, 
+                    'ratio': liqd_ratio, 'intent': final_intent, 'score': score, 
+                    'shadow_buy': s_buy, 'shadow_sell': s_sell
                 })
-        
-        # Sắp xếp theo Anomaly Score giảm dần và lấy Top 10
+
         self.anomalies = sorted(anomalies_temp, key=lambda x: x['score'], reverse=True)[:10]
 
-    def _forecast_tactics(self):
+        # 3. DỰ BÁO CHIẾN THUẬT
         for an in self.anomalies:
             ticker = an['ticker']
-            whale_node = an['whale_node']
-            avg_change = an['avg_change']
-            liqd_ratio = an['ratio']
-            fr_state = an.get('fr_deal_state', 'SHADOW_FLOW')
+            t0_intent = an['intent'].split('|')[0]
+            s_buy, s_sell = an['shadow_buy'], an['shadow_sell']
             
-            last_price = self.last_price_dict.get(ticker, 0)
-            if last_price == 0: continue
-            
-            dist_to_node = (last_price - whale_node) / whale_node * 100
-            forecast = ""
-            is_node_strong = liqd_ratio > 0.8
-            
-            # KỊCH BẢN 1: BỆ ĐỠ T+1 (Cần Support mạnh)
-            if -2.0 <= dist_to_node <= 1.5 and avg_change > -1.0:
-                if is_node_strong:
-                    if fr_state == "FOREIGN_BUY":
-                        forecast = f"Giá ({last_price:,.0f}) tựa nền Node ({whale_node:,.0f}) + Khối ngoại âm thầm GOM THỎA THUẬN. Bệ phóng siêu cứng. Khuyến nghị GOM MẠNH."
-                    else:
-                        forecast = f"Giá ({last_price:,.0f}) test lại Whale Node ({whale_node:,.0f}) với thanh khoản ngầm ĐỦ LỚN. Lực đỡ uy tín. Khuyến nghị CANH BẮT ĐÁY."
-                else:
-                    forecast = f"Giá ({last_price:,.0f}) về Node ({whale_node:,.0f}) nhưng Khối lượng thỏa thuận yếu ({liqd_ratio:.1f}x). Bệ đỡ rỗng, dễ thủng. THEO DÕI."
-            
-            # KỊCH BẢN 2: MÁY BƠM T+3 (Premium)
-            elif avg_change > 2.0:
-                if dist_to_node > 5.0:
-                    forecast = f"Thỏa thuận Premium mạnh nhưng giá sàn ({last_price:,.0f}) đã chạy xa Node ({whale_node:,.0f}). Chờ rũ bỏ T+1/T+2 mới có điểm vào."
-                elif dist_to_node < -3.0:
-                    forecast = f"⚠️ CÁ MẬP KẸP HÀNG: Mua Premium giá cao nhưng giá sàn rớt thảm. Động lượng cực xấu, cẩn thận vỡ deal. ĐỨNG NGOÀI."
-                else:
-                    if fr_state == "FOREIGN_BUY":
-                        forecast = f"🔥 TÂY LÔNG KHÁT HÀNG: Mua thỏa thuận Premium giá cao. Cổ phiếu cạn kiệt cung. Dự báo bứt phá T+1. TẦM NGẮM ĐẶC BIỆT."
-                    else:
-                        forecast = f"🔥 LÁI NỘI GOM HÀNG: Nổ thỏa thuận Premium ngay nền. Deal đã chốt. Dự báo bứt phá T+1/T+2. Khuyến nghị GOM MẠNH."
-                    
-            # KỊCH BẢN 3: PHÂN PHỐI TỐI (Discount sâu)
-            elif avg_change < -2.0:
-                if dist_to_node > 4.0:
-                    if fr_state == "FOREIGN_SELL":
-                        forecast = f"🩸 KHỐI NGOẠI THÁO CỐNG NGẦM: Bán thỏa thuận Discount cực sâu. Phân phối đỉnh/Bull-trap rõ ràng. BÁN/ĐỨNG NGOÀI."
-                    else:
-                        forecast = f"🩸 Giá sàn kéo thốc ({last_price:,.0f}) nhưng Lái táng thỏa thuận Discount sâu. Dấu hiệu Phân phối ngầm. T+2 TẮM MÁU. BÁN/ĐỨNG NGOÀI."
-                else:
-                    if fr_state == "FOREIGN_CROSS":
-                        forecast = f"🤝 Tây lông sang tay Discount sâu vùng đáy. Lệnh trao tay né thuế/cơ cấu quỹ, không tạo áp lực xả trên sàn. THEO DÕI."
-                    else:
-                        forecast = f"👻 Lái nội sang tay Discount sâu vùng đáy. Lệnh trao tay nội bộ, không phản ánh cung cầu thật. THEO DÕI."
-            
-            # KỊCH BẢN 4: THAY MÁU CỔ ĐÔNG LỚN (Đột biến thanh khoản ngầm)
-            elif liqd_ratio >= 5.0 and -2.0 <= avg_change <= 2.0:
-                if fr_state == "FOREIGN_CROSS":
-                    forecast = f"Tây Lông sang tay KHỦNG ({liqd_ratio:.1f}x MA20) quanh tham chiếu. Tái cơ cấu danh mục Quỹ ETF. ĐƯA VÀO TẦM NGẮM ĐẶC BIỆT."
-                else:
-                    forecast = f"Thanh khoản ngầm SIÊU ĐỘT BIẾN ({liqd_ratio:.1f}x MA20) quanh tham chiếu. Dấu hiệu thay máu cổ đông lớn hoặc Deal thâu tóm (M&A). ĐƯA VÀO TẦM NGẮM ĐẶC BIỆT."
+            action, msg = "NONE", ""
+            if "PREMIUM" in t0_intent and "GOM" in an['intent']:
+                action = "BUY_TARGET"; msg = f"🔥 T0 Khát hàng Premium + Lịch sử Gom ngầm. Siêu tín hiệu Bứt phá."
+            elif "DISCOUNT" in t0_intent and ("XẢ" in an['intent'] or s_sell > s_buy * 2):
+                action = "DANGER"; msg = f"🩸 T0 Tháo cống Discount + Lịch sử Xả ngầm. Cảnh báo Phân phối đỉnh/Đổ vỏ."
+            elif s_buy > s_sell * 3:
+                action = "BUY_TARGET"; msg = f"🥷 Lái nội Mua Gom áp đảo ({s_buy:.1f} Tỷ vs Xả {s_sell:.1f} Tỷ). Bệ đỡ giá an toàn."
+            elif s_sell > s_buy * 3:
+                action = "DANGER"; msg = f"🩸 Lái nội Xả Ngầm áp đảo ({s_sell:.1f} Tỷ vs Mua {s_buy:.1f} Tỷ). Rủi ro Tắm máu."
+            else:
+                msg = "🤝 Dòng tiền thỏa thuận giằng co, sang tay giữ nền."
+                
+            self.forecasts.append({'ticker': ticker, 'action': action, 'msg': f"[{ticker}]: {msg}"})
 
-            if forecast:
-                self.forecasts.append(f"- Kèo [{ticker}]: {forecast}")
+        self._export_signals()
+        self._print_report()
 
-    def export_signals(self):
-        """Xuất Mật lệnh (Signals) ra file JSON để live.py và sniper.py đọc"""
+    def _export_signals(self):
         out_path = self.data_dir.parent / 'live/darkpool_signals.json'
         out_path.parent.mkdir(parents=True, exist_ok=True)
         
         export_data = {}
-        # Ép t0_date thành chuỗi chuẩn để làm Hạn sử dụng
-        valid_date_str = self.t0_date.strftime('%Y-%m-%d')
-
         for an in self.anomalies:
             ticker = an['ticker']
-            # Lấy câu text dự báo tương ứng với mã này
-            forecast_text = next((f for f in self.forecasts if f"[{ticker}]" in f), "")
+            fc = next((f for f in self.forecasts if f['ticker'] == ticker), None)
             
-            # Gắn nhãn Hành động (Action) để Cỗ máy khác dễ hiểu
-            action = "NONE"
-            if "BẮT ĐÁY" in forecast_text or "GOM MẠNH" in forecast_text or "TẦM NGẮM ĐẶC BIỆT" in forecast_text:
-                action = "BUY_TARGET"
-            elif "BÁN/ĐỨNG NGOÀI" in forecast_text or "TẮM MÁU" in forecast_text or "CÁ MẬP KẸP HÀNG" in forecast_text:
-                action = "DANGER"
-
             export_data[ticker] = {
-                "basket": an['basket'],
-                "val_bn": an['val_bn'],
-                "t0_val_bn": an['t0_val_bn'],
-                "ratio": an['ratio'],
-                "intent": an['intent'],
-                "forecast": forecast_text,
-                "action": action,
-                "valid_for_date": valid_date_str, # Gắn tem Hạn sử dụng
-                "date_updated": datetime.now().strftime('%Y-%m-%d')
+                "basket": an['basket'], "val_bn": an['val_bn'], "t0_val_bn": an['t0_val_bn'],
+                "ratio": an['ratio'], "intent": an['intent'],
+                "forecast": fc['msg'] if fc else "", "action": fc['action'] if fc else "NONE",
+                "valid_for_date": self.t0_date.strftime('%Y-%m-%d'), 
+                "date_updated": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             }
-            
         with open(out_path, 'w', encoding='utf-8') as f:
             json.dump(export_data, f, ensure_ascii=False, indent=4)
-        print(f" [*] Đã phát tín hiệu (Broadcasted) {len(export_data)} mã sang Mạng lưới Bot.")
 
-    def run_radar(self):
-        """Thực thi Pipeline và In Báo Cáo"""
-        if not self._prepare_data():
-            print("[!] Thiếu dữ liệu lõi để chạy Dark Pool Radar.")
-            return
-
-        self._analyze_baskets()
-        self._detect_anomalies()
-        self._forecast_tactics()
-        self.export_signals()
-
+    def _print_report(self):
         today_str = datetime.now().strftime('%d/%m/%Y')
         print("\n" + "="*95)
-        print(f" 🕵️ ĐÀI QUAN SÁT DÒNG TIỀN NGẦM (DARK POOL RADAR) | BÁO CÁO NGÀY: {today_str}")
+        print(f" 🕵️ ĐÀI QUAN SÁT DÒNG TIỀN NGẦM (DARK POOL RADAR V3.1) | BÁO CÁO NGÀY: {today_str}")
         print("="*95)
         
-        print("\n 📊 1. NHIỆT ĐỒ CÁC RỔ (TỔNG KẾT 5 PHIÊN GẦN NHẤT)")
-        for basket in ['VN30', 'VNMidCap', 'VNSmallCap']:
-            stats = self.basket_stats.get(basket)
-            if stats:
-                print(f"    - [{basket:<10}] : {stats['total_val']:>6,.0f} Tỷ | Trạng thái: {stats['status']}")
-            else:
-                print(f"    - [{basket:<10}] : Không có giao dịch đáng kể.")
-
-        print("\n 🦈 2. TOP CÁ MẬP GIAO DỊCH BẤT THƯỜNG (ANOMALY DETECTED)")
+        print("\n 🦈 TOP CÁ MẬP GIAO DỊCH BẤT THƯỜNG (ANOMALY DETECTED)")
         if self.anomalies:
-            # Format lại bảng in cho chuyên nghiệp, bổ sung T0
-            print(f"    {'Mã (Rổ)':<15} | {'Sang tay 5D':<15} | {'Riêng T0':<12} | {'Cường độ':<13} | {'Ý đồ Tay to':<20}")
+            print(f"    {'Mã (Rổ)':<15} | {'Sang tay 5D':<15} | {'Riêng T0':<12} | {'Cường độ':<13} | {'Bản Án Khấu Trừ V3.1':<20}")
             print("    " + "-"*85)
             for i, an in enumerate(self.anomalies, 1):
                 ticker_basket = f"{i}. {an['ticker']} ({an['basket'][:4]})"
@@ -381,15 +269,13 @@ class DarkPoolRadar:
                 ratio = f"{an['ratio']:.1f}x MA20"
                 print(f"    {ticker_basket:<15} | {val_5d:<15} | {val_t0:<12} | {ratio:<13} | {an['intent']}")
         else:
-            print("    - Không phát hiện hành vi Thỏa thuận đột biến nào thỏa mãn lưới lọc.")
+            print("    - Không phát hiện hành vi Thỏa thuận đột biến nào.")
 
-        print("\n 🔮 3. DỰ BÁO CHIẾN THUẬT (T-DAY FORECAST)")
+        print("\n 🔮 DỰ BÁO CHIẾN THUẬT BẮN TỈA T0")
         if self.forecasts:
-            for f in self.forecasts:
-                print(f"    {f}")
+            for f in self.forecasts: print(f"    {f['msg']}")
         else:
-            print("    - Chưa có Setup Thỏa thuận nào đủ mạnh để kích hoạt chiến thuật.")
-            
+            print("    - Chưa có Setup Thỏa thuận nào đủ mạnh.")
         print("="*95 + "\n")
 
 if __name__ == "__main__":

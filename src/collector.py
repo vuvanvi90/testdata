@@ -978,26 +978,28 @@ class VNStockDataPipeline:
                 if new_df is None: return None
 
                 if new_df is not None and not new_df.empty:
+                    now = datetime.now()
+                    current_date = now.date() # ngày hiện tại
                     new_df['ticker'] = ticker
                     if 'price' in new_df.columns and new_df['price'].max() < 1000:
                         new_df['price'] = new_df['price'] * 1000
 
+                    # chỉ lấy dữ liệu của hôm nay
+                    new_today_df = new_df[new_df['time'].dt.date == current_date]
+
                     # ==========================================================
                     # LƯU LẠI LỊCH SỬ INTRADAY (ROLLING WINDOW)
                     # ==========================================================
-                    if old_df is not None and not old_df.empty:
+                    if not new_today_df.empty and old_df is not None and not old_df.empty:
                         old_df['time'] = pd.to_datetime(old_df['time'], unit='ms' if pd.api.types.is_numeric_dtype(old_df['time']) else None)
-                        new_df['time'] = pd.to_datetime(new_df['time'], unit='ms' if pd.api.types.is_numeric_dtype(new_df['time']) else None)
-                        
-                        # Xác định ngày của lô dữ liệu mới kéo về
-                        new_date = new_df['time'].iloc[0].dt.date.max()
+                        new_today_df['time'] = pd.to_datetime(new_today_df['time'], unit='ms' if pd.api.types.is_numeric_dtype(new_today_df['time']) else None)
                         
                         # Lọc dữ liệu cũ: Chỉ lấy những lệnh cũ của CÙNG NGÀY hôm nay
                         # (Để ghép với dữ liệu mới, tránh file phình to do chứa cả dữ liệu hôm qua)
-                        old_today_df = old_df[old_df['time'].dt.date == new_date]
+                        old_today_df = old_df[old_df['time'].dt.date == current_date]
 
                         if not old_today_df.empty:
-                            combined = pd.concat([old_today_df, new_df])
+                            combined = pd.concat([old_today_df, new_today_df])
                             
                             # Xóa lệnh trùng dựa trên thời gian, giá, khối lượng và loại lệnh
                             subset_cols = [c for c in ['time', 'price', 'volume', 'match_type'] if c in combined.columns]
@@ -1006,7 +1008,7 @@ class VNStockDataPipeline:
                             combined = combined.sort_values('time')
                             return combined
 
-                    return new_df
+                    return new_today_df
             except Exception: pass
             return None
 
