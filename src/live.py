@@ -1283,11 +1283,14 @@ class LiveAssistant:
                 active_portfolio[ticker] = pos 
                 continue
             
+            entry_price = float(pos['entry_price'])
+            entry_date = pos['date_bought']
+
             row = row_data.iloc[0]
             current_price = float(row['Price'])
             signal = row['Signal']
             atr = float(row.get('ATR', current_price * 0.02))
-            pnl_pct = (current_price - pos['entry_price']) / pos['entry_price'] * 100
+            pnl_pct = (current_price - entry_price) / entry_price * 100
             
             # 1. KIỂM TOÁN T0 (REAL-TIME X-RAY) TỪ OMNI MATRIX
             omni_now = {}
@@ -1368,10 +1371,10 @@ class LiveAssistant:
                     self._log_trade(ticker, "SELL_REAL", current_price, f"PnL: {pnl_pct:+.2f}%. Lý do: {', '.join(sell_reasons)}")
             else:
                 # Nếu T0 Đang đỡ giá, In lời động viên
-                if "NỘI CÂN TÂY" in t0_driver or "NGOẠI ĐỠ GIÁ" in t0_driver or "NGOẠI DẪN SÓNG" in t0_driver:
+                if "Nội Cân Tây" in t0_driver or "Ngoại Đỡ Giá" in t0_driver or "Ngoại dẫn sóng" in t0_driver:
                     print(f"   {ticker}: 🟢 GỒNG LÃI TỰ TIN | PnL: {pnl_pct:+.2f}% | T0 đang có Tay To bảo kê chặn dưới!")
                 else:
-                    print(f"   {ticker}: 🟢 HOLD | PnL: {pnl_pct:+.2f}% | SL: {pos['sl_price']:,.0f}")
+                    print(f"   {ticker}: 🟢 HOLD | PnL: {pnl_pct:+.2f}% | SL: {pos['sl_price']:,.0f} | EP: {entry_price} | ED: {entry_date} | CP: {current_price}")
                 
                 active_portfolio[ticker] = pos 
             print("  " + "-" * 50)
