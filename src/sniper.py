@@ -381,30 +381,36 @@ class TargetSniper:
         print("-" * 65)
         
         # PHẦN 2
-        print(f" 🐋 2. DÒNG TIỀN THỂ CHẾ (SMART MONEY & MARKET FLOW)")
+        print(f" 🐋 2. DÒNG TIỀN THỂ CHẾ (DỮ LIỆU CHỐT PHIÊN T-1)")
         print(f"    - Điểm Đồng thuận  : {sm_result.get('total_sm_score', 0)}/100")
-        print(f"    - Giá vốn Tay to   : ~{sm_vwap:,.0f} đ (VWAP)")
+        # Xử lý hiển thị VWAP khi Cá mập xả rỗng kho
+        if sm_vwap <= 0:
+            print(f"    - Giá vốn Tay to   : 🚨 ĐÃ XẢ SẠCH KHO (Mất hoàn toàn bệ đỡ VWAP)")
+        else:
+            print(f"    - Giá vốn Tay to   : ~{sm_vwap:,.0f} đ (VWAP)")
         print(f"    - Vị thế Cá Mập    : 🎯 {shark_status}")
         print(f"    - Sức ép Xả (DTL)  : {dtl:.1f} ngày")
         
         if sm_result.get("is_danger", False):
             print(f"    - Báo động Đỏ      : 🚨 {' | '.join(sm_result['warnings'])}")
-        elif sm_result.get("sm_details"):
-            print(f"    - Hành vi Nổi bật  : {' | '.join(sm_result['sm_details'])}")
+
+        # Luôn in các hành vi khác dù đã có Báo động Đỏ (hay ko)
+        if sm_result.get("sm_details"):
+            print(f"    - Các hành vi khác : {' | '.join(sm_result['sm_details'])}")
             
         print(f"    - Radar Nén Nền    : {shadow_msg}")
         
         print("-" * 65)
 
         # PHẦN 3: ĐỘNG LƯỢNG KẾT HỢP & BÓC TÁCH LEVEL 2
-        print(" ⚡ 3. BÓC TÁCH CẤU TRÚC LỆNH & ĐỘNG LƯỢNG T0 (LEVEL-2 X-RAY)")
+        print(" ⚡ 3. BÓC TÁCH CẤU TRÚC LỆNH (LEVEL-2 X-RAY)")
         
         micro_flow = self._analyze_micro_flow()
         
         if micro_flow:
-            print("    [QUÁ KHỨ GẦN - CHU KỲ 1 TUẦN]")
+            print("    [TỔNG NGOẠI + TỰ DOANH (T-5 -> T-1)]")
             history_str = " | ".join([f"{micro_flow[k]:+.1f}" for k in ['t5', 't4', 't3', 't2', 't1']])
-            print(f"    - Dòng tiền T-5 -> T-1   : {history_str} (Tỷ VNĐ)")
+            print(f"    - Lưu lượng EOD hàng ngày: {history_str} (Tỷ VNĐ)")
             print(f"    - TỔNG KẾT TUẦN (Weekly) : {micro_flow['weekly_net']:+.1f} Tỷ")
             print(f"    - Hành vi Lái (Pattern)  : {micro_flow['pattern']}")
             print(f"    - Giả thuyết T0 (Thesis) : {micro_flow['thesis']}")
@@ -617,7 +623,7 @@ class TargetSniper:
                  final_reason = "Có điểm cộng kỹ thuật, nhưng dòng tiền chưa đồng thuận mạnh."
                  print(f"   ☕ CHỜ ĐỢI: {final_reason}")
                 
-            if price < sm_vwap:
+            if sm_vwap > 0 and price < sm_vwap:
                 print(f"      => LỢI THẾ KÉP: Giá ({price:,.0f}) đang rẻ hơn giá vốn Cá mập ({sm_vwap:,.0f}).")
                 final_reason += f" (Rẻ hơn VWAP Lái)"
                 

@@ -1926,6 +1926,7 @@ class LiveAssistant:
                             # Ghi nhớ vào danh mục để ngày mai Robot theo dõi
                             active_portfolio[t] = {
                                 'ticker': t,
+                                'signal': info['Signal'],
                                 'entry_price': price,
                                 'sl_price': sl_price,
                                 'highest_price': price,

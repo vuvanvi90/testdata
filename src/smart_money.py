@@ -80,7 +80,10 @@ class SmartMoneyEngine:
 
         df_p_valid = pd.DataFrame()
         if not df_p_v.empty and 'prop_net_value' in df_p_v.columns:
-            df_p_valid = df_p_v[['time', 'prop_net_value', 'prop_net_volume']].copy()
+            # df_p_valid = df_p_v[['time', 'prop_net_value', 'prop_net_volume']].copy()
+            df_p_valid = df_p_v[['time']].copy()
+            df_p_valid['prop_net_value'] = df_p_v['prop_net_val_matched']
+            df_p_valid['prop_net_volume'] = df_p_v['prop_net_vol_matched']
             result["valid_p"] = True
 
         # Xác định các mốc thời gian

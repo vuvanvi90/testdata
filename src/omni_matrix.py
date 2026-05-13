@@ -575,7 +575,11 @@ class OmniFlowMatrix:
                 score -= 2; signals.append("⚠️ BẪY KÊ LỆNH: Dư mua ảo nằm tuốt ở dưới sâu (Bid 3)")
             elif book_shape == "ASK_WALL_SUPPRESSION":
                 if last_price < vwap_t0:
-                    score += 1; signals.append("🛡️ ĐÈ GOM: Lái chặn tường bán dày đặc để ép nhỏ lẻ nhả hàng")
+                    # Phân biệt Đè Gom và Tường Chết Chóc
+                    if net_active_bn < -20.0 or f_matched_net_t0 < -20.0:
+                        score -= 2; signals.append("🩸 TƯỜNG CHẾT CHÓC: Lái chặn trên đầu + táng thẳng xuống dưới (Không lối thoát!)")
+                    else:
+                        score += 1; signals.append("🛡️ ĐÈ GOM: Lái chặn tường bán dày đặc để ép nhỏ lẻ nhả hàng")
                 else:
                     score -= 1; signals.append("⚠️ CHẶN TRÊN: Tường bán dày đặc cản trở đà tăng giá")
             
@@ -608,9 +612,12 @@ class OmniFlowMatrix:
         if hasattr(self, 'df_idx') and not self.df_idx.empty:
             match = self.df_idx[self.df_idx['ticker'] == ticker]
             if not match.empty:
-                idx_code = match.iloc[0].get('index_code', '')
-                if idx_code == 'VN30': whale_thresh = 100.0
-                elif idx_code == 'VNSmallCap': whale_thresh = 15.0
+                idx_codes = match['index_code'].tolist()
+                is_vn30 = any('VN30' in str(code).upper() for code in idx_codes)
+                is_small = any('VNSMALLCAP' in str(code).upper() for code in idx_codes)
+
+                if is_vn30: whale_thresh = 100.0
+                elif is_small: whale_thresh = 15.0
 
         # Nếu đang là Bẫy L2 thì cấm không cho Override
         if "Bẫy Kéo Xả Ảo" not in verdict:
