@@ -364,9 +364,9 @@ class TargetSniper:
         omni_now = self.omni_matrix.predict_t0_action(self.ticker, past_context=past_ctx)
 
         # --- IN BÁO CÁO SNIPER DASHBOARD ---
-        print("\n" + "═"*90)
+        print("\n" + "═"*65)
         print(f" 🎯 BÁO CÁO X-QUANG ĐỘC LẬP (SNIPER MODE) | MÃ: [ {self.ticker} ] - RỔ: {self.universe}")
-        print("═"*90)
+        print("═"*65)
         
         # PHẦN 1
         print(f" 📈 1. KỸ THUẬT & CẤU TRÚC GIÁ (WYCKOFF)")
@@ -378,7 +378,7 @@ class TargetSniper:
         elif price > vah: print("      => Đánh giá: Đã Bứt phá vùng giá trị (Blue Sky). Ưu tiên đà tăng/SOS.")
         else: print("      => Đánh giá: Đang Tích lũy trong hộp. Ưu tiên test cung cạn kiệt.")
 
-        print("-" * 90)
+        print("-" * 65)
         
         # PHẦN 2
         print(f" 🐋 2. DÒNG TIỀN THỂ CHẾ (SMART MONEY & MARKET FLOW)")
@@ -394,7 +394,7 @@ class TargetSniper:
             
         print(f"    - Radar Nén Nền    : {shadow_msg}")
         
-        print("-" * 90)
+        print("-" * 65)
 
         # PHẦN 3: ĐỘNG LƯỢNG KẾT HỢP & BÓC TÁCH LEVEL 2
         print(" ⚡ 3. BÓC TÁCH CẤU TRÚC LỆNH & ĐỘNG LƯỢNG T0 (LEVEL-2 X-RAY)")
@@ -448,7 +448,7 @@ class TargetSniper:
         else:
             print("    - Chưa có dữ liệu Khớp lệnh T0 hoặc lỗi Omni-Matrix.")
 
-        print("-" * 90)
+        print("-" * 65)
 
         # Phần 4: Kiểm toán Thỏa thuận
         print(f" 🤝 4. KIỂM TOÁN GIAO DỊCH THỎA THUẬN (OFF-BOOK AUDIT)")
@@ -532,7 +532,7 @@ class TargetSniper:
 
         else:
             print("    - Không có dữ liệu Giao dịch Thỏa thuận.")
-        print("═"*90)
+        print("═"*65)
 
         # PHẦN 5: KẾT LUẬN ĐẦU TƯ
         print(" 🎯 HÀNH ĐỘNG KHUYẾN NGHỊ (SNIPER FINAL VERDICT):")
@@ -551,8 +551,14 @@ class TargetSniper:
         elif sm_result.get("is_danger", False):
             is_validated_bull = micro_flow and ("BULLISH" in micro_flow['thesis'] or "BOTTOMING" in micro_flow['thesis'] or "TILT BULL" in micro_flow['thesis'])
             
+            # GIẢI CỨU LINH HOẠT
             # Ghi đè Cờ Đỏ nếu T0 có lực Cầu chủ động Bùng nổ (Đảo pha)
-            is_reversal = omni_now and "BULLISH" in omni_now.get('verdict', '')
+            whale_thresh = 100.0 if self.universe == 'VN30' else (15.0 if self.universe == 'VNSmallCap' else 50.0)
+            is_reversal = False
+            if omni_now:
+                is_bullish = "BULLISH" in omni_now.get('verdict', '')
+                is_tilt_bull_strong = "TILT BULL" in omni_now.get('verdict', '') and omni_now.get('net_active_bn', 0) >= whale_thresh
+                is_reversal = is_bullish or is_tilt_bull_strong
 
             if not is_validated_bull and not is_reversal:
                 final_action = "REJECT"
@@ -563,9 +569,15 @@ class TargetSniper:
                 print(f"   🌟 GIẢI CỨU BÁO ĐỘNG ĐỎ: T0 Cầu chủ động bùng nổ, bẻ gãy áp lực xả 3D của Cá mập!")
 
         elif micro_flow and "BEARISH" in micro_flow['thesis']:
+            # GIẢI CỨU LINH HOẠT
             # Mở khóa Đảo pha Cấu trúc (Structural Reversal).
             # Nếu T0 có lực Cầu chủ động kéo thốc (BULLISH), cho phép xí xóa quá khứ xấu.
-            is_reversal = omni_now and "BULLISH" in omni_now.get('verdict', '')
+            whale_thresh = 100.0 if self.universe == 'VN30' else (15.0 if self.universe == 'VNSmallCap' else 50.0)
+            is_reversal = False
+            if omni_now:
+                is_bullish = "BULLISH" in omni_now.get('verdict', '')
+                is_tilt_bull_strong = "TILT BULL" in omni_now.get('verdict', '') and omni_now.get('net_active_bn', 0) >= whale_thresh
+                is_reversal = is_bullish or is_tilt_bull_strong
 
             if not is_reversal:
                 final_action = "REJECT"
@@ -615,7 +627,7 @@ class TargetSniper:
             final_reason = "Dòng tiền giằng co. Hành vi Lái chưa rõ ràng. Cần theo dõi thêm."
             print(f"   ☕ CHỜ ĐỢI: {final_reason}")
 
-        print("═"*90)
+        print("═"*65)
 
         # GỌI HỘP ĐEN GHI LẠI DỮ LIỆU
         self._log_audit_trail(price, signal, sm_vwap, intent_str, dp_action_tag, final_action, final_reason)

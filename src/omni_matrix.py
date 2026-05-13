@@ -123,62 +123,117 @@ class OmniFlowMatrix:
 
     def _extract_t0_snapshot(self):
         """
-        LUỒNG T0 (REAL-TIME): TRÍCH XUẤT BẢNG ĐIỆN VÀ KHẤU TRỪ THỎA THUẬN NGAY TRONG PHIÊN
+        🚀 BÓC TÁCH DỮ LIỆU T0 TỪ BẢNG ĐIỆN (REAL-TIME SNAPSHOT V3.3)
+        Khai thác 100% dữ liệu Vi cấu trúc: Order Book Depth, Limit Locks, Spread Vacuum.
         """
         if self.df_board.empty: return {}
         
         t0_dict = {}
         col_ticker = 'symbol' if 'symbol' in self.df_board.columns else 'ticker'
-
-        # Kiểm tra nếu df_board có cột time để mapping
         has_time_col = 'time' in self.df_board.columns
         
         for _, row in self.df_board.iterrows():
-            # Nếu board data có time, nó phải là ngày t0_date
             if has_time_col:
                 row_date = pd.to_datetime(row['time'], unit='ms' if isinstance(row['time'], int) else None).date()
-                if row_date != self.t0_date:
-                    continue # Bỏ qua dữ liệu cũ của ngày khác
+                if row_date != self.t0_date: continue
 
             ticker = row[col_ticker]
             
-            # Hàm ép kiểu an toàn
             def safe_fl(val): 
                 try: return float(val) if pd.notna(val) and val != "" else 0.0
                 except: return 0.0
 
-            # Lấy giá trị giao dịch T0 của Khối ngoại
+            # ---------------------------------------------------------
+            # 1. DÒNG TIỀN NGOẠI VÀ ROOM
+            # ---------------------------------------------------------
             f_buy_vol = safe_fl(row.get('foreign_buy_volume', 0))
             f_sell_vol = safe_fl(row.get('foreign_sell_volume', 0))
+            f_room = safe_fl(row.get('foreign_room', 0))
+            
+            # Lấy thẳng VWAP của bảng điện (average_price)
             avg_price = safe_fl(row.get('average_price', row.get('close_price', 0)))
-            
-            # Quy đổi ra Tỷ VNĐ
             f_net_val_bn = ((f_buy_vol - f_sell_vol) * avg_price) / self.DIVISOR
+
+            # ---------------------------------------------------------
+            # 2. HÌNH THÁI NẾN T0 & KIỂM TRA TRẦN/SÀN
+            # ---------------------------------------------------------
+            c_price = safe_fl(row.get('close_price', 0))
+            h_price = safe_fl(row.get('high_price', c_price))
+            l_price = safe_fl(row.get('low_price', c_price))
+            ceil_p = safe_fl(row.get('ceiling_price', 0))
+            floor_p = safe_fl(row.get('floor_price', 0))
             
-            # --- KIỂM TOÁN THỎA THUẬN T0 (RADAR PUT-THROUGH) ---
+            # Tính Vị trí Bóng nến (Wick Ratio): > 0.7 là Cầu áp đảo, < 0.3 là Cung ép
+            range_p = h_price - l_price
+            wick_ratio = (c_price - l_price) / range_p if range_p > 0 else 0.5
+            
+            # Cờ báo Nhốt Trần / Nhốt Sàn
+            limit_lock = "NONE"
+            if ceil_p > 0 and c_price >= ceil_p: limit_lock = "CEILING"
+            elif floor_p > 0 and c_price <= floor_p: limit_lock = "FLOOR"
+
+            # ---------------------------------------------------------
+            # 3. ĐỘ SÂU SỔ LỆNH (DEPTH OF BOOK) VÀ BẮT BẪY
+            # ---------------------------------------------------------
+            b_p1, b_p2, b_p3 = safe_fl(row.get('bid_price_1',0)), safe_fl(row.get('bid_price_2',0)), safe_fl(row.get('bid_price_3',0))
+            a_p1, a_p2, a_p3 = safe_fl(row.get('ask_price_1',0)), safe_fl(row.get('ask_price_2',0)), safe_fl(row.get('ask_price_3',0))
+            
+            b_v1, b_v2, b_v3 = safe_fl(row.get('bid_vol_1',0)), safe_fl(row.get('bid_vol_2',0)), safe_fl(row.get('bid_vol_3',0))
+            a_v1, a_v2, a_v3 = safe_fl(row.get('ask_vol_1',0)), safe_fl(row.get('ask_vol_2',0)), safe_fl(row.get('ask_vol_3',0))
+            
+            bid_vol_total = b_v1 + b_v2 + b_v3
+            ask_vol_total = a_v1 + a_v2 + a_v3
+            imbalance = (bid_vol_total - ask_vol_total) / (bid_vol_total + ask_vol_total) if (bid_vol_total + ask_vol_total) > 0 else 0
+
+            # Phân tích Book Shape (Hình thái Kê Lệnh)
+            book_shape = "NORMAL"
+            if limit_lock == "CEILING":
+                book_shape = "CEILING_LOCKED"
+            elif limit_lock == "FLOOR":
+                book_shape = "FLOOR_LOCKED"
+            else:
+                # BẪY 1: Kê ảo dưới sâu (Hơn 60% Dư mua nằm tít ở Bid 3)
+                if bid_vol_total > 0 and (b_v3 / bid_vol_total) > 0.6:
+                    book_shape = "SPOOFING_BID"
+                # BẪY 2: Tường chặn bán tàn nhẫn (Hơn 60% Dư bán đè ngay sát Ask 1)
+                elif ask_vol_total > 0 and (a_v1 / ask_vol_total) > 0.6:
+                    book_shape = "ASK_WALL_SUPPRESSION"
+            
+            # Cảnh báo Lỗ hổng Spread (Thanh khoản rỗng)
+            spread_vacuum = False
+            if a_p1 > 0 and b_p1 > 0:
+                spread_gap = (a_p1 - b_p1) / c_price
+                if spread_gap > 0.015: # Chênh lệch > 1.5% là báo động rỗng thanh khoản
+                    spread_vacuum = True
+
+            # ---------------------------------------------------------
+            # 4. TRÍCH XUẤT THỎA THUẬN T0 CHO THUẬT TOÁN KHẤU TRỪ
+            # ---------------------------------------------------------
             pt_val_bn = 0.0
             if not self.df_pt.empty:
                 col_pt = 'symbol' if 'symbol' in self.df_pt.columns else 'ticker'
                 df_pt_ticker = self.df_pt[self.df_pt[col_pt] == ticker]
                 if not df_pt_ticker.empty:
-                    # Lọc Lệnh Thỏa thuận diễn ra đúng trong phiên T0
                     pt_dates = pd.to_datetime(df_pt_ticker['time']).dt.date
                     df_pt_t0 = df_pt_ticker[pt_dates == self.t0_date]
                     if not df_pt_t0.empty:
                         pt_val_bn = df_pt_t0['match_value'].sum() / self.DIVISOR
 
-            # Tính toán Cán cân Sổ lệnh (Bid/Ask Imbalance)
-            bid_vol = sum([safe_fl(row.get(f'bid_vol_{i}', 0)) for i in range(1, 4)])
-            ask_vol = sum([safe_fl(row.get(f'ask_vol_{i}', 0)) for i in range(1, 4)])
-            
+            # ---------------------------------------------------------
+            # ĐÓNG GÓI HỒ SƠ VI CẤU TRÚC
+            # ---------------------------------------------------------
             t0_dict[ticker] = {
                 't0_date': self.t0_date,
                 't0_foreign_net_bn': f_net_val_bn,
-                't0_pt_val_bn': pt_val_bn, # Dữ liệu chuyển giao cho predict_t0_action
-                't0_bid_vol': bid_vol,
-                't0_ask_vol': ask_vol,
-                't0_imbalance': (bid_vol - ask_vol) / (bid_vol + ask_vol) if (bid_vol + ask_vol) > 0 else 0,
-                't0_last_price': safe_fl(row.get('close_price', 0)),
+                't0_f_room': f_room,
+                't0_pt_val_bn': pt_val_bn,
+                't0_imbalance': imbalance,
+                't0_last_price': c_price,
+                't0_vwap': avg_price,          # Đã lấy thẳng từ Board
+                't0_wick_ratio': wick_ratio,   # Vị trí nến T0
+                't0_limit_lock': limit_lock,   # Cờ Trần/Sàn
+                't0_book_shape': book_shape,   # Hình thái Đội lái Kê lệnh
+                't0_spread_vacuum': spread_vacuum, # Báo động Rỗng thanh khoản
                 'is_fresh': True
             }
         return t0_dict
@@ -456,170 +511,130 @@ class OmniFlowMatrix:
 
     def predict_t0_action(self, ticker, past_context=None):
         """
-        ĐỘNG CƠ DỰ BÁO T0 (T0 PREDICTIVE ENGINE)
-        Kết hợp: Ngoại T0 (Bảng điện) + Sổ lệnh Imbalance + Lực mua chủ động Intraday
+        ĐỘNG CƠ DỰ BÁO T0 V3.3 (ULTIMATE MICROSTRUCTURE)
+        🚀 Tích hợp: Book Depth, Wick Ratio, Limit Lock và Chống Bẫy Kê Lệnh Ảo.
         """
         t0_data = self.t0_snapshot.get(ticker, {})
+        is_offline = not t0_data or (t0_data.get('t0_last_price') == 0)
 
-        # 1. FALLBACK GIÁ TRỊ KHI OFFLINE (Cuối tuần/Chưa mở cửa)
+        if is_offline:
+            return {
+                "verdict": "OFFLINE (Chờ Phiên Mới)", "last_price": 0, "net_active_bn": 0,
+                "driver_msg": "Thị trường đóng cửa", "details": "Chưa có dữ liệu T0", "is_offline": True
+            }
+
+        # 1. TRÍCH XUẤT HỒ SƠ VI CẤU TRÚC (SỨC MẠNH V3.3)
         f_net_t0 = t0_data.get('t0_foreign_net_bn', 0)
         pt_t0 = t0_data.get('t0_pt_val_bn', 0)
         imbalance = t0_data.get('t0_imbalance', 0)
-        
-        # Lấy giá gần nhất từ Bảng điện, nếu rỗng thì mượn tạm giá EOD từ Lịch sử
         last_price = t0_data.get('t0_last_price', 0)
-        if last_price == 0 and not self.df_price_l2.empty:
-            df_p_ticker = self.df_price_l2[self.df_price_l2['ticker'] == ticker]
-            if not df_p_ticker.empty:
-                last_price = df_p_ticker.iloc[-1]['close']
+        vwap_t0 = t0_data.get('t0_vwap', 0)
+        wick_ratio = t0_data.get('t0_wick_ratio', 0.5)
+        limit_lock = t0_data.get('t0_limit_lock', "NONE")
+        book_shape = t0_data.get('t0_book_shape', "NORMAL")
+        spread_vacuum = t0_data.get('t0_spread_vacuum', False)
         
-        # Bóc tách lệnh chủ động từ Intraday
-        net_active_bn, total_intra_val, vwap_t0 = self._get_intraday_t0_metrics(ticker)
+        net_active_bn, total_intra_val, _ = self._get_intraday_t0_metrics(ticker)
 
-        score = 0
-        signals = []
-        verdict = "NEUTRAL (Giằng co)"
-
-        # Cờ nhận diện trạng thái Thị trường đóng cửa
-        is_offline = not t0_data and net_active_bn == 0
-
-        # =====================================================================
-        # 🚀 THUẬT TOÁN KHẤU TRỪ THỎA THUẬN T0 (FOREIGN DEDUCTION ALGORITHM)
-        # Lọc nhiễu từ các lệnh thỏa thuận ngàn tỷ để tìm Khớp lệnh Thực tế
-        # =====================================================================
+        # 🚀 THUẬT TOÁN KHẤU TRỪ NGOẠI T0
         f_matched_net_t0 = f_net_t0
         if pt_t0 > 0:
-            if f_net_t0 > 0:
-                f_matched_net_t0 = max(0, f_net_t0 - pt_t0)
-            else:
-                f_matched_net_t0 = min(0, f_net_t0 + pt_t0)
+            if f_net_t0 > 0: f_matched_net_t0 = max(0, f_net_t0 - pt_t0)
+            else: f_matched_net_t0 = min(0, f_net_t0 + pt_t0)
 
-        if is_offline:
-            signals.append("Thị trường Đóng cửa/Chưa có GD T0")
-        else:
-            # Khớp lệnh chủ động lớn (Thực tế)
-            if net_active_bn > (total_intra_val * 0.1): 
-                if imbalance < -0.3:
-                    # Kịch bản Vàng: Lái kê bán ảo để đè giá, nhưng lệnh khớp thật lại là MUA XUYÊN TƯỜNG! (Đè Gom / Hấp thụ)
-                    signals.append(f"Cầu chủ động ăn vã Bức tường Bán ảo (+{net_active_bn:.1f} Tỷ)")
-                    score += 3 # Thưởng điểm cực cao
-                else:
-                    signals.append(f"Cầu chủ động áp đảo (+{net_active_bn:.1f} Tỷ)")
-                    score += 2
-            # Áp lực bán chủ động lớn (Thực tế)
-            elif net_active_bn < -(total_intra_val * 0.1): 
-                if imbalance > 0.3:
-                    # Kịch bản Rủi ro: Lái kê mua ảo dụ Nhỏ lẻ, nhưng lại lén XẢ THẲNG VÀO ĐẦU (Phân phối)
-                    signals.append(f"Kê Mua ảo dụ cầu, Bán chủ động táng rát ({net_active_bn:.1f} Tỷ)")
-                    score -= 3
-                else:
-                    signals.append(f"Cung chủ động áp đảo ({net_active_bn:.1f} Tỷ)")
-                    score -= 2
-            # Nếu chưa có Khớp lệnh đáng kể
-            else:
-                # Thiếu thanh khoản xác nhận
-                if imbalance > 0.3:
-                    signals.append("Lái kê lệnh Mua (Bid) dày đặc chặn dưới (Thiếu Vol)")
-                    score += 1
-                elif imbalance < -0.3:
-                    signals.append("Lái chặn lệnh Bán (Ask) dày đặc ép giá (Thiếu Vol)")
-                    score -= 1
-
-            # Sử dụng KHỚP LỆNH NGOẠI SẠCH (Đã khấu trừ PT) để chấm điểm
-            if f_matched_net_t0 > 5.0:
-                signals.append(f"Tây lông Khớp lệnh Mua rát (+{f_matched_net_t0:.1f} Tỷ)")
-                score += 2
-            elif f_matched_net_t0 < -5.0:
-                signals.append(f"Tây lông Khớp lệnh Xả rát ({f_matched_net_t0:.1f} Tỷ)")
-                score -= 2
-                
-            if pt_t0 > 0:
-                signals.append(f"Có Thỏa thuận T0 ({pt_t0:.1f} Tỷ) - Đã khấu trừ để làm sạch bảng điện")
-
-            # ĐIỀU KIỆN VWAP
-            if vwap_t0 > 0:
-                if last_price >= vwap_t0 and net_active_bn > 0:
-                    signals.append("Giá neo vững trên VWAP T0")
-                    score += 1
-                elif last_price < vwap_t0 and net_active_bn < 0:
-                    signals.append("Giá thủng VWAP T0, cầu đuối")
-                    score -= 1
-
-        # --- PHẦN 2: ĐỐI CHIẾU NGỮ CẢNH T-1 (GHI ĐÈ BẰNG KILL-SWITCH LEVEL 2) ---
-        is_shaking_out = False
-        l2_trap = False
-
-        if past_context and "error" not in past_context:
-            past_verdict = past_context.get('verdict', "")
-            l2_trap = past_context.get('has_l2_trap', False)
-            l2_data = past_context.get('l2_data', None)
-            
-            universe = self.ticker_to_universe.get(ticker, 'HOSE')
-            if universe == 'VN30': weak_sell_threshold = -15.0
-            elif universe == 'VNMidCap': weak_sell_threshold = -3.0
-            elif universe == 'VNSmallCap': weak_sell_threshold = -0.5
-            else: weak_sell_threshold = -3.0
-
-            is_weak_selling = (net_active_bn >= weak_sell_threshold) or (net_active_bn > -(total_intra_val * 0.05))
-            
-            if any(keyword in past_verdict for keyword in ["Gom", "Sóng", "Đồng thuận", "Siết nền", "Cá voi"]):
-                if score < 0 and is_weak_selling and not l2_trap and not is_offline:
-                    is_shaking_out = True
-                    
-            # KÍCH HOẠT MÁY CHÉM: Nếu T-1 là Bẫy Kéo Xả Ảo
-            if l2_trap and l2_data:
-                score -= 50 # Ép điểm rớt đài
-                signals.insert(0, f"BẪY L2: Lệnh bán thực tế to gấp {1/l2_data['whale_ratio']:.1f}x. Lái kê lệnh ảo dụ Fomo!")
-                verdict = "BEARISH (Bẫy Kéo Xả Ảo)"
-
-        # --- THUẬT TOÁN ĐỌC VỊ TÁC NHÂN T0 (T0 DRIVER ENGINE) ---
+        # 🚀 THUẬT TOÁN ĐỊNH DANH TÁC NHÂN (T0 DRIVER)
         driver_msg = "Chưa rõ tác nhân"
-        f_impact_pct = 0
-        if total_intra_val > 0:
-            # 1. Tính Trọng số chi phối của Ngoại (%)
-            f_impact_pct = (f_matched_net_t0 / total_intra_val) * 100
-            
-            # 2. Tính xu hướng giá T0 (Dùng last_price so với open_price, ở đây dùng tạm so với tham chiếu/vwap)
-            price_is_up = last_price > vwap_t0 if vwap_t0 > 0 else net_active_bn > 0
-            
-            # 3. Suy luận Logic
-            if price_is_up:
-                if f_impact_pct > 15.0:
-                    driver_msg = f"🌍 Ngoại dẫn sóng (Bao thầu {f_impact_pct:.1f}% thanh khoản mua)."
-                elif f_impact_pct < -10.0 and net_active_bn > 0:
-                    driver_msg = f"🔥 Nội Cân Tây: Ngoại xả {-f_impact_pct:.1f}%, nhưng Lái Nội hấp thụ hết đẩy giá lên."
-                elif net_active_bn > (total_intra_val * 0.1):
-                    driver_msg = f"🇻🇳 Sóng Thuần Nội: Tiền trong nước chủ động kéo giá, Ngoại đứng ngoài."
-            else:
-                if f_impact_pct < -15.0:
-                    driver_msg = f"🩸 Tây Úp Sọt: Ngoại táng rát (Chiếm {-f_impact_pct:.1f}% thanh khoản bán), Nội buông tay."
-                elif f_impact_pct > 10.0 and net_active_bn < 0:
-                    driver_msg = f"🛡️ Ngoại Đỡ Giá: Nội hoảng loạn xả, Tây nhặt giá rẻ ({f_impact_pct:.1f}% thanh khoản)."
-                elif net_active_bn < -(total_intra_val * 0.1):
-                    driver_msg = f"📉 Nội Tự Dẫm Đạp: Dòng tiền trong nước tự xả gãy giá."
+        f_impact_pct = (f_matched_net_t0 / total_intra_val * 100) if total_intra_val > 0 else 0
+        price_is_up = last_price > vwap_t0 if vwap_t0 > 0 else net_active_bn > 0
+        
+        if price_is_up:
+            if f_impact_pct > 15.0: driver_msg = "🌍 NGOẠI DẪN SÓNG (Tây chủ động đẩy giá)"
+            elif f_impact_pct < -10.0 and net_active_bn > 0: driver_msg = "🔥 NỘI CÂN TÂY (Lái Nội hấp thụ lực xả để kéo)"
+            elif net_active_bn > (total_intra_val * 0.15): driver_msg = "🇻🇳 SÓNG THUẦN NỘI (Dòng tiền nội đẩy giá)"
+            else: driver_msg = "🕊️ NHỎ LẺ FOMO (Thiếu dấu chân cá mập)"
+        else:
+            if net_active_bn > (total_intra_val * 0.1): driver_msg = "🛡️ LÁI ĐÈ GOM (Giá đỏ nhưng Cầu chủ động ăn vã hàng)"
+            elif f_impact_pct < -15.0: driver_msg = "🩸 TÂY ÚP SỌT (Ngoại chủ động xả gãy giá)"
+            elif f_impact_pct > 10.0 and net_active_bn < 0: driver_msg = "🛡️ NGOẠI ĐỠ GIÁ (Nội xả hoảng loạn, Tây nhặt hàng)"
+            elif net_active_bn < -(total_intra_val * 0.15): driver_msg = "📉 NỘI TỰ DẪM ĐẠP (Dòng tiền nội tháo chạy)"
+            else: driver_msg = "🧊 CẠN CẦU (Rơi tự do do thiếu lực đỡ)"
 
-        # --- PHẦN 3: CHỐT KẾT LUẬN ---
+        # ⚖️ HỆ THỐNG CHẤM ĐIỂM LƯỢNG TỬ (SCORING ENGINE)
+        score, signals = 0, []
+        verdict = "NEUTRAL (Giằng co)"
+
+        # A. Xử lý trạng thái Đặc biệt (Limit Lock)
+        if limit_lock == "CEILING":
+            score += 10; signals.append("🔥 TÍM TRẦN: Dòng tiền cực đại quét sạch dư bán"); verdict = "BULLISH (Tím Trần)"
+        elif limit_lock == "FLOOR":
+            score -= 10; signals.append("🩸 NHỐT SÀN: Trạng thái trắng bên mua"); verdict = "BEARISH (Nhốt Sàn)"
+        
+        if limit_lock == "NONE":
+            # B. Đánh giá Hình thái Kê Lệnh (Book Shape)
+            if book_shape == "SPOOFING_BID":
+                score -= 2; signals.append("⚠️ BẪY KÊ LỆNH: Dư mua ảo nằm tuốt ở dưới sâu (Bid 3)")
+            elif book_shape == "ASK_WALL_SUPPRESSION":
+                if last_price < vwap_t0:
+                    score += 1; signals.append("🛡️ ĐÈ GOM: Lái chặn tường bán dày đặc để ép nhỏ lẻ nhả hàng")
+                else:
+                    score -= 1; signals.append("⚠️ CHẶN TRÊN: Tường bán dày đặc cản trở đà tăng giá")
+            
+            # C. Đánh giá Động lượng (Wick Ratio & VWAP)
+            if wick_ratio > 0.8: score += 2; signals.append("🚀 ĐÓNG NẾN QUYẾT LIỆT: Giá sát đỉnh phiên")
+            elif wick_ratio < 0.2: score -= 2; signals.append("📉 ÁP LỰC ĐÈ CUỐI PHIÊN: Giá sát đáy phiên")
+            
+            if last_price > vwap_t0: score += 1; signals.append("🟢 GIÁ TRÊN VWAP: Phe Bò đang kiểm soát")
+            else: score -= 1; signals.append("🔴 GIÁ DƯỚI VWAP: Phe Gấu đang đè giá")
+
+            # D. Đánh giá Khớp lệnh chủ động & Ngoại
+            if net_active_bn > (total_intra_val * 0.15): score += 2; signals.append(f"🌊 Cầu chủ động mạnh (+{net_active_bn:.1f} Tỷ)")
+            elif net_active_bn < -(total_intra_val * 0.15): score -= 2; signals.append(f"🩸 Cung chủ động xả ({net_active_bn:.1f} Tỷ)")
+
+            if f_matched_net_t0 > 10.0: score += 2; signals.append(f"🐋 Tây múc ròng (+{f_matched_net_t0:.1f} Tỷ)")
+            elif f_matched_net_t0 < -10.0: score -= 2; signals.append(f"🦈 Tây xả ròng ({f_matched_net_t0:.1f} Tỷ)")
+
+        # E. Cảnh báo Rỗng thanh khoản
+        if spread_vacuum:
+            score -= 1; signals.append("🚨 THANH KHOẢN RỖNG: Chênh lệch Bid/Ask > 1.5%. Cẩn thận trượt giá!")
+
+        # 🛡️ KIỂM TOÁN NGỮ CẢNH QUÁ KHỨ (BẢN VÁ TRAP L2)
+        if past_context and "error" not in past_context:
+            if past_context.get('has_l2_trap'):
+                score -= 50; signals.insert(0, "🚨 TỬ HUYỆT L2: Kê ảo dụ FOMO để xả thật"); verdict = "BEARISH (Bẫy Kéo Xả Ảo)"
+
+        # QUYỀN PHỦ QUYẾT CỦA CÁ VOI (WHALE OVERRIDE)
+        # Tự động xác định ngưỡng Tiền Tỷ theo rổ Vốn hóa (VN30, MidCap, SmallCap)
+        whale_thresh = 50.0 # Mặc định cho MidCap/HOSE
+        if hasattr(self, 'df_idx') and not self.df_idx.empty:
+            match = self.df_idx[self.df_idx['ticker'] == ticker]
+            if not match.empty:
+                idx_code = match.iloc[0].get('index_code', '')
+                if idx_code == 'VN30': whale_thresh = 100.0
+                elif idx_code == 'VNSmallCap': whale_thresh = 15.0
+
+        # Nếu đang là Bẫy L2 thì cấm không cho Override
+        if "Bẫy Kéo Xả Ảo" not in verdict:
+            if net_active_bn > whale_thresh or f_matched_net_t0 > whale_thresh:
+                score = max(score, 5) # Ép thẳng lên mức BULLISH tối đa
+                signals.append(f"🌟 WHALE OVERRIDE: Lực mua càn quét (>{whale_thresh} Tỷ), xóa bỏ mọi rủi ro nhiễu!")
+            elif net_active_bn < -whale_thresh or f_matched_net_t0 < -whale_thresh:
+                score = min(score, -5) # Ép thẳng xuống mức BEARISH tột độ
+                signals.append(f"🩸 WHALE OVERRIDE: Lực xả tàn bạo (<-{whale_thresh} Tỷ), chặn đứng mọi nỗ lực đỡ giá!")
+
+        # 🎯 PHÁN QUYẾT CUỐI CÙNG
         if verdict == "NEUTRAL (Giằng co)": 
-            if is_offline: 
-                verdict = "OFFLINE (Chờ Phiên Mới)"
-            elif score >= 3: verdict = "🔥 BULLISH (Tích cực - Lái đang kéo giá, Canh Mua)"
-            elif score <= -3: verdict = "🩸 BEARISH (Tiêu cực - Áp lực xả lớn, Đứng ngoài/Bán)"
-            elif is_shaking_out: verdict = "🟡 NEUTRAL - RŨ BỎ (Bối cảnh tốt, Lái đang đè để gom nốt)"
-            elif score > 0: verdict = "🟢 TILT BULL (Nghiêng Mua)"
-            elif score < 0: verdict = "🔴 TILT BEAR (Nghiêng Bán)"
-            else: verdict = "⚖️ NEUTRAL (Giằng co - Phân phối đều)"
+            if score >= 4: verdict = "🔥 BULLISH (Dòng tiền T0 bùng nổ mạnh)"
+            elif score <= -4: verdict = "🩸 BEARISH (Áp lực xả T0 cực lớn)"
+            elif score > 0: verdict = "🟢 TILT BULL (Ưu thế Mua)"
+            elif score < 0: verdict = "🔴 TILT BEAR (Ưu thế Bán)"
+            else: verdict = "⚖️ NEUTRAL (Cân bằng/Chờ xác nhận)"
 
         return {
-            "verdict": verdict,
-            "last_price": last_price,
-            "net_active_bn": net_active_bn,
-            "f_net_t0": f_net_t0,
-            "t0_f_matched_net_bn": f_matched_net_t0, # Truyền số sạch ra ngoài cho báo cáo
-            "t0_f_impact_pct": f_impact_pct, # Trả về % để Sniper hiển thị
-            "driver_msg": driver_msg,        # Trả về câu chẩn đoán
-            "imbalance": imbalance,
-            "details": " | ".join(signals) if signals else "Chưa có dòng tiền đột biến.",
-            "l2_data": past_context.get('l2_data', None) if past_context else None, # dữ liệu t-1
+            "verdict": verdict, "last_price": last_price, "net_active_bn": net_active_bn,
+            "t0_f_matched_net_bn": f_matched_net_t0, "t0_f_impact_pct": f_impact_pct,
+            "driver_msg": driver_msg, "imbalance": imbalance,
+            "details": " | ".join(signals) if signals else "Dòng tiền giằng co quanh tham chiếu.",
+            "l2_data": past_context.get('l2_data', None) if past_context else None,
             "is_offline": is_offline
         }
 
