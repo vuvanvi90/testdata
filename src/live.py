@@ -125,6 +125,7 @@ class LiveAssistant:
         # KHỞI ĐỘNG ĐÀI QUAN SÁT VĨ MÔ & ORDER FLOW (MARKET TRACKER)
         self.market_status = 'NEUTRAL'
         self.market_net_active = 0
+        self.market_track = {}
         self.intraday_dict = {}
         try:
             self.market_tracker = MarketTracker(data_dir=self.parquet_dir, verbose=False)
@@ -133,6 +134,7 @@ class LiveAssistant:
                 self.market_status = intraday_result.get('market_status', 'NEUTRAL')
                 self.market_net_active = intraday_result.get('market_net_active', 0)
                 self.intraday_dict = intraday_result.get('intraday_dict', {})
+                self.market_track = intraday_result.get('market_track', {})
         except Exception as e:
             print(f"[!] Lỗi khởi động Market Tracker: {e}")
 
@@ -164,6 +166,20 @@ class LiveAssistant:
         if dp_path.exists():
             with open(dp_path, 'r', encoding='utf-8') as f:
                 self.darkpool_signals = json.load(f)
+
+        # CẤU HÌNH NGƯỠNG ĐỘNG THEO RỔ (DYNAMIC THRESHOLDS)
+        if self.universe == "VN30":
+            self.panic_sell_thresh = -40.0  # Lực xả T0 khẩn cấp mới báo bán
+            self.dp_alert_thresh = 20.0     # Thỏa thuận T0 đột biến
+        elif self.universe == "VNMidCap":
+            self.panic_sell_thresh = -15.0
+            self.dp_alert_thresh = 8.0
+        elif self.universe == "VNSmallCap":
+            self.panic_sell_thresh = -5.0
+            self.dp_alert_thresh = 3.0
+        else: # HOSE/ALL
+            self.panic_sell_thresh = -20.0
+            self.dp_alert_thresh = 10.0
 
     def _filter_universe(self):
         """Lọc Master Price theo Rổ cổ phiếu Chuẩn MECE (HOSE, VN30, VNMID, VNSMALL)"""
@@ -1298,6 +1314,7 @@ class LiveAssistant:
                 past_ctx = self.omni_matrix.explain_past_movement(ticker, lookback_days=10)
                 omni_now = self.omni_matrix.predict_t0_action(ticker, past_context=past_ctx)
 
+            t0_date = omni_now.get('t0_date', None)
             t0_verdict = omni_now.get('verdict', 'N/A')
             t0_driver = omni_now.get('driver_msg', 'N/A')
             t0_net_active = omni_now.get('net_active_bn', 0)
@@ -1348,7 +1365,7 @@ class LiveAssistant:
                 action = "SELL (EMERGENCY TAKE PROFIT/CUT LOSS)"
 
             # C. Kích hoạt Chốt Lời Sớm T0 (Chống bị úp sọt cuối phiên)
-            if ("TÂY ÚP SỌT" in t0_driver or "NỘI TỰ DẪM ĐẠP" in t0_driver) and t0_net_active < -20.0:
+            if ("TÂY ÚP SỌT" in t0_driver or "NỘI TỰ DẪM ĐẠP" in t0_driver) and t0_net_active < self.panic_sell_thresh:
                 if pnl_pct > 0:
                     sell_reasons.append(f"T0 Lực xả cực đoan ({t0_driver}) -> Chốt lời khóa lợi nhuận")
                     action = "SELL (PROACTIVE TAKE PROFIT)"
@@ -1356,7 +1373,38 @@ class LiveAssistant:
                     sell_reasons.append(f"T0 Gãy cấu trúc ({t0_driver}) -> Cắt lỗ sớm giảm thiệt hại")
                     action = "SELL (PROACTIVE CUT LOSS)"
 
-            # D. Kích hoạt Bán dựa trên Kỹ thuật/Mùa vụ
+            # D. Xử lý Báo động Đỏ EOD (Tháo cống 3D/T-1) & Kích hoạt Giải Cứu T0
+            if sm_warnings:
+                # 1. Lấy ngưỡng Whale Override của rổ
+                whale_thresh = 100.0 if self.universe == 'VN30' else (15.0 if self.universe == 'VNSmallCap' else 50.0)
+                
+                # 2. Kiểm tra Dấu ấn T-1 (Để quyết định khi Offline)
+                l2_past = past_ctx.get('l2_data', {})
+                t1_active_net = l2_past.get('t1_active_net_bn', 0)
+                t1_vol_ratio = l2_past.get('t1_vol_ratio', 1.0)
+
+                is_t1_strong = t1_active_net >= (whale_thresh * 0.5) or (t1_active_net > 0 and t1_vol_ratio > 1.5)
+
+                # 3. KIỂM TRA GIẢI CỨU T0
+                is_bullish = "BULLISH" in t0_verdict
+                is_tilt_bull_strong = "TILT BULL" in t0_verdict and t0_net_active >= (whale_thresh * 0.5)
+                is_reversal = is_bullish or is_tilt_bull_strong
+
+                # --- MA TRẬN QUYẾT ĐỊNH ---
+                if t0_date is not None and (pd.to_datetime(t0_date) - pd.to_datetime(entry_date)).days <= 1:
+                    print(f"   🛡️ ÂN XÁ [NEW BUY]: {ticker} vừa mua, giữ để theo dõi nốt phiên.")
+                elif is_reversal:
+                    print(f"   🌟 GIẢI CỨU T0: Dòng tiền đang bùng nổ, phủ quyết lệnh bán!")
+                elif omni_now.get('is_offline', True) and is_t1_strong:
+                    print(f"   ⏳ TẠM HOÃN [T-1 STRONG]: Hôm qua có Whale vào ({t1_active_net:+.1f} Tỷ). Chờ T0 mở cửa xác nhận.")
+                elif omni_now.get('is_offline', True):
+                    print(f"   ⏳ TẠM HOÃN [OFFLINE]: Chờ T0 mở cửa để kiểm tra lực đỡ rồi mới xử lý.")
+                else:
+                    # Nếu thị trường đã mở cửa (Online) mà không có giải cứu -> THỰC THI BÁN
+                    sell_reasons.append("Cá mập EOD tháo cống (Smart Money Red Alert)")
+                    action = "SELL (SMART MONEY DUMP)"
+
+            # E. Kích hoạt Bán dựa trên Kỹ thuật/Mùa vụ
             if self.season == "Q4_HARVEST" and pnl_pct > 5 and signal in ['UT', 'SOW']:
                 sell_reasons.append(f"Q4 Thu quân: {signal}")
                 action = "SELL (Q4 HARVEST)"
@@ -1366,13 +1414,13 @@ class LiveAssistant:
 
             # 5. XUẤT LỆNH VÀ CẬP NHẬT DANH MỤC
             if action != "HOLD":
-                print(f"   {ticker}: 🔴 LỆNH XUẤT QUỸ | PnL: {pnl_pct:+.2f}% | Lý do: {', '.join(sell_reasons)}")
+                print(f"   {ticker}: 🔴 LỆNH XUẤT QUỸ | PnL: {pnl_pct:+.2f}% | SL: {pos['sl_price']:,.0f} | EP: {entry_price} | ED: {entry_date} | CP: {current_price} | Lý do: {', '.join(sell_reasons)}")
                 if "REAL" in p_type_label: 
                     self._log_trade(ticker, "SELL_REAL", current_price, f"PnL: {pnl_pct:+.2f}%. Lý do: {', '.join(sell_reasons)}")
             else:
                 # Nếu T0 Đang đỡ giá, In lời động viên
                 if "Nội Cân Tây" in t0_driver or "Ngoại Đỡ Giá" in t0_driver or "Ngoại dẫn sóng" in t0_driver:
-                    print(f"   {ticker}: 🟢 GỒNG LÃI TỰ TIN | PnL: {pnl_pct:+.2f}% | T0 đang có Tay To bảo kê chặn dưới!")
+                    print(f"   {ticker}: 🟢 GỒNG LÃI TỰ TIN | PnL: {pnl_pct:+.2f}% | SL: {pos['sl_price']:,.0f} | EP: {entry_price} | ED: {entry_date} | CP: {current_price} | T0 đang có Tay To bảo kê chặn dưới!")
                 else:
                     print(f"   {ticker}: 🟢 HOLD | PnL: {pnl_pct:+.2f}% | SL: {pos['sl_price']:,.0f} | EP: {entry_price} | ED: {entry_date} | CP: {current_price}")
                 
@@ -1566,7 +1614,7 @@ class LiveAssistant:
                         continue # Khác rổ -> Chặn đứng ngay ngoài cửa!
 
                 # 1. Báo động Thời gian thực (Nếu có thỏa thuận nổ TRONG PHIÊN T0)
-                if dp_data.get('t0_val_bn', 0) > 10.0:
+                if dp_data.get('t0_val_bn', 0) > self.dp_alert_thresh:
                     print(f"   🚨 [DARK POOL REAL-TIME] {dp_ticker}: Đang nổ thỏa thuận {dp_data['t0_val_bn']:.1f} Tỷ ngay trong phiên! Ý đồ: {dp_data['intent']}")
                 
                 # 2. Tự động bơm vào Watchlist nếu có tín hiệu MUA
@@ -1677,7 +1725,7 @@ class LiveAssistant:
             self._cleanup()
             return
         else:
-            print("\n=== QUÉT CƠ HỘI MỚI ===")
+            print("\n======= QUÉT CƠ HỘI MỚI =======")
 
         # KIỂM DIỆN VĨ MÔ TOÀN THỊ TRƯỜNG (MARKET-WIDE STATUS)
         if hasattr(self, 'market_status'):
@@ -1691,6 +1739,17 @@ class LiveAssistant:
         if hasattr(self, 'market_net_active'):
             if self.market_net_active > 0: print(f"🔥 DÒNG TIỀN ĐANG VÀO {self.universe}: (+{self.market_net_active:.1f} Tỷ)")
             elif self.market_net_active < 0: print(f"🚨 DÒNG TIỀN ĐANG RÚT KHỎI {self.universe}: ({self.market_net_active:.1f} Tỷ)")
+
+        if hasattr(self, 'market_track'):
+            total_bu_bn = self.market_track.get('total_bu_bn', 0)
+            total_sd_bn = self.market_track.get('total_sd_bn', 0)
+            shark_bu_bn = self.market_track.get('shark_bu_bn', 0)
+            shark_sd_bn = self.market_track.get('shark_sd_bn', 0)
+            shark_net_active = self.market_track.get('shark_net_active', 0)
+            print(f"  1. TỔNG QUAN DÒNG TIỀN CHỦ ĐỘNG:")
+            print(f"    🔸 Tổng MUA : {total_bu_bn:>8,.1f} Tỷ | 🔸 Tổng BÁN: {total_sd_bn:>8,.1f} Tỷ | => RÒNG: {self.market_net_active:>+8,.1f} Tỷ")
+            print(f"  2. DẤU CHÂN CÁ MẬP (> 1 TỶ/LỆNH):")
+            print(f"    🔸 MUA : {shark_bu_bn:>8,.1f} Tỷ | 🔸 BÁN: {shark_sd_bn:>8,.1f} Tỷ | => {'🟢 GOM' if shark_net_active > 0 else '🔴 XẢ'}: {shark_net_active:>+8,.1f} Tỷ")
 
         # Tạo list lưu các mã đã vượt qua vòng chấm điểm và các mã đã được chấm điểm
         selected_candidates, score_candidates = [], []

@@ -498,6 +498,40 @@ class OmniFlowMatrix:
             if l2_data['is_free_float_squeeze']:
                 diagnosis.append(f"💎 Cạn Cung Trôi Nổi: Ngoại đã gom {l2_data['fr_owned_pct']*100:.1f}% cty. Hở room < 5%!")
 
+        # TRÍCH XUẤT DẤU ẤN T-1 (Footprint)
+        t1_active_net = 0
+        t1_vol_ratio = 1.0
+        
+        if not self.df_intra.empty:
+            df_i = self.df_intra[self.df_intra['ticker'] == ticker]
+            if not df_i.empty:
+                # Lấy ngày giao dịch gần nhất có trong dữ liệu Intraday
+                all_dates = sorted(df_i['time'].dt.date.unique())
+                if all_dates:
+                    last_date = all_dates[-1]
+                    df_t1 = df_i[df_i['time'].dt.date == last_date]
+                    
+                    # Tính Active Net T-1
+                    is_bu = df_t1['match_type'].isin(['Buy', 'BU', 'B'])
+                    is_sd = df_t1['match_type'].isin(['Sell', 'SD', 'S'])
+                    trade_val = (df_t1['price'] * df_t1['volume']) / self.DIVISOR
+
+                    buy_active = trade_val[is_bu].sum()
+                    sell_active = trade_val[is_sd].sum()
+                    t1_active_net = buy_active - sell_active
+                    
+                    # Tính Tỷ lệ Thanh khoản T-1 so với MA20
+                    t1_vol = df_t1['volume'].sum()
+                    # (Giả định MA20 vol đã có từ price_l2)
+                    df_p = self.df_price_l2[self.df_price_l2['ticker'] == ticker]
+                    ma20_vol = df_p['volume'].tail(20).mean() if not df_p.empty else t1_vol
+                    t1_vol_ratio = t1_vol / ma20_vol if ma20_vol > 0 else 1.0
+
+        if l2_data:
+            l2_data['t1_active_net_bn'] = t1_active_net
+            l2_data['t1_vol_ratio'] = t1_vol_ratio
+            l2_data['t1_date'] = last_date if all_dates else None
+
         return {
             "trend": trend,
             "change_pct": price_change_pct,
@@ -516,7 +550,7 @@ class OmniFlowMatrix:
         """
         t0_data = self.t0_snapshot.get(ticker, {})
         is_offline = not t0_data or (t0_data.get('t0_last_price') == 0)
-
+        
         if is_offline:
             return {
                 "verdict": "OFFLINE (Chờ Phiên Mới)", "last_price": 0, "net_active_bn": 0,
@@ -547,17 +581,42 @@ class OmniFlowMatrix:
         f_impact_pct = (f_matched_net_t0 / total_intra_val * 100) if total_intra_val > 0 else 0
         price_is_up = last_price > vwap_t0 if vwap_t0 > 0 else net_active_bn > 0
         
+        # QUYỀN PHỦ QUYẾT CỦA CÁ VOI (WHALE OVERRIDE)
+        # Tự động xác định ngưỡng Tiền Tỷ theo rổ Vốn hóa (VN30, MidCap, SmallCap)
+        whale_thresh = 50.0 # Mặc định cho MidCap/HOSE
+        if hasattr(self, 'df_idx') and not self.df_idx.empty:
+            match = self.df_idx[self.df_idx['ticker'] == ticker]
+            if not match.empty:
+                idx_codes = match['index_code'].tolist()
+                is_vn30 = any('VN30' in str(code).upper() for code in idx_codes)
+                is_small = any('VNSMALLCAP' in str(code).upper() for code in idx_codes)
+
+                if is_vn30: whale_thresh = 100.0
+                elif is_small: whale_thresh = 15.0
+
+        # Ngưỡng phụ để nhận diện Cá Voi (40% của Whale Threshold)
+        sub_whale = whale_thresh * 0.4
+
         if price_is_up:
-            if f_impact_pct > 15.0: driver_msg = "🌍 NGOẠI DẪN SÓNG (Tây chủ động đẩy giá)"
-            elif f_impact_pct < -10.0 and net_active_bn > 0: driver_msg = "🔥 NỘI CÂN TÂY (Lái Nội hấp thụ lực xả để kéo)"
-            elif net_active_bn > (total_intra_val * 0.15): driver_msg = "🇻🇳 SÓNG THUẦN NỘI (Dòng tiền nội đẩy giá)"
-            else: driver_msg = "🕊️ NHỎ LẺ FOMO (Thiếu dấu chân cá mập)"
+            if f_impact_pct > 15.0 or f_matched_net_t0 >= sub_whale: 
+                driver_msg = "🌍 NGOẠI DẪN SÓNG (Tây chủ động đẩy giá)"
+            elif f_impact_pct < -10.0 and net_active_bn > 0: 
+                driver_msg = "🔥 NỘI CÂN TÂY (Lái Nội hấp thụ lực xả để kéo)"
+            elif net_active_bn > (total_intra_val * 0.15) or net_active_bn >= sub_whale: 
+                driver_msg = "🇻🇳 SÓNG THUẦN NỘI (Dòng tiền nội đẩy giá)"
+            else: 
+                driver_msg = "🕊️ NHỎ LẺ FOMO (Thiếu dấu chân cá mập)"
         else:
-            if net_active_bn > (total_intra_val * 0.1): driver_msg = "🛡️ LÁI ĐÈ GOM (Giá đỏ nhưng Cầu chủ động ăn vã hàng)"
-            elif f_impact_pct < -15.0: driver_msg = "🩸 TÂY ÚP SỌT (Ngoại chủ động xả gãy giá)"
-            elif f_impact_pct > 10.0 and net_active_bn < 0: driver_msg = "🛡️ NGOẠI ĐỠ GIÁ (Nội xả hoảng loạn, Tây nhặt hàng)"
-            elif net_active_bn < -(total_intra_val * 0.15): driver_msg = "📉 NỘI TỰ DẪM ĐẠP (Dòng tiền nội tháo chạy)"
-            else: driver_msg = "🧊 CẠN CẦU (Rơi tự do do thiếu lực đỡ)"
+            if net_active_bn > (total_intra_val * 0.1): 
+                driver_msg = "🛡️ LÁI ĐÈ GOM (Giá đỏ nhưng Cầu chủ động ăn vã hàng)"
+            elif f_impact_pct < -15.0 or f_matched_net_t0 <= -sub_whale: 
+                driver_msg = "🩸 TÂY ÚP SỌT (Ngoại chủ động xả gãy giá)"
+            elif f_impact_pct > 10.0 and net_active_bn < 0: 
+                driver_msg = "🛡️ NGOẠI ĐỠ GIÁ (Nội xả hoảng loạn, Tây nhặt hàng)"
+            elif net_active_bn < -(total_intra_val * 0.15) or net_active_bn <= -sub_whale: 
+                driver_msg = "📉 NỘI TỰ DẪM ĐẠP (Dòng tiền nội tháo chạy)"
+            else: 
+                driver_msg = "🧊 CẠN CẦU (Rơi tự do do thiếu lực đỡ)"
 
         # ⚖️ HỆ THỐNG CHẤM ĐIỂM LƯỢNG TỬ (SCORING ENGINE)
         score, signals = 0, []
@@ -606,19 +665,6 @@ class OmniFlowMatrix:
             if past_context.get('has_l2_trap'):
                 score -= 50; signals.insert(0, "🚨 TỬ HUYỆT L2: Kê ảo dụ FOMO để xả thật"); verdict = "BEARISH (Bẫy Kéo Xả Ảo)"
 
-        # QUYỀN PHỦ QUYẾT CỦA CÁ VOI (WHALE OVERRIDE)
-        # Tự động xác định ngưỡng Tiền Tỷ theo rổ Vốn hóa (VN30, MidCap, SmallCap)
-        whale_thresh = 50.0 # Mặc định cho MidCap/HOSE
-        if hasattr(self, 'df_idx') and not self.df_idx.empty:
-            match = self.df_idx[self.df_idx['ticker'] == ticker]
-            if not match.empty:
-                idx_codes = match['index_code'].tolist()
-                is_vn30 = any('VN30' in str(code).upper() for code in idx_codes)
-                is_small = any('VNSMALLCAP' in str(code).upper() for code in idx_codes)
-
-                if is_vn30: whale_thresh = 100.0
-                elif is_small: whale_thresh = 15.0
-
         # Nếu đang là Bẫy L2 thì cấm không cho Override
         if "Bẫy Kéo Xả Ảo" not in verdict:
             if net_active_bn > whale_thresh or f_matched_net_t0 > whale_thresh:
@@ -639,7 +685,7 @@ class OmniFlowMatrix:
         return {
             "verdict": verdict, "last_price": last_price, "net_active_bn": net_active_bn,
             "t0_f_matched_net_bn": f_matched_net_t0, "t0_f_impact_pct": f_impact_pct,
-            "driver_msg": driver_msg, "imbalance": imbalance,
+            "t0_date": t0_data.get('t0_date', None), "driver_msg": driver_msg, "imbalance": imbalance,
             "details": " | ".join(signals) if signals else "Dòng tiền giằng co quanh tham chiếu.",
             "l2_data": past_context.get('l2_data', None) if past_context else None,
             "is_offline": is_offline

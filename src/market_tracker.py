@@ -322,7 +322,14 @@ class MarketTracker:
             return {
                 'market_status': market_status,
                 'market_net_active': market_net_active,
-                'intraday_dict': intraday_dict
+                'intraday_dict': intraday_dict,
+                'market_track': {
+                    'total_bu_bn': total_bu_bn,
+                    'total_sd_bn': total_sd_bn,
+                    'shark_bu_bn': shark_bu_bn,
+                    'shark_sd_bn': shark_sd_bn,
+                    'shark_net_active': shark_net_active
+                }
             }
                 
         except Exception as e:
