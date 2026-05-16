@@ -125,16 +125,12 @@ class LiveAssistant:
         # KHỞI ĐỘNG ĐÀI QUAN SÁT VĨ MÔ & ORDER FLOW (MARKET TRACKER)
         self.market_status = 'NEUTRAL'
         self.market_net_active = 0
-        self.market_track = {}
-        self.intraday_dict = {}
         try:
             self.market_tracker = MarketTracker(data_dir=self.parquet_dir, verbose=False)
             intraday_result = self.market_tracker.analyze_full_intraday_macro(intraday_df=self.df_intra)
             if intraday_result:
                 self.market_status = intraday_result.get('market_status', 'NEUTRAL')
                 self.market_net_active = intraday_result.get('market_net_active', 0)
-                self.intraday_dict = intraday_result.get('intraday_dict', {})
-                self.market_track = intraday_result.get('market_track', {})
         except Exception as e:
             print(f"[!] Lỗi khởi động Market Tracker: {e}")
 
@@ -1333,6 +1329,18 @@ class LiveAssistant:
             if omni_now and not omni_now.get('is_offline', True):
                 print(f"   ⚡ X-Ray T0 [{ticker}]: {t0_verdict}")
                 print(f"      Khớp chủ động: {t0_net_active:+.1f} Tỷ")
+                l2 = omni_now.get('l2_data', {})
+                if l2:
+                    bu_bn = l2.get('t0_total_bu_bn', 0)
+                    sd_bn = l2.get('t0_total_sd_bn', 0)
+                    sh_bu = l2.get('t0_shark_bu_bn', 0)
+                    sh_sd = l2.get('t0_shark_sd_bn', 0)
+                    sh_bu_c = l2.get('t0_shark_bu_count', 0)
+                    sh_sd_c = l2.get('t0_shark_sd_count', 0)
+                    
+                    print(f"      Chi tiết Lệnh: 🟢 Mua {bu_bn:.1f} Tỷ | 🔴 Bán {sd_bn:.1f} Tỷ")
+                    if sh_bu > 0 or sh_sd > 0:
+                        print(f"      Lệnh > 1 Tỷ  : 🟢 Mua {sh_bu:.1f} Tỷ ({sh_bu_c} lệnh) | 🔴 Bán {sh_sd:.1f} Tỷ ({sh_sd_c} lệnh)")
                 print(f"      Ngoại T0 (Khớp Lệnh): {t0_f_matched:+.1f} Tỷ VNĐ (Impact: {t0_f_impact:.1f}%) (Đã khấu trừ Deal)")
                 print(f"      Tác nhân : {t0_driver}")
 
@@ -1415,8 +1423,9 @@ class LiveAssistant:
             # 5. XUẤT LỆNH VÀ CẬP NHẬT DANH MỤC
             if action != "HOLD":
                 print(f"   {ticker}: 🔴 LỆNH XUẤT QUỸ | PnL: {pnl_pct:+.2f}% | SL: {pos['sl_price']:,.0f} | EP: {entry_price} | ED: {entry_date} | CP: {current_price} | Lý do: {', '.join(sell_reasons)}")
-                if "REAL" in p_type_label: 
-                    self._log_trade(ticker, "SELL_REAL", current_price, f"PnL: {pnl_pct:+.2f}%. Lý do: {', '.join(sell_reasons)}")
+                # if "REAL" in p_type_label: 
+                #     self._log_trade(ticker, "SELL_REAL", current_price, f"PnL: {pnl_pct:+.2f}%. Lý do: {', '.join(sell_reasons)}")
+                active_portfolio[ticker] = pos # vẫn giữ
             else:
                 # Nếu T0 Đang đỡ giá, In lời động viên
                 if "Nội Cân Tây" in t0_driver or "Ngoại Đỡ Giá" in t0_driver or "Ngoại dẫn sóng" in t0_driver:
@@ -1740,17 +1749,6 @@ class LiveAssistant:
             if self.market_net_active > 0: print(f"🔥 DÒNG TIỀN ĐANG VÀO {self.universe}: (+{self.market_net_active:.1f} Tỷ)")
             elif self.market_net_active < 0: print(f"🚨 DÒNG TIỀN ĐANG RÚT KHỎI {self.universe}: ({self.market_net_active:.1f} Tỷ)")
 
-        if hasattr(self, 'market_track'):
-            total_bu_bn = self.market_track.get('total_bu_bn', 0)
-            total_sd_bn = self.market_track.get('total_sd_bn', 0)
-            shark_bu_bn = self.market_track.get('shark_bu_bn', 0)
-            shark_sd_bn = self.market_track.get('shark_sd_bn', 0)
-            shark_net_active = self.market_track.get('shark_net_active', 0)
-            print(f"  1. TỔNG QUAN DÒNG TIỀN CHỦ ĐỘNG:")
-            print(f"    🔸 Tổng MUA : {total_bu_bn:>8,.1f} Tỷ | 🔸 Tổng BÁN: {total_sd_bn:>8,.1f} Tỷ | => RÒNG: {self.market_net_active:>+8,.1f} Tỷ")
-            print(f"  2. DẤU CHÂN CÁ MẬP (> 1 TỶ/LỆNH):")
-            print(f"    🔸 MUA : {shark_bu_bn:>8,.1f} Tỷ | 🔸 BÁN: {shark_sd_bn:>8,.1f} Tỷ | => {'🟢 GOM' if shark_net_active > 0 else '🔴 XẢ'}: {shark_net_active:>+8,.1f} Tỷ")
-
         # Tạo list lưu các mã đã vượt qua vòng chấm điểm và các mã đã được chấm điểm
         selected_candidates, score_candidates = [], []
         # Nạp lại blacklist để làm bộ lọc
@@ -1897,6 +1895,13 @@ class LiveAssistant:
                 driver_msg = omni_now.get('driver_msg', 'Chưa rõ tác nhân')
                 print(f"   ⚡ X-Ray T0: {omni_now['verdict']} | Tác nhân: {driver_msg}")
                 print(f"      => Khớp chủ động: {omni_now['net_active_bn']:+.1f} Tỷ | Ngoại khớp sạch: {f_matched_t0:+.1f} Tỷ (Impact: {f_impact:.1f}%)")
+                l2 = omni_now.get('l2_data', {})
+                if l2:
+                    print(f"      => Chi tiết     : 🟢 Mua {l2.get('t0_total_bu_bn', 0):.1f} Tỷ vs 🔴 Bán {l2.get('t0_total_sd_bn', 0):.1f} Tỷ")
+                    sh_bu = l2.get('t0_shark_bu_bn', 0)
+                    sh_sd = l2.get('t0_shark_sd_bn', 0)
+                    if sh_bu > 0 or sh_sd > 0:
+                        print(f"      => Cá Mập (>1T) : 🟢 Mua {sh_bu:.1f} Tỷ ({l2.get('t0_shark_bu_count', 0)} lệnh) vs 🔴 Bán {sh_sd:.1f} Tỷ ({l2.get('t0_shark_sd_count', 0)} lệnh)")
             print(f"   📊 Sổ lệnh hiện tại: Bán rẻ nhất {best_ask:,.0f} | Mua cao nhất {best_bid:,.0f}")
             print(f"   📊 Price: {price:,.0f} | VAL: {val:,.0f} | VAH {vah:,.0f}")
             print(f"   🎯 HÀNH ĐỘNG: {buy_strategy} {shares:,} cp quanh {suggested_buy:,.0f}đ {mc_sizing_note}")

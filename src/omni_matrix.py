@@ -314,34 +314,6 @@ class OmniFlowMatrix:
         self.history_cube = df.sort_values(['ticker', 'time']).reset_index(drop=True)
         print(f"[OK] Ma trận hoàn tất: {len(self.history_cube)} records, sẵn sàng cho Inference Engine.")
 
-    def _get_intraday_t0_metrics(self, ticker):
-        """Hàm nội bộ: Trích xuất siêu tốc Lực Mua/Bán chủ động T0 từ df_intra"""
-        if self.df_intra.empty: return 0, 0, 0
-        
-        # 1. Lọc đúng mã
-        df_i = self.df_intra[self.df_intra['ticker'] == ticker]
-        if df_i.empty: return 0, 0, 0
-
-        # Lọc đúng mã và đúng ngày mỏ neo
-        df_today = df_i[df_i['time'].dt.date == self.t0_date]
-
-        if df_today.empty: return 0, 0, 0
-
-        # 3. Phân loại lệnh & Tính tiền
-        is_bu = df_today['match_type'].isin(['Buy', 'BU', 'B'])
-        is_sd = df_today['match_type'].isin(['Sell', 'SD', 'S'])
-
-        trade_val = (df_today['price'] * df_today['volume']) / self.DIVISOR
-        active_buy_bn = trade_val[is_bu].sum()
-        active_sell_bn = trade_val[is_sd].sum()
-
-        net_active_bn = active_buy_bn - active_sell_bn
-        # Tính VWAP Intraday
-        total_vol = df_today['volume'].sum()
-        vwap_t0 = (df_today['price'] * df_today['volume']).sum() / total_vol if total_vol > 0 else 0
-
-        return net_active_bn, trade_val.sum(), vwap_t0  # Trả về thêm vwap_t0
-
     def _analyze_level_2_microstructure(self, ticker):
         """ĐỘNG CƠ KIỂM TOÁN L2 (ĐỌC TỪ MASTER_PRICE_L2.PARQUET)"""
         if self.df_price_l2.empty or 'ticker' not in self.df_price_l2.columns:
@@ -554,7 +526,7 @@ class OmniFlowMatrix:
         if is_offline:
             return {
                 "verdict": "OFFLINE (Chờ Phiên Mới)", "last_price": 0, "net_active_bn": 0,
-                "driver_msg": "Thị trường đóng cửa", "details": "Chưa có dữ liệu T0", "is_offline": True
+                "driver_msg": "Thị trường đóng cửa", "details": "Chưa có dữ liệu T0", "l2_data": {}, "is_offline": True
             }
 
         # 1. TRÍCH XUẤT HỒ SƠ VI CẤU TRÚC (SỨC MẠNH V3.3)
@@ -567,8 +539,35 @@ class OmniFlowMatrix:
         limit_lock = t0_data.get('t0_limit_lock', "NONE")
         book_shape = t0_data.get('t0_book_shape', "NORMAL")
         spread_vacuum = t0_data.get('t0_spread_vacuum', False)
+
+        # 📊 CHI TIẾT BÓC TÁCH LƯỢNG TỬ (BẢN VÁ V4.0)
+        total_bu_bn, total_sd_bn, net_active_bn, total_intra_val = 0.0, 0.0, 0.0, 0.0
+        shark_bu_bn, shark_sd_bn, shark_bu_count, shark_sd_count = 0.0, 0.0, 0, 0
         
-        net_active_bn, total_intra_val, _ = self._get_intraday_t0_metrics(ticker)
+        if not self.df_intra.empty:
+            df_i = self.df_intra[self.df_intra['ticker'] == ticker]
+            if not df_i.empty:
+                df_t0 = df_i[df_i['time'].dt.date == self.t0_date].copy()
+                if not df_t0.empty:
+                    # Phân loại lệnh
+                    is_bu = df_t0['match_type'].isin(['Buy', 'BU', 'B'])
+                    is_sd = df_t0['match_type'].isin(['Sell', 'SD', 'S'])
+                    
+                    # Tính giá trị lệnh (Tỷ VNĐ) và xác định Cá Mập
+                    df_t0['trade_val_bn'] = (df_t0['price'] * df_t0['volume']) / self.DIVISOR
+                    is_shark = df_t0['trade_val_bn'] >= 1.0
+                    
+                    # Tổng hợp Dòng tiền
+                    total_bu_bn = df_t0.loc[is_bu, 'trade_val_bn'].sum()
+                    total_sd_bn = df_t0.loc[is_sd, 'trade_val_bn'].sum()
+                    net_active_bn = total_bu_bn - total_sd_bn
+                    total_intra_val = total_bu_bn + total_sd_bn
+                    
+                    # Trích xuất Dấu chân Cá Mập (> 1 Tỷ)
+                    shark_bu_bn = df_t0.loc[is_bu & is_shark, 'trade_val_bn'].sum()
+                    shark_sd_bn = df_t0.loc[is_sd & is_shark, 'trade_val_bn'].sum()
+                    shark_bu_count = int(df_t0.loc[is_bu & is_shark].shape[0])
+                    shark_sd_count = int(df_t0.loc[is_sd & is_shark].shape[0])
 
         # 🚀 THUẬT TOÁN KHẤU TRỪ NGOẠI T0
         f_matched_net_t0 = f_net_t0
@@ -682,12 +681,23 @@ class OmniFlowMatrix:
             elif score < 0: verdict = "🔴 TILT BEAR (Ưu thế Bán)"
             else: verdict = "⚖️ NEUTRAL (Cân bằng/Chờ xác nhận)"
 
+        # GOM DATA VÀO L2_DATA OUTPUT ĐỂ GIAO DIỆN HIỂN THỊ
+        l2_data_output = past_context.get('l2_data', {}).copy() if past_context and past_context.get('l2_data') else {}
+        l2_data_output.update({
+            "t0_total_bu_bn": total_bu_bn,
+            "t0_total_sd_bn": total_sd_bn,
+            "t0_shark_bu_bn": shark_bu_bn,
+            "t0_shark_sd_bn": shark_sd_bn,
+            "t0_shark_bu_count": shark_bu_count,
+            "t0_shark_sd_count": shark_sd_count
+        })
+
         return {
             "verdict": verdict, "last_price": last_price, "net_active_bn": net_active_bn,
             "t0_f_matched_net_bn": f_matched_net_t0, "t0_f_impact_pct": f_impact_pct,
             "t0_date": t0_data.get('t0_date', None), "driver_msg": driver_msg, "imbalance": imbalance,
             "details": " | ".join(signals) if signals else "Dòng tiền giằng co quanh tham chiếu.",
-            "l2_data": past_context.get('l2_data', None) if past_context else None,
+            "l2_data": l2_data_output,
             "is_offline": is_offline
         }
 

@@ -987,6 +987,10 @@ class VNStockDataPipeline:
                     # chỉ lấy dữ liệu của hôm nay
                     new_today_df = new_df[new_df['time'].dt.date == current_date]
 
+                    # Bỏ qua nếu hôm nay không có giao dịch (Cuối tuần/Sáng sớm)
+                    if new_today_df.empty:
+                        return None
+
                     # ==========================================================
                     # LƯU LẠI LỊCH SỬ INTRADAY (ROLLING WINDOW)
                     # ==========================================================
@@ -1018,8 +1022,10 @@ class VNStockDataPipeline:
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                 res_list = self._run_throttled_tasks(executor, _fetch_intraday_worker, chunk)
                 for res in res_list:
-                    updated_intraday.append(res)
-                    updated_intra_tickers.add(res['ticker'].iloc[0])
+                    # Kiểm tra an toàn tuyệt đối trước khi trích xuất iloc
+                    if res is not None and not res.empty:
+                        updated_intraday.append(res)
+                        updated_intra_tickers.add(res['ticker'].iloc[0])
 
             # Nghỉ ngơi giữa các chunk
             if chunk_idx < len(ticker_chunks) - 1:

@@ -14,7 +14,7 @@ class MarketTracker:
         if verbose:
             print(f"[{datetime.now().strftime('%H:%M:%S')}] Khởi động Hệ thống Kiểm kê Thị trường (Market Tracker)...")
         
-        self.price_path = f"{data_dir}/price/master_price.parquet"
+        self.price_path = f"{data_dir}/price/master_price_l2.parquet"
         self.foreign_path = f"{data_dir}/macro/foreign_flow.parquet"
         self.prop_path = f"{data_dir}/macro/prop_flow.parquet"
         self.industry_path = f"{data_dir}/macro/groups_by_industries.parquet"
@@ -33,16 +33,16 @@ class MarketTracker:
         if not self.df_price.empty:
             self.df_price['time'] = pd.to_datetime(self.df_price['time']).dt.normalize()
             self.df_price = self.df_price.sort_values(['ticker', 'time'])
-            # Chỉ lấy các mã cơ sở (3 ký tự)
-            self.df_price = self.df_price[self.df_price['ticker'].astype(str).str.len() == 3]
+            if 'matched_volume' in self.df_price.columns and 'volume' not in self.df_price.columns:
+                self.df_price = self.df_price.rename(columns={'matched_volume': 'volume'})
             
-        for df in [self.df_foreign, self.df_prop]:
-            if not df.empty and 'time' in df.columns:
-                df['time'] = pd.to_datetime(df['time']).dt.normalize()
+        if not self.df_prop.empty and 'time' in self.df_prop.columns:
+            self.df_prop['time'] = pd.to_datetime(self.df_prop['time']).dt.normalize()
 
     def _get_period_performance(self, lookback_days, target_date=None):
         """Tính toán Hiệu suất (Return) và Thanh khoản của toàn thị trường trong N ngày qua"""
         df_target = self.df_price.copy()
+
         if target_date:
             df_target = df_target[df_target['time'] <= pd.to_datetime(target_date).normalize()]
             
@@ -75,7 +75,7 @@ class MarketTracker:
             
             # Tính tổng giá trị giao dịch trong kỳ (Tỷ VNĐ)
             # Tính chính xác từng phiên thay vì lấy trung bình
-            total_val_bn = (group['close'] * group['volume']).sum() / 1_000_000_000
+            total_val_bn = group['matched_value'].sum() / 1_000_000_000
             
             results.append({
                 'ticker': ticker,
@@ -322,14 +322,7 @@ class MarketTracker:
             return {
                 'market_status': market_status,
                 'market_net_active': market_net_active,
-                'intraday_dict': intraday_dict,
-                'market_track': {
-                    'total_bu_bn': total_bu_bn,
-                    'total_sd_bn': total_sd_bn,
-                    'shark_bu_bn': shark_bu_bn,
-                    'shark_sd_bn': shark_sd_bn,
-                    'shark_net_active': shark_net_active
-                }
+                'intraday_dict': intraday_dict
             }
                 
         except Exception as e:

@@ -442,6 +442,18 @@ class TargetSniper:
             is_offline = omni_now.get('is_offline') if omni_now else None
             if not is_offline:
                 print(f"    - Khớp chủ động T0       : {omni_now.get('net_active_bn', 0):+.1f} Tỷ VNĐ")
+                l2 = omni_now.get('l2_data', {})
+                if l2:
+                    bu_bn = l2.get('t0_total_bu_bn', 0)
+                    sd_bn = l2.get('t0_total_sd_bn', 0)
+                    sh_bu = l2.get('t0_shark_bu_bn', 0)
+                    sh_sd = l2.get('t0_shark_sd_bn', 0)
+                    sh_bu_c = l2.get('t0_shark_bu_count', 0)
+                    sh_sd_c = l2.get('t0_shark_sd_count', 0)
+                    
+                    print(f"    - Chi tiết Lệnh          : 🟢 Mua {bu_bn:.1f} Tỷ | 🔴 Bán {sd_bn:.1f} Tỷ")
+                    if sh_bu > 0 or sh_sd > 0:
+                        print(f"    - Dấu chân Cá mập (>1T)  : 🟢 Mua {sh_bu:.1f} Tỷ ({sh_bu_c} lệnh) | 🔴 Bán {sh_sd:.1f} Tỷ ({sh_sd_c} lệnh)")
                 f_matched_t0 = omni_now.get('t0_f_matched_net_bn', omni_now.get('f_net_t0', 0))
                 f_impact = omni_now.get('t0_f_impact_pct', 0)
                 print(f"    - Ngoại T0 (Khớp Lệnh)   : {f_matched_t0:+.1f} Tỷ VNĐ (Impact: {f_impact:.1f}%) (Đã khấu trừ Deal)")
