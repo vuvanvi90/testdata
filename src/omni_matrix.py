@@ -27,9 +27,30 @@ class OmniFlowMatrix:
         self.lookback_days = lookback_days
         self.DIVISOR = 1_000_000_000 # Quy đổi ra Tỷ VNĐ
         
+        # TRỤC THỜI GIAN ĐIỀU KHIỂN BỞI DỮ LIỆU (DATA-DRIVEN AXIS)
+        self.t1_date = None
+        self.t0_date = datetime.now().date()
+        self.is_offline = True
+
+        # 1. Neo T-1 vào Dữ liệu Giá (Chân lý tuyệt đối)
+        if not self.df_price_l2.empty:
+            self.t1_date = pd.to_datetime(self.df_price_l2['time']).dt.date.max()
+
+        # 2. Dùng Intraday để làm thiết bị dò tìm T0
+        if not self.df_intra.empty and self.t1_date:
+            intra_max_date = pd.to_datetime(self.df_intra['time']).dt.date.max()
+            
+            # Nếu Intraday có ngày lớn hơn T-1 -> Thị trường đang chạy!
+            if intra_max_date > self.t1_date:
+                self.t0_date = intra_max_date
+                self.is_offline = False
+            else:
+                self.t0_date = datetime.now().date() # Gán ngày hiển thị
+                self.is_offline = True
+
         # 2. XÂY DỰNG TRỤC THỜI GIAN TUYỆT ĐỐI (ABSOLUTE TIMELINE)
         self.calendar = self._build_trading_calendar()
-        self._set_absolute_timeline()
+        self._set_data_driven_timeline()
 
         # 3. Xây dựng Bản đồ (Mapping) O(1)
         self.ticker_to_universe = {}
@@ -51,47 +72,21 @@ class OmniFlowMatrix:
             dates.update(time_col.dt.date.unique())
         return sorted(list(dates))
 
-    def _set_absolute_timeline(self):
+    def _set_data_driven_timeline(self):
         """
-        ĐỘNG CƠ THỜI GIAN TUYỆT ĐỐI (POST-MARKET ROLLOVER)
-        Tự động nhận diện Đang trong phiên, Đã đóng cửa, hay Ngày nghỉ.
+        ĐỘNG CƠ THỜI GIAN DATA-DRIVEN V4.1
+        Tuyệt đối không dùng đồng hồ hệ thống (System Clock).
+        Chỉ xây dựng các biến hỗ trợ (past_dates) dựa trên t1_date đã chốt từ dữ liệu.
         """
-        from datetime import timedelta
-        now = datetime.now()
-        current_sys_date = now.date()
-        current_time = now.time()
-        
-        # Tìm ngày EOD mới nhất đã cào được
-        latest_l2_date = None
-        if not self.df_price_l2.empty and 'time' in self.df_price_l2.columns:
-            time_col = pd.to_datetime(self.df_price_l2['time'], unit='ms' if pd.api.types.is_numeric_dtype(self.df_price_l2['time']) else None)
-            latest_l2_date = time_col.dt.date.max()
-            
-        # Một phiên được coi là ĐÃ KẾT THÚC (Post-Market) khi:
-        # 1. Đã qua 15h00 chiều.
-        # 2. VÀ Dữ liệu CAO CẤP LEVEL-2 của ngày hôm đó đã được tải về thành công.
-        is_post_market = False
-        if current_time.hour >= 15:
-            if latest_l2_date == current_sys_date:
-                is_post_market = True
-
-        if is_post_market:
-            # Nếu chạy lúc 20h00 tối nay -> Cỗ máy sẽ chuẩn bị cho ngày mai (T0 = Ngày mai)
-            # T-1 chính là ngày hôm nay (vừa chốt sổ xong)
-            self.t0_date = current_sys_date + timedelta(days=1)
-            self.t1_date = current_sys_date
-        else:
-            # Đang trong phiên (Live), hoặc ngày nghỉ cuối tuần (chưa có data hôm nay)
-            self.t0_date = current_sys_date
-            # T-1 sẽ là ngày giao dịch gần nhất CÓ TRƯỚC T0
-            past_l2 = [d for d in self.calendar if d < self.t0_date]
-            self.t1_date = past_l2[-1] if past_l2 else latest_l2_date
-
         # Xây dựng danh sách quá khứ cho explain_past_movement (Chỉ lấy đến T-1)
-        self.past_dates = [d for d in self.calendar if d <= self.t1_date] if self.t1_date else []
+        if self.t1_date and self.calendar:
+            self.past_dates = [d for d in self.calendar if d <= self.t1_date]
+        else:
+            self.past_dates = []
+            
         self.t2_date = self.past_dates[-2] if len(self.past_dates) >= 2 else None
         
-        status_msg = "POST-MARKET" if is_post_market else "LIVE/WEEKEND"
+        status_msg = "OFFLINE" if self.is_offline else "ONLINE/LIVE"
         print(f"[*] Trục Thời Gian ({status_msg}): T0 (Phiên ngắm bắn) = {self.t0_date.strftime('%d/%m/%Y')} | T-1 (Hậu kiểm L2) = {self.t1_date.strftime('%d/%m/%Y') if self.t1_date else 'N/A'}")
 
     def _build_mappings(self):
@@ -111,10 +106,10 @@ class OmniFlowMatrix:
 
         # Lọc lại dữ liệu của price_l2 (chỉ lấy các field cần và rename open/high/low/close)
         filterd_cols = [
-            'time', 'ticker', 'open', 'high', 'low', 'close', 'volume', 'matched_volume',
+            'time', 'ticker', 'open', 'high', 'low', 'close', 'volume', 'matched_volume', 'matched_value', 'total_sell_trade_volume',
             'fr_net_value_matched', 'fr_net_value_deal', 'average_buy_trade_volume', 'average_sell_trade_volume',
             'total_buy_unmatched_volume', 'total_sell_unmatched_volume', 'total_net_trade_volume', 'fr_available_percentage',
-            'fr_owned_percentage', 'fr_buy_value_deal', 'fr_sell_value_deal', 'market_cap'
+            'fr_owned_percentage', 'fr_buy_value_deal', 'fr_sell_value_deal', 'market_cap', 'total_buy_trade_volume'
         ]
         df_price_l2_v = self.df_price_l2[[c for c in filterd_cols if c in self.df_price_l2.columns]].copy()
         if 'matched_volume' in df_price_l2_v.columns and 'volume' not in df_price_l2_v.columns:
@@ -266,7 +261,7 @@ class OmniFlowMatrix:
         df.fillna(0, inplace=True)
 
         # 3. TÍNH TOÁN CÁC METRICS ĐỊNH LƯỢNG (Vectorized)
-        df['total_val_bn'] = (df['close'] * df['volume']) / self.DIVISOR
+        df['total_val_bn'] = df['matched_value'] / self.DIVISOR
 
         # --- KHỐI NGOẠI ---
         # Ưu tiên lấy từ L2, nếu không có thì lấy Fallback
@@ -382,8 +377,7 @@ class OmniFlowMatrix:
 
     def explain_past_movement(self, ticker, lookback_days=10):
         """
-        ĐỘNG CƠ GIẢI THÍCH QUÁ KHỨ (RETROSPECTIVE ENGINE)
-        Phân tích đa chiều: Giá vs Dòng tiền Thể chế vs Dòng tiền Lái nội
+        ĐỘNG CƠ GIẢI THÍCH QUÁ KHỨ (RETROSPECTIVE ENGINE) - VERSION 4.2
         """
         if self.history_cube.empty or not self.past_dates:
             return {"error": "Không có dữ liệu lịch sử"}
@@ -459,6 +453,9 @@ class OmniFlowMatrix:
         # NHÚNG KẾT QUẢ KIỂM TOÁN L2 VÀO HỒ SƠ QUÁ KHỨ
         l2_data = self._analyze_level_2_microstructure(ticker)
         has_l2_trap = False
+
+        if l2_data is None:
+            l2_data = {}
         
         if l2_data:
             if l2_data['is_trap']:
@@ -470,39 +467,37 @@ class OmniFlowMatrix:
             if l2_data['is_free_float_squeeze']:
                 diagnosis.append(f"💎 Cạn Cung Trôi Nổi: Ngoại đã gom {l2_data['fr_owned_pct']*100:.1f}% cty. Hở room < 5%!")
 
-        # TRÍCH XUẤT DẤU ẤN T-1 (Footprint)
-        t1_active_net = 0
-        t1_vol_ratio = 1.0
+        # TRÍCH XUẤT KHỚP CHỦ ĐỘNG T-1 (TOÁN HỌC TỪ PRICE_L2)
+        # 1. Tính toán Dòng tiền Chủ động toàn thị trường 5 ngày gần nhất
+        active_flow_5d = []
+        df_5d = df_t.tail(5)
+        for _, row in df_5d.iterrows():
+            net_vol = float(row.get('total_net_trade_volume', 0))
+            net_bn = (net_vol * float(row['close'])) / self.DIVISOR
+            active_flow_5d.append(net_bn)
+
+        # 2. Tính chi tiết Mua/Bán chủ động cho riêng T-1
+        t1_row = df_t.iloc[-1]
+        t1_vol = float(t1_row['volume'])
+        t1_net_vol = float(t1_row.get('total_net_trade_volume', 0))
+        t1_close = float(t1_row['close'])
+        t1_buy_vol = float(t1_row.get('total_buy_trade_volume', 0))
+        t1_sell_vol = float(t1_row.get('total_sell_trade_volume', 0))
+
+        l2_data['t1_buy_active_bn'] = (t1_buy_vol * t1_close) / self.DIVISOR
+        l2_data['t1_sell_active_bn'] = (t1_sell_vol * t1_close) / self.DIVISOR
+        l2_data['t1_net_active_bn'] = (t1_net_vol * t1_close) / self.DIVISOR
+        l2_data['active_flow_5d'] = active_flow_5d
+
+        # 3. Tính tỷ lệ thanh khoản và chuẩn hóa biến cho live.py
+        ma20_vol = df_t['volume'].tail(20).mean()
+        l2_data['t1_vol_ratio'] = t1_vol / ma20_vol if ma20_vol > 0 else 1.0
         
-        if not self.df_intra.empty:
-            df_i = self.df_intra[self.df_intra['ticker'] == ticker]
-            if not df_i.empty:
-                # Lấy ngày giao dịch gần nhất có trong dữ liệu Intraday
-                all_dates = sorted(df_i['time'].dt.date.unique())
-                if all_dates:
-                    last_date = all_dates[-1]
-                    df_t1 = df_i[df_i['time'].dt.date == last_date]
-                    
-                    # Tính Active Net T-1
-                    is_bu = df_t1['match_type'].isin(['Buy', 'BU', 'B'])
-                    is_sd = df_t1['match_type'].isin(['Sell', 'SD', 'S'])
-                    trade_val = (df_t1['price'] * df_t1['volume']) / self.DIVISOR
-
-                    buy_active = trade_val[is_bu].sum()
-                    sell_active = trade_val[is_sd].sum()
-                    t1_active_net = buy_active - sell_active
-                    
-                    # Tính Tỷ lệ Thanh khoản T-1 so với MA20
-                    t1_vol = df_t1['volume'].sum()
-                    # (Giả định MA20 vol đã có từ price_l2)
-                    df_p = self.df_price_l2[self.df_price_l2['ticker'] == ticker]
-                    ma20_vol = df_p['volume'].tail(20).mean() if not df_p.empty else t1_vol
-                    t1_vol_ratio = t1_vol / ma20_vol if ma20_vol > 0 else 1.0
-
-        if l2_data:
-            l2_data['t1_active_net_bn'] = t1_active_net
-            l2_data['t1_vol_ratio'] = t1_vol_ratio
-            l2_data['t1_date'] = last_date if all_dates else None
+        # Gắn biến t1_active_net_bn để live.py bắt Whale Override T-1
+        l2_data['t1_active_net_bn'] = l2_data['t1_net_active_bn'] 
+        
+        if 't1_date' not in l2_data:
+            l2_data['t1_date'] = self.t1_date.strftime('%d/%m/%Y') if self.t1_date else "N/A"
 
         return {
             "trend": trend,
@@ -526,7 +521,9 @@ class OmniFlowMatrix:
         if is_offline:
             return {
                 "verdict": "OFFLINE (Chờ Phiên Mới)", "last_price": 0, "net_active_bn": 0,
-                "driver_msg": "Thị trường đóng cửa", "details": "Chưa có dữ liệu T0", "l2_data": {}, "is_offline": True
+                "driver_msg": "Thị trường Đóng cửa/Chưa có GD T0.", "details": "Chờ mở cửa phiên mới", 
+                "is_offline": True,
+                "l2_data": past_context.get('l2_data', {}) if past_context else {}
             }
 
         # 1. TRÍCH XUẤT HỒ SƠ VI CẤU TRÚC (SỨC MẠNH V3.3)

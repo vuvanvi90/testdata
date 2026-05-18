@@ -418,11 +418,17 @@ class TargetSniper:
             # IN KẾT QUẢ KIỂM TOÁN T-1 LÊN MÀN HÌNH
             l2_data = omni_now.get('l2_data') if omni_now else None
             if l2_data:
+                print(f"    [DÒNG TIỀN THỊ TRƯỜNG & THỂ CHẾ (T-5 -> T-1)]")
+                active_5d = l2_data.get('active_flow_5d', [])
+                if active_5d:
+                    flow_str = " | ".join([f"{x:+.1f}" for x in active_5d])
+                    print(f"    - Khớp ròng Chủ động EOD : {flow_str} (Tỷ VNĐ)")
+            
                 w_ratio = l2_data['whale_ratio']
                 s_ratio = l2_data['spoofing_ratio']
                 avg_buy, avg_sell = l2_data['avg_buy_vol'], l2_data['avg_sell_vol']
                 
-                print(f"    [HẬU KIỂM LEVEL-2 (PHIÊN T-1: {l2_data['t1_date']})]")
+                print(f"    [HẬU KIỂM LEVEL-2 (PHIÊN T-1: {l2_data.get('t1_date', 'N/A')})]")
                 print(f"    - Quy mô Lệnh (L2)       : Mua TB {avg_buy:,.0f} cp/lệnh vs Bán TB {avg_sell:,.0f} cp/lệnh")
                 
                 if w_ratio >= 1.5:
@@ -436,6 +442,11 @@ class TargetSniper:
                     print(f"    - Bẫy Kê Lệnh (Spoofing) : ⚠️ DƯ MUA ẢO (Gấp {s_ratio:.1f}x Dư bán) - Cẩn thận dụ Fomo!")
                 elif s_ratio < 0.5:
                     print(f"    - Bẫy Kê Lệnh (Spoofing) : ⚠️ DƯ BÁN ẢO (Gấp {1/s_ratio:.1f}x Dư mua) - Cẩn thận đè gom!")
+
+                buy_bn = l2_data.get('t1_buy_active_bn', 0)
+                sell_bn = l2_data.get('t1_sell_active_bn', 0)
+                net_bn = l2_data.get('t1_net_active_bn', 0)
+                print(f"    - Khớp lệnh Chủ động     : 🟢 Mua {buy_bn:.1f} Tỷ vs 🔴 Bán {sell_bn:.1f} Tỷ (Ròng: {net_bn:+.1f} Tỷ)")
         
         print("    [HIỆN TẠI T0 - INTRADAY MOMENTUM]")
         if omni_now and "error" not in omni_now:
