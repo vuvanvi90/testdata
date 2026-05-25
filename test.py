@@ -205,12 +205,17 @@ class VN30DataPipeline:
         # if not df_price.empty:
         #     df_group = {ticker: group for ticker, group in df_price.groupby('ticker')}
         #     # print(df_group['TCB'].tail(10))
-        #     df_group['TCB'].to_json("TCB_price.json", orient='records', force_ascii=False, indent=4)
+        #     df_group['MBB'].tail(5).to_json("MBB_price.json", orient='records', force_ascii=False, indent=4)
 
         # if not df_price_l2.empty:
         #     df_group = {ticker: group for ticker, group in df_price_l2.groupby('ticker')}
-        #     print(df_group['SHB'].tail(10))
-        #     # df_group['TCB'].to_json("TCB_price.json", orient='records', force_ascii=False, indent=4)
+        # #     print(df_group['FPT'].tail(1))
+        #     df_group['FPT'].tail(1).to_json("FPT_price_l2.json", orient='records', force_ascii=False, indent=4)
+
+        # if not df_prop.empty:
+        #     df_group = {ticker: group for ticker, group in df_prop.groupby('ticker')}
+        #     # print(df_group['GMD'].tail(1))
+        #     df_group['FPT'].tail(1).to_json("FPT_prop.json", orient='records', force_ascii=False, indent=4)
 
         # if not df_industry.empty:
         #     # print(df_industry.tail(10))
@@ -218,8 +223,9 @@ class VN30DataPipeline:
 
         # if not df_intra.empty:
         #     df_group = {ticker: group for ticker, group in df_intra.groupby('ticker')}
-        #     print(df_group['GMD'].tail(10))
-        #     # df_intra.to_json("intraday.json", orient='records', force_ascii=False, indent=4)
+        #     # print(df_group['GMD'].tail(10))
+        #     # df_group['GMD'].tail(10).to_json("GMD_intraday.json", orient='records', force_ascii=False, indent=4)
+        #     print(len(df_group['GMD']))
 
         # if not df_pt.empty:
         #     # df_group = {ticker: group for ticker, group in df_pt.groupby('symbol')}
@@ -280,7 +286,8 @@ class VN30DataPipeline:
         #     df_fin.to_json("df_fin.json", orient='records', force_ascii=False, indent=4)
 
         # if not df_board.empty:
-        #     df_board.to_json("df_board.json", orient='records', force_ascii=False, indent=4)
+        # #     df_board[df_board['symbol'] == "SHB"].to_json("SHB_board.json", orient='records', force_ascii=False, indent=4)
+        #     df_board.to_json("board_18_05_2026.json", orient='records', force_ascii=False, indent=4)
 
         # omni = OmniFlowMatrix(data_frames, lookback_days=30)
         # test_tickers = ['VHM', 'VIC', 'HPG', 'DIG', 'GMD'] # Thử với VN30, MidCap và SmallCap

@@ -2,6 +2,7 @@
 import os
 import json
 import pandas as pd
+from datetime import datetime
 from pathlib import Path
 
 # Sàn HOSE (TP.HCM)
@@ -14,7 +15,7 @@ from pathlib import Path
 
 # from src.collector import VNStockDataPipeline
 # from src.run_bot import run_trading_system
-from src.run_bot import run_darkpool_radar, run_vn30_live, run_midcap_live, run_smallcap_live, run_sniper
+from src.run_bot import run_darkpool_radar, run_vn30_live, run_midcap_live, run_smallcap_live, run_sniper, run_post_mortem
 # from src.run_bot import run_cashflow_report, run_cashflow_group_report
 # from src.backtester import VectorizedBacktester
 # from src.validator import ValidatePipeline
@@ -73,18 +74,19 @@ def main():
     # run_midcap_live()
     # run_smallcap_live()
 
-    # # watch_list = ["SHB","GMD","FPT","VHM","VIC"]
-    # watch_list = ["SHB"]
-    # # watch_list = ["ORS"]
+    # watch_list = df_index[df_index['index_code'] == 'VN30']['ticker'].tolist()
+    # watch_list = df_index[df_index['index_code'] == 'VNMidCap']['ticker'].tolist()
+    # watch_list = ["SHB", "FPT", "GAS"]
     # run_sniper(tickers=watch_list)
 
     # # Bóc tách dòng tiền của 1 mã bất kỳ
     # tracker = SmartMoneyTracker(df_price, df_foreign, df_prop, df_indx=df_index)
     # tracker.track_ticker(ticker='ORS', target_date=None, start_date='2026-03-01')
 
-    # # Test: Kiểm tra mã tăng và signal trước đó
-    # analyzer = PostMortemAnalyzer()
-    # analyzer.analyze(ticker="GMD", target_date_str='2026-04-20', lookback_days=30)
+    # Test: Kiểm tra mã tăng và signal trước đó
+    # watch_list = df_index[df_index['index_code'] == 'VN30']['ticker'].tolist()
+    # watch_list = ["SHB", "FPT", "GAS"]
+    # run_post_mortem(tickers=watch_list, target_date=datetime.now().strftime('%Y-%m-%d'), lookback_days=20)
 
     # # Test: Kiểm tra thị trường, thanh khoản và volume mà Cá Mập nắm giữ
     # analyzer = MarketFlowAnalyzer(df_price, df_foreign, df_prop)
