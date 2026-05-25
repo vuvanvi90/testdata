@@ -7,6 +7,7 @@ from src.live import LiveAssistant, DualLogger
 from src.darkpool import DarkPoolRadar
 from src.sniper import TargetSniper
 from src.reporter import CashFlowReporter
+from src.post_mortem import PostMortemAnalyzer
 from src.reporter_by_group import GroupCashFlowReporter
 
 def run_trading_system():
@@ -121,12 +122,35 @@ def run_sniper(tickers=None):
     try:
         if tickers:
             for ticker in tickers:
-                sniper = TargetSniper(ticker=ticker)
+                sniper = TargetSniper(ticker=ticker, target_date=None)
                 sniper.analyze()
         else:
             print(f"Sniper nhận được tickers = {tickers}")
     except Exception as e:
         print(f"\n[!!!] LỖI NGHIÊM TRỌNG TRONG QUÁ TRÌNH CHẠY BOT cho SNIPER: {e}")
+        print(traceback.format_exc()) # In chi tiết dòng code gây lỗi vào log
+    finally:
+        print(f"\n[{datetime.now().strftime('%H:%M:%S')}] 🛑 KẾT THÚC PHIÊN LÀM VIỆC.")
+
+def run_post_mortem(tickers=None, target_date=datetime.now().strftime('%Y-%m-%d'), lookback_days=20):
+    log_dir = Path("data/logs/postmortem")
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_filename = log_dir / f"run_{datetime.now().strftime('%Y_%m_%d_%H_%M_%S')}.log"
+    sys.stdout = DualLogger(log_filename)
+    
+    print("="*65)
+    print(f"[*] 🚀 BẮT ĐẦU PHIÊN LÀM VIỆC Post Mortem. Log được lưu tại: {log_filename}")
+    print("="*65)
+
+    try:
+        if tickers:
+            for ticker in tickers:
+                analyzer = PostMortemAnalyzer()
+                analyzer.analyze(ticker=ticker, target_date_str=target_date, lookback_days=lookback_days)
+        else:
+            print(f"PostMortem nhận được tickers = {tickers}")
+    except Exception as e:
+        print(f"\n[!!!] LỖI NGHIÊM TRỌNG TRONG QUÁ TRÌNH CHẠY BOT cho PostMortem: {e}")
         print(traceback.format_exc()) # In chi tiết dòng code gây lỗi vào log
     finally:
         print(f"\n[{datetime.now().strftime('%H:%M:%S')}] 🛑 KẾT THÚC PHIÊN LÀM VIỆC.")

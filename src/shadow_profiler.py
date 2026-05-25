@@ -316,82 +316,84 @@ class ShadowProfiler:
             print(f" 🎯 GIAI ĐOẠN 3: RADAR CẢNH BÁO SÓNG ĐẦU CƠ - WYCKOFF NÉN NỀN")
             print("="*95)
         
-        alerts = []
-        if not profile_rules: return alerts
-        
-        for ticker in tickers:
-            df_full = self.df_price[self.df_price['ticker'] == ticker]
-            # Cắt đứt tương lai nếu có target_date
-            if target_date:
-                df_full = df_full[df_full['time'] <= pd.to_datetime(target_date)]
+        try:
+            alerts = []
+            if not profile_rules: return alerts
+            
+            for ticker in tickers:
+                df_full = self.df_price[self.df_price['ticker'] == ticker]
+                # Cắt đứt tương lai nếu có target_date
+                if target_date:
+                    df_full = df_full[df_full['time'] <= pd.to_datetime(target_date)]
 
-            # Lấy 120 phiên tính từ thời điểm quét lùi về trước
-            df_t = df_full.tail(130).copy()
-            if len(df_t) < 25: continue
-            
-            df_t = df_t.sort_values('time').reset_index(drop=True)
-            df_t = self._detect_upthrusts(df_t)
-            
-            # --- 1. ĐO LƯỜNG ĐỘ TÍCH LŨY HIỆN TẠI (TIME-IN-ZONE METHOD) ---
-            # Lấy 60 ngày làm khung thời gian khảo sát
-            df_60 = df_t.tail(60)
-            if not df_60.empty:
-                median_price = df_60['close'].median()
-                # Định nghĩa "Vùng gom hàng" là dao động +/- 15% quanh giá trung vị
-                upper_band = median_price * 1.15
-                lower_band = median_price * 0.85
+                # Lấy 120 phiên tính từ thời điểm quét lùi về trước
+                df_t = df_full.tail(130).copy()
+                if len(df_t) < 25: continue
                 
-                # Đếm tổng số ngày giá nằm trong Vùng này (bỏ qua các ngày bị đạp rũ thủng vùng)
-                live_acc_days = len(df_60[(df_60['close'] >= lower_band) & (df_60['close'] <= upper_band)])
-            else:
-                live_acc_days = 0
-
-            # Lấy 20 phiên gần nhất để tính độ nén ngắn hạn
-            df_live = df_t.tail(20)
-            
-            # Dùng Quantile để gọt bỏ 1 phiên cao nhất và 1 phiên thấp nhất (Chống nhiễu rũ hàng)
-            max_p = df_live['close'].quantile(0.95)
-            min_p = df_live['close'].quantile(0.05)
-            live_volatility = (max_p - min_p) / min_p * 100 if min_p > 0 else 0
-            
-            recent_5d = df_live.tail(5)
-            min_vols = recent_5d['volume'].nsmallest(3).mean()
-            current_ma20 = df_live.iloc[-1]['vol_ma20']
-            live_dry_up = (min_vols / current_ma20) * 100 if current_ma20 > 0 else 100
-            
-            live_upthrusts = df_live['is_upthrust'].sum()
-            
-            is_coiling = live_volatility <= profile_rules['max_volatility']
-            is_dry = live_dry_up <= profile_rules['max_dry_up']
-            is_ripe = live_acc_days >= profile_rules['min_acc_days']
-            
-            if is_coiling and is_dry:
-                if live_upthrusts >= profile_rules['max_upthrusts']:
-                    status = "🩸 NGUY HIỂM"
-                    note = f"Nổ xịt {live_upthrusts} lần. Đừng mua nền, rủi ro gãy rũ cao!"
-                elif not is_ripe:
-                    status = "⏳ CHỜ ĐỢI"
-                    note = f"Mới gom {live_acc_days}/{profile_rules['min_acc_days']:.0f} phiên. Nổ sớm dễ gặp bẫy!"
-                else:
-                    status = "🌟 CHÍN MUỒI"
-                    note = f"Đã gom {live_acc_days} phiên. Cạn cung {live_dry_up:.1f}%. Sẵn sàng chờ nổ!"
+                df_t = df_t.sort_values('time').reset_index(drop=True)
+                df_t = self._detect_upthrusts(df_t)
+                
+                # --- 1. ĐO LƯỜNG ĐỘ TÍCH LŨY HIỆN TẠI (TIME-IN-ZONE METHOD) ---
+                # Lấy 60 ngày làm khung thời gian khảo sát
+                df_60 = df_t.tail(60)
+                if not df_60.empty:
+                    median_price = df_60['close'].median()
+                    # Định nghĩa "Vùng gom hàng" là dao động +/- 15% quanh giá trung vị
+                    upper_band = median_price * 1.15
+                    lower_band = median_price * 0.85
                     
-                alerts.append({
-                    'Ticker': ticker,
-                    'Status': status,
-                    'Note': note
-                })
+                    # Đếm tổng số ngày giá nằm trong Vùng này (bỏ qua các ngày bị đạp rũ thủng vùng)
+                    live_acc_days = len(df_60[(df_60['close'] >= lower_band) & (df_60['close'] <= upper_band)])
+                else:
+                    live_acc_days = 0
+
+                # Lấy 20 phiên gần nhất để tính độ nén ngắn hạn
+                df_live = df_t.tail(20)
                 
-        # --- 4. IN BÁO CÁO ---
-        if self.verbose:
-            if not alerts:
-                print("[*] Hiện tại không có mã nào lọt vào form nén sóng của Đội lái.")
-            else:
-                print(f"{'MÃ CP':<8} | {'TRẠNG THÁI':<15} | {'CHIẾN LƯỢC WYCKOFF':<60}")
-                print("-" * 95)
-                for a in alerts:
-                    print(f"{a['Ticker']:<8} | {a['Status']:<15} | {a['Note']:<60}")
-        return alerts
+                # Dùng Quantile để gọt bỏ 1 phiên cao nhất và 1 phiên thấp nhất (Chống nhiễu rũ hàng)
+                max_p = df_live['close'].quantile(0.95)
+                min_p = df_live['close'].quantile(0.05)
+                live_volatility = (max_p - min_p) / min_p * 100 if min_p > 0 else 0
+                
+                recent_5d = df_live.tail(5)
+                min_vols = recent_5d['volume'].nsmallest(3).mean()
+                current_ma20 = df_live.iloc[-1]['vol_ma20']
+                live_dry_up = (min_vols / current_ma20) * 100 if current_ma20 > 0 else 100
+                
+                live_upthrusts = df_live['is_upthrust'].sum()
+                
+                is_coiling = live_volatility <= profile_rules['max_volatility']
+                is_dry = live_dry_up <= profile_rules['max_dry_up']
+                is_ripe = live_acc_days >= profile_rules['min_acc_days']
+                if is_coiling and is_dry:
+                    if live_upthrusts >= profile_rules['max_upthrusts']:
+                        status = "🩸 NGUY HIỂM"
+                        note = f"Nổ xịt {live_upthrusts} lần. Đừng mua nền, rủi ro gãy rũ cao!"
+                    elif not is_ripe:
+                        status = "⏳ CHỜ ĐỢI"
+                        note = f"Mới gom {live_acc_days}/{profile_rules['min_acc_days']:.0f} phiên. Nổ sớm dễ gặp bẫy!"
+                    else:
+                        status = "🌟 CHÍN MUỒI"
+                        note = f"Đã gom {live_acc_days} phiên. Cạn cung {live_dry_up:.1f}%. Sẵn sàng chờ nổ!"
+                        
+                    alerts.append({
+                        'Ticker': ticker,
+                        'Status': status,
+                        'Note': note
+                    })
+                    
+            # --- 4. IN BÁO CÁO ---
+            if self.verbose:
+                if not alerts:
+                    print("[*] Hiện tại không có mã nào lọt vào form nén sóng của Đội lái.")
+                else:
+                    print(f"{'MÃ CP':<8} | {'TRẠNG THÁI':<15} | {'CHIẾN LƯỢC WYCKOFF':<60}")
+                    print("-" * 95)
+                    for a in alerts:
+                        print(f"{a['Ticker']:<8} | {a['Status']:<15} | {a['Note']:<60}")
+            return alerts
+        except Exception as e:
+            print(f"[!] live_shadow_radar Error: {e}")
 
 # ==========================================
 # KHỐI CHẠY THỬ NGHIỆM

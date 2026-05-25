@@ -21,7 +21,7 @@ class PostMortemAnalyzer:
     def __init__(self, data_dir='data/parquet', universe='VN30'):
         self.data_dir = Path(data_dir)
         self.universe = universe
-        self.price_path = self.data_dir / 'price/master_price.parquet'
+        self.price_path = self.data_dir / 'price/master_price_l2.parquet'
         self.foreign_path = self.data_dir / 'macro/foreign_flow.parquet'
         self.prop_path = self.data_dir / 'macro/prop_flow.parquet'
         self.comp_path = self.data_dir / 'company/master_company.parquet'
@@ -37,25 +37,38 @@ class PostMortemAnalyzer:
             df_price = self._load_parquet_safe(self.price_path)
             if not df_price.empty:
                 df_price['time'] = pd.to_datetime(df_price['time']).dt.normalize()
-            self.price_dict = self._load_data_dict(self.price_path)
+                if not df_price.empty and 'matched_volume' in df_price.columns and 'volume' not in df_price.columns:
+                    df_price = df_price.rename(columns={'matched_volume': 'volume'})
 
-            foreign_dict = self._load_data_dict(self.foreign_path)
+            self.price_dict = self._filterd_dict(df=df_price)
             prop_dict = self._load_data_dict(self.prop_path)
 
             out_shares_dict = {}
             df_comp = self._load_parquet_safe(self.comp_path)
+            # 1. BASE LEVEL: Lấy từ master_company (Làm nền dự phòng)
             if not df_comp.empty and 'ticker' in df_comp.columns and 'issue_share' in df_comp.columns:
                 out_shares_dict = df_comp.set_index('ticker')['issue_share'].to_dict()
+
+             # 2. Ghi đè bằng Dữ liệu Tươi (Live Data) từ master_price_l2
+            if not df_price.empty and 'total_shares' in df_price.columns:
+                df_price_l2_raw = df_price.copy()
+                # Lọc bỏ các dòng bị rỗng
+                df_l2_shares = df_price_l2_raw.dropna(subset=['total_shares'])
+                if not df_l2_shares.empty:
+                    # Lấy record ngày mới nhất của từng mã cổ phiếu
+                    latest_shares = df_l2_shares.sort_values('time').groupby('ticker').tail(1)
+                    l2_shares_dict = latest_shares.set_index('ticker')['total_shares'].to_dict()
+                    # Cập nhật (ghi đè) vào dictionary tổng
+                    out_shares_dict.update(l2_shares_dict)
             
             # Khởi tạo các Động cơ Phân tích
             self.sm_engine = SmartMoneyEngine(
-                foreign_dict=foreign_dict, 
+                price_l2_dict=self.price_dict, 
                 prop_dict=prop_dict, 
-                out_shares_dict=out_shares_dict,
-                price_dict=self.price_dict,
-                universe=self.universe 
+                out_shares_dict=out_shares_dict, 
+                universe=self.universe
             )
-            self.profiler = ShadowProfiler(df_price, verbose=False)
+            self.profiler = ShadowProfiler(df_l2=df_price, verbose=False)
         except Exception as e:
             print(f"[!] Lỗi _load_data: {e}")
 
@@ -83,6 +96,17 @@ class PostMortemAnalyzer:
             
         return data_dict
 
+    def _filterd_dict(self, df):
+        if df.empty or 'ticker' not in df.columns:
+            return {}
+            
+        d_dict = {}
+        for ticker, group in df.groupby('ticker'):
+            group = group.sort_values('time').tail(130)
+            d_dict[ticker] = group
+            
+        return d_dict
+
     def analyze(self, ticker, target_date_str, lookback_days=15):
         print(f"\n[🔬] KHÁM NGHIỆM MÃ: {ticker} | NGÀY SỰ KIỆN: {target_date_str} | QUÉT LÙI: {lookback_days} PHIÊN")
         print("-" * 145)
@@ -103,13 +127,15 @@ class PostMortemAnalyzer:
         # Tính toán trên toàn bộ df_p_valid trước để đạt tốc độ O(1)
         df_p_valid['pct_1d'] = df_p_valid['close'].pct_change(1) * 100
         df_p_valid['pct_5d'] = df_p_valid['close'].pct_change(5) * 100
+        df_p_valid['pct_10d'] = df_p_valid['close'].pct_change(10) * 100
+        df_p_valid['pct_15d'] = df_p_valid['close'].pct_change(15) * 100
         df_p_valid['pct_20d'] = df_p_valid['close'].pct_change(20) * 100
 
         trading_dates = df_p_valid['time'].sort_values().unique()
         recent_dates = trading_dates[-lookback_days:]
 
         # Căn chỉnh lại Header mở rộng
-        print(f"{'NGÀY (T-X)':<15} | {'C-H-L (ĐÓNG/CAO/THẤP)':<22} | {'KHỐI LƯỢNG':<10} | {'%1D':>6} | {'%5D':>6} | {'%20D':>6} | {'WYCKOFF':<18} | {'DÒNG TIỀN & LÁI NỘI'}")
+        print(f"{'NGÀY (T-X)':<10} | {'C-H-L (ĐÓNG/CAO/THẤP)':<23} | {'KHỐI LƯỢNG':<10} | {'%1D':>6} | {'%5D':>6} | {'%20D':>6} | {'WYCKOFF':<9} | {'DÒNG TIỀN & LÁI NỘI'}")
         print("-" * 145)
 
         sm_result = {}
@@ -132,9 +158,11 @@ class PostMortemAnalyzer:
             
             pct_1d_str = fmt_pct(curr_row['pct_1d'])
             pct_5d_str = fmt_pct(curr_row['pct_5d'])
+            pct_10d_str = fmt_pct(curr_row['pct_10d'])
+            pct_15d_str = fmt_pct(curr_row['pct_15d'])
             pct_20d_str = fmt_pct(curr_row['pct_20d'])
             
-            price_str = f"{close_p:,.0f} ({high_p:,.0f}/{low_p:,.0f})"
+            price_str = f"{close_p:,.0f}/{high_p:,.0f}/{low_p:,.0f}"
             
             df_forecast = None
             signal = "Không"
@@ -158,39 +186,89 @@ class PostMortemAnalyzer:
             # Cập nhật kết luận cho ngày cuối cùng
             if is_target_day: final_signal = signal
 
+            # =================================================================
+            # SMART MONEY & SHADOW PROFILER
+            # =================================================================
             try:
-                sm_result = self.sm_engine.analyze_ticker(ticker, board_info=None, target_date=date_str)
+                sm_result = self.sm_engine.analyze_ticker(ticker, target_date=date_str)
             except Exception as e:
                 print(f"[!] Lỗi analyze_ticker: {e}")
+                sm_result = {}
 
-            sm_score = sm_result.get('total_sm_score', 0)
-            sm_danger = sm_result.get('is_danger', False)
-            sm_msg = "[🚨 BÁO ĐỘNG ĐỎ] " if sm_danger else ""
-            if sm_score != 0: sm_msg += f"SM: {sm_score} "
-
-            shadow_msg = ""
+            # 1. GỌI SHADOW PROFILER TRƯỚC ĐỂ LẤY TRẠNG THÁI LÁI NỘI
+            shadow_status = ""
             try:
-                rules = self.profiler.build_criminal_profile([ticker], lookback_days=250)
+                rules = self.profiler.build_criminal_profile([ticker], lookback_days=125)
                 alerts = self.profiler.live_shadow_radar([ticker], rules, target_date=date_str)
-                
                 if isinstance(alerts, pd.DataFrame):
                     if not alerts.empty:
-                        shadow_msg = f"| Lái nội: {alerts.iloc[0].get('Status', '')}"
+                        shadow_status = alerts.iloc[0].get('Status', '')
                 elif isinstance(alerts, list):
                     if len(alerts) > 0:
                         alert_item = alerts[0]
                         if isinstance(alert_item, dict):
-                            shadow_msg = f"| Lái nội: {alert_item.get('Status', '')}"
+                            shadow_status = alert_item.get('Status', '')
                         else:
-                            shadow_msg = f"| Lái nội: {alert_item}"
+                            shadow_status = str(alert_item)
             except Exception as e:
-                shadow_msg = f"| Lái nội: [Lỗi Radar - {e}]"
+                shadow_status = f"[Lỗi Radar - {e}]"
 
-            flow_info = f"{sm_msg} {shadow_msg}".strip()
+            # 2. TRÍCH XUẤT DỮ LIỆU SMART MONEY
+            sm_score = sm_result.get('total_sm_score', 0)
+            sm_danger = sm_result.get('is_danger', False)
+            sm_warnings = sm_result.get('warnings', [])
+            sm_details = sm_result.get('sm_details', [])
+            
+            if isinstance(sm_warnings, str):
+                sm_warnings = [sm_warnings] if sm_warnings else []
+
+            # 3. SHADOW OVERRIDE (Miễn trừ bằng Lái Nội)
+            is_shadow_override = False
+            if shadow_status and "CHÍN MUỒI" in shadow_status:
+                is_shadow_override = True
+                if sm_danger:
+                    sm_danger = False
+                    sm_warnings = []
+                    # Ghi đè vào sm_result để hàm _print_conclusion nhận diện sự ân xá
+                    sm_result['is_danger'] = False 
+                    sm_result['warnings'] = []
+
+            # 4. ACTIVE DEMAND OVERRIDE (Miễn trừ bằng Cầu Đỡ)
+            active_override_msg = ""
+            for detail in sm_details:
+                if "🛡️ ACTIVE OVERRIDE" in detail:
+                    active_override_msg = detail
+                    sm_danger = False
+                    sm_warnings = []
+                    # Ghi đè vào sm_result để hàm _print_conclusion nhận diện sự ân xá
+                    sm_result['is_danger'] = False 
+                    sm_result['warnings'] = []
+                    break
+
+            # 5. FORMAT CHUỖI IN RA BẢNG
+            sm_str = ""
+            if sm_danger and sm_warnings:
+                sm_str = f"[🚨 BÁO ĐỘNG ĐỎ] {' | '.join(sm_warnings)}"
+            else:
+                # Nếu không có nguy hiểm, ưu tiên hiển thị Cờ Miễn Trừ
+                if is_shadow_override and active_override_msg:
+                    sm_str = f"🛡️ SHADOW OVERRIDE | {active_override_msg}"
+                elif is_shadow_override:
+                    sm_str = "🛡️ SHADOW OVERRIDE: Lái Nội cân Tây"
+                elif active_override_msg:
+                    sm_str = active_override_msg
+                else:
+                    sm_str = f"SM: ({sm_score})" if sm_score != 0 else "Bình thường"
+
+            # Đính kèm trạng thái Lái nội (Nếu không nằm trong trạng thái Chín Muồi Override)
+            if shadow_status and "CHÍN MUỒI" not in shadow_status:
+                sm_str += f" | Lái nội: {shadow_status}"
+
+            flow_info = sm_str.strip()
             if not flow_info: flow_info = "Bình thường"
 
             # In format mở rộng
-            print(f"{date_label:<15} | {price_str:<22} | {vol:10,.0f} | {pct_1d_str} | {pct_5d_str} | {pct_20d_str} | {signal:<18} | {flow_info}")
+            print(f"{date_label:<10} | {price_str:<23} | {vol:10,.0f} | {pct_1d_str} | {pct_5d_str} | {pct_20d_str} | {signal:<9} | {flow_info}")
 
         print("=" * 145)
         self._print_conclusion(ticker, recent_dates[-1], sm_result, final_signal)
@@ -199,17 +277,21 @@ class PostMortemAnalyzer:
     def _print_conclusion(self, ticker, target_date, final_sm_result, final_signal):
         print(f"\n🧠 KẾT LUẬN TỪ TRUNG TÂM PHÂN TÍCH (TẠI NGÀY {pd.to_datetime(target_date).strftime('%Y-%m-%d')}):")
         
-        # Sửa lỗi logic: Chỉ khen Tốt nếu thực sự có tín hiệu Mua
+        # 1. KẾT LUẬN KỸ THUẬT
         if final_signal not in ["Không", "NEUTRAL", "[Lỗi Wyckoff]"]:
             print(f"- [Kỹ thuật]: Tốt. Mã {ticker} ĐÃ có tín hiệu Wyckoff ({final_signal}).")
         else:
             print(f"- [Kỹ thuật]: {final_signal}. Bot bỏ qua vì Cấu trúc giá/Khối lượng không ở Form Mua (Chưa có SOS/SPRING/TEST_CUNG).")
 
+        # 2. KẾT LUẬN DÒNG TIỀN (ĐÃ ĐƯỢC ÂN XÁ NẾU CÓ OVERRIDE)
         if final_sm_result.get('is_danger', False):
             warnings = final_sm_result.get('warnings', [])
-            print(f"- [Dòng tiền]: BÁO ĐỘNG ĐỎ. Bot bị chặn mua do Tây/Tự doanh xả rát. Lý do: {', '.join(warnings)}.")
+            warn_str = ', '.join(warnings) if isinstance(warnings, list) else str(warnings)
+            print(f"- [Dòng tiền]: BÁO ĐỘNG ĐỎ. Bot bị chặn mua do Tây/Tự doanh xả rát. Lý do: {warn_str}.")
         elif final_sm_result.get('total_sm_score', 0) < 0:
              print(f"- [Dòng tiền]: Xấu (Điểm âm). Bot hạ tỷ trọng hoặc từ chối vì thiếu sự ủng hộ của tay to.")
+        else:
+             print(f"- [Dòng tiền]: 🟢 ĐỒNG THUẬN. Dòng tiền an toàn, đã vượt qua các lớp kiểm duyệt/phủ quyết.")
              
         print("\n=> [LỜI BIỆN HỘ CỦA BOT]: Nếu mã này sau đó vẫn tăng mạnh, đây là lệnh tăng do Yếu tố Ngoại lai (Tin tức M&A, Cờ bạc úp sọt, Giải cứu BCTC...). Bot được lập trình để BỎ QUA các kèo đánh bạc này nhằm bảo vệ vốn!")
 

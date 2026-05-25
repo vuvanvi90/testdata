@@ -14,10 +14,13 @@ from src.omni_matrix import OmniFlowMatrix
 warnings.filterwarnings('ignore')
 
 class TargetSniper:
-    def __init__(self, ticker, data_dir='data/parquet'):
+    def __init__(self, ticker, target_date=None, data_dir='data/parquet'):
         self.ticker = ticker.upper()
         self.data_dir = Path(data_dir)
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] Kích hoạt Chế độ Bắn tỉa V3.0 (Level-2 Core). Đang nạp đạn cho mục tiêu: [ {self.ticker} ]...")
+        self.target_date = pd.to_datetime(target_date).normalize() if target_date else None
+
+        date_str = self.target_date.strftime('%Y-%m-%d') if self.target_date else "LIVE NOW"
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Kích hoạt Bắn tỉa V3.0 (Time-Travel). Mục tiêu: [ {self.ticker} ] | Khung thời gian: {date_str}")
         
         self._load_and_filter_data()
         self._init_engines()
@@ -56,6 +59,16 @@ class TargetSniper:
         df_board_raw = self._load_parquet_safe(self.data_dir / 'board/master_board.parquet')
         df_pt_raw = self._load_parquet_safe(self.data_dir / 'intraday/master_put_through.parquet')
         
+        # TIME-TRAVEL: CẮT BỎ TOÀN BỘ DỮ LIỆU TƯƠNG LAI
+        if self.target_date:
+            target_end = self.target_date + pd.Timedelta(hours=23, minutes=59, seconds=59)
+            if not df_price_l2_raw.empty: df_price_l2_raw = df_price_l2_raw[df_price_l2_raw['time'] <= target_end]
+            if not df_prop_raw.empty: df_prop_raw = df_prop_raw[df_prop_raw['time'] <= target_end]
+            if not df_intra_raw.empty: df_intra_raw = df_intra_raw[df_intra_raw['time'] <= target_end]
+            if not df_pt_raw.empty: df_pt_raw = df_pt_raw[df_pt_raw['time'] <= target_end]
+            if not df_board_raw.empty and 'time' in df_board_raw.columns:
+                df_board_raw = df_board_raw[df_board_raw['time'] <= target_end]
+
         self.df_comp = self._load_parquet_safe(self.data_dir / 'company/master_company.parquet')
         self.df_idx = self._load_parquet_safe(self.data_dir / 'macro/index_components.parquet')
 
@@ -314,7 +327,11 @@ class TargetSniper:
             return
 
         # 1. KỸ THUẬT (Wyckoff)
-        forecaster = WyckoffForecaster(data_input=df_full, output_dir=None, run_date=datetime.now(), verbose=False)
+        forecaster = WyckoffForecaster(
+            data_input=df_full, output_dir=None, 
+            run_date=self.target_date if self.target_date else datetime.now(),
+            verbose=False
+        )
         report = forecaster.run_forecast()
         if report.empty:
             print(f"[!] Không thể vẽ đồ thị Wyckoff cho {self.ticker}.")
@@ -353,10 +370,27 @@ class TargetSniper:
 
         # 3. LÁI NỘI & QUÁ KHỨ (Shadow Profiler & Omni Past)
         past_ctx = self.omni_matrix.explain_past_movement(self.ticker, lookback_days=10)
-        rules = self.shadow_profiler.build_criminal_profile([self.ticker], lookback_days=250)
-        alerts = self.shadow_profiler.live_shadow_radar([self.ticker], rules)
-        shadow_msg = alerts[0]['Note'] if alerts else "Không phát hiện dấu vết nén nền đầu cơ."
+        rules = self.shadow_profiler.build_criminal_profile([self.ticker], lookback_days=125)
         
+        # TRUYỀN THAM SỐ TIME-TRAVEL CHO SHADOW PROFILER
+        target_str = self.target_date.strftime('%Y-%m-%d') if self.target_date else None
+        # 3.1 TRÍCH XUẤT CHÍNH XÁC STATUS & NOTE CỦA LÁI NỘI
+        alerts = self.shadow_profiler.live_shadow_radar([self.ticker], rules, target_date=target_str)
+        shadow_status = ""
+        shadow_note = "Không phát hiện dấu vết nén nền đầu cơ."
+        
+        if isinstance(alerts, pd.DataFrame) and not alerts.empty:
+            shadow_status = str(alerts.iloc[0].get('Status', ''))
+            shadow_note = str(alerts.iloc[0].get('Note', shadow_note))
+        elif isinstance(alerts, list) and len(alerts) > 0:
+            if isinstance(alerts[0], dict):
+                shadow_status = str(alerts[0].get('Status', ''))
+                shadow_note = str(alerts[0].get('Note', shadow_note))
+            else:
+                shadow_note = str(alerts[0])
+                
+        shadow_msg = f"{shadow_status} - {shadow_note}".strip(' -')
+
         # 🚀 Radar Dark Pool V3.0
         dp_alerts = self.shadow_profiler.scan_dark_pool_deals([self.ticker], lookback_days=15)
 
@@ -563,6 +597,68 @@ class TargetSniper:
             print("    - Không có dữ liệu Giao dịch Thỏa thuận.")
         print("═"*65)
 
+        # =====================================================================
+        # KINETIC IGNITION (LUỒNG KÍCH NỔ ĐỘNG LƯỢNG)
+        # =====================================================================
+        # 1. Tính toán %1D và %5D_Base
+        df_p_valid = df_full.dropna(subset=['close']).copy()
+        pct_1d = 0.0
+        pct_5d_base = 0.0
+        if len(df_p_valid) >= 6:
+            c_today = float(df_p_valid['close'].iloc[-1]) # Giá chốt T0 (Ngày nổ)
+            c_1d = float(df_p_valid['close'].iloc[-2])    # Giá chốt T-1 (Hôm qua)
+            c_5d = float(df_p_valid['close'].iloc[-6])    # Giá chốt T-5
+            
+            # Gia tốc của riêng cây nến bùng nổ T0
+            pct_1d = ((c_today - c_1d) / c_1d) * 100 if c_1d > 0 else 0
+            
+            # ĐỘT PHÁ TOÁN HỌC: Nền nén phải được đo TRƯỚC ngày nổ (T-5 -> T-1)
+            pct_5d_base = ((c_1d - c_5d) / c_5d) * 100 if c_5d > 0 else 0
+
+        # 2. Định vị Cờ Bảo Kê (Override Flags)
+        sm_details = sm_result.get('sm_details', [])
+        has_active_override = any("ACTIVE OVERRIDE" in msg for msg in sm_details)
+        
+        # BỘ NHỚ DAI DẲNG (PERSISTENT SHADOW MEMORY 30 Phiên giao dịch trước đó)
+        has_shadow_override, shadow_memory_days = False, 30
+        
+        # Lấy danh sách 30 phiên giao dịch gần nhất từ dữ liệu giá
+        past_dates = df_p_valid['time'].dt.strftime('%Y-%m-%d').unique().tolist()[-shadow_memory_days:]
+        
+        # Quét giật lùi từ hiện tại về quá khứ
+        for d_str in reversed(past_dates):
+            alerts_past = self.shadow_profiler.live_shadow_radar([self.ticker], rules, target_date=d_str)
+            st_val = ""
+            if isinstance(alerts_past, pd.DataFrame) and not alerts_past.empty:
+                st_val = str(alerts_past.iloc[0].get('Status', ''))
+            elif isinstance(alerts_past, list) and len(alerts_past) > 0:
+                item = alerts_past[0]
+                st_val = str(item.get('Status', '')) if isinstance(item, dict) else str(item)
+
+            if "CHÍN MUỒI" in st_val:
+                has_shadow_override = True
+                break # Chỉ cần từng gom 1 lần trong 30 ngày là đủ điều kiện bảo kê!
+        
+        # 2.1 Cờ Bảo Kê từ Bảng điện Real-time (T0)
+        is_t0_whale_backed = False
+        if omni_now:
+            t0_active_net = omni_now.get('net_active_bn', 0)
+            t0_verdict = omni_now.get('verdict', '')
+            whale_thresh = 100.0 if self.universe == 'VN30' else (15.0 if self.universe == 'VNSmallCap' else 50.0)
+            
+            # Đang kéo mạnh và Cá mập vào lệnh trực tiếp T0
+            if ("BULLISH" in t0_verdict) or ("TILT BULL" in t0_verdict and t0_active_net >= whale_thresh):
+                is_t0_whale_backed = True
+
+        # Gộp tất cả các lớp bảo kê (Chỉ cần 1 trong 3 điều kiện xảy ra)
+        is_money_backed = has_active_override or has_shadow_override or is_t0_whale_backed
+
+        # 3. Kích hoạt Holy Trinity (Bộ 3 Điều Kiện Vàng)
+        is_kinetic_ignition = False
+        # Nền nén (trước nổ) dao động từ -10% đến +1% (Cho phép đi ngang), Nổ T0 >= 3.0%, Có bảo kê
+        if (-10.0 <= pct_5d_base <= 1.0) and (pct_1d >= 3.0) and is_money_backed:
+            is_kinetic_ignition = True
+
         # PHẦN 5: KẾT LUẬN ĐẦU TƯ
         print(" 🎯 HÀNH ĐỘNG KHUYẾN NGHỊ (SNIPER FINAL VERDICT):")
         final_action, final_reason = "WAIT", ""
@@ -577,6 +673,26 @@ class TargetSniper:
             final_reason = "DARK POOL CẢNH BÁO ĐỎ: Phát hiện Lái Xả Ngầm khối lượng lớn (Trao tay phân phối)."
             print(f"   🚫 KHÔNG MUA: {final_reason}")
             
+        # ƯU TIÊN 1: LUỒNG KÍCH NỔ ĐỘNG LƯỢNG (BỎ QUA WYCKOFF)
+        elif is_kinetic_ignition:
+            final_action = "BUY_MARKET"
+            sl_price = df_p_valid['low'].iloc[-1]
+            buy_p = board_info['best_ask'] if board_info and board_info['best_ask'] > 0 else price
+            final_reason = f"KINETIC IGNITION: Nền nén {pct_5d_base:+.1f}%, Bứt phá {pct_1d:+.1f}% + Cờ Bảo kê."
+
+            backed_by = []
+            if is_t0_whale_backed: backed_by.append("Cá Mập Real-time (T0)")
+            if has_shadow_override: backed_by.append("Lái Nội (Shadow)")
+            if has_active_override: backed_by.append("Cầu Đỡ Bảng Điện (Active T-1)")
+            
+            print(f"   🚀 [KINETIC IGNITION]: PHÁT HIỆN ĐIỂM KÍCH NỔ ĐỘNG LƯỢNG!")
+            print(f"      - Nền nén (%5D) : {pct_5d_base:+.1f}% (Đã rũ bỏ/đi ngang thành công)")
+            print(f"      - Gia tốc (%1D) : {pct_1d:+.1f}% (Bứt phá V-Shape)")
+            print(f"      - Bảo kê bởi    : {' + '.join(backed_by)}")
+            print(f"      => LỆNH BẮN TỈA: MUA KHẨN CẤP (MARKET) quanh {buy_p:,.0f} đ.")
+            print(f"      => 🛑 CHỐT CHẶN MỎ NEO: Cắt lỗ tuyệt đối nếu giá thủng {sl_price:,.0f} đ.")
+
+        # ƯU TIÊN 2: LUẬT QUẢN TRỊ BÁO ĐỘNG ĐỎ TRUYỀN THỐNG
         elif sm_result.get("is_danger", False):
             is_validated_bull = micro_flow and ("BULLISH" in micro_flow['thesis'] or "BOTTOMING" in micro_flow['thesis'] or "TILT BULL" in micro_flow['thesis'])
             
@@ -597,6 +713,7 @@ class TargetSniper:
                 # Nếu T0 Bullish, xí xóa cờ đỏ và cho phép lệnh mua đi tiếp
                 print(f"   🌟 GIẢI CỨU BÁO ĐỘNG ĐỎ: T0 Cầu chủ động bùng nổ, bẻ gãy áp lực xả 3D của Cá mập!")
 
+        # ƯU TIÊN 3: LUẬT ĐẢO PHA CẤU TRÚC
         elif micro_flow and "BEARISH" in micro_flow['thesis']:
             # GIẢI CỨU LINH HOẠT
             # Mở khóa Đảo pha Cấu trúc (Structural Reversal).
@@ -625,7 +742,7 @@ class TargetSniper:
             final_reason = "HỦY LỆNH MUA (BULL-TRAP): Quá khứ gom đẹp nhưng T0 bị xả ngược."
             print(f"   ⚠️ {final_reason}")
             
-        # 2. CÁC KỊCH BẢN KÍCH HOẠT ĐIỂM MUA (TRIGGER)
+        # ƯU TIÊN 4: CÁC KỊCH BẢN WYCKOFF KÍCH HOẠT MUA TRUYỀN THỐNG
         elif signal in ['SOS', 'SPRING', 'TEST_CUNG', 'NEUTRAL'] and micro_flow and ("BULLISH" in micro_flow['thesis'] or "BOTTOMING" in micro_flow['thesis'] or "TILT BULL" in micro_flow['thesis']):
             sl_price = price - (wyckoff_row.get('ATR', price * 0.02) * 2.5)
             
@@ -650,7 +767,7 @@ class TargetSniper:
                 print(f"      => LỢI THẾ KÉP: Giá ({price:,.0f}) đang rẻ hơn giá vốn Cá mập ({sm_vwap:,.0f}).")
                 final_reason += f" (Rẻ hơn VWAP Lái)"
                 
-        # 3. KỊCH BẢN GIẰNG CO (CHỜ ĐỢI)
+        # KỊCH BẢN GIẰNG CO (CHỜ ĐỢI)
         else:
             final_action = "WAIT"
             final_reason = "Dòng tiền giằng co. Hành vi Lái chưa rõ ràng. Cần theo dõi thêm."
@@ -663,9 +780,16 @@ class TargetSniper:
 
 if __name__ == "__main__":
     while True:
-        ticker_input = input("\nNhập mã cổ phiếu muốn đưa vào Tầm ngắm Bắn tỉa (VD: FTS) hoặc gõ 'Q' để thoát: ").strip()
+        ticker_input = input("\nNhập mã cổ phiếu (VD: FPT) hoặc 'Q' để thoát: ").strip()
         if ticker_input.upper() == 'Q':
             break
+            
+        date_input = input("Nhập ngày giả lập (YYYY-MM-DD) hoặc ấn Enter để chạy Live: ").strip()
+        target_dt = date_input if date_input != "" else None
+        
         if len(ticker_input) >= 3:
-            sniper = TargetSniper(ticker=ticker_input)
-            sniper.analyze()
+            try:
+                sniper = TargetSniper(ticker=ticker_input, target_date=target_dt)
+                sniper.analyze()
+            except Exception as e:
+                print(f"[!] Lỗi giả lập: {e}")

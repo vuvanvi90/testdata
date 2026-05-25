@@ -1581,15 +1581,20 @@ class LiveAssistant:
                 sm_details = sm_result.get("sm_details", [])
                 is_danger = sm_result.get("is_danger", False)
 
-                # Nếu Tây/Tự doanh có dấu hiệu gom (Điểm > 0) và không có rủi ro xả tháo cống
-                if sm_score > 0 and not is_danger:
+                # WATCHLIST VIP TỪ SHADOW OVERRIDE
+                shadow_mem_radar = self._check_historical_shadow_profile(ticker, datetime.now(), lookback_window=15)
+                is_shadow_vip = shadow_mem_radar and "CHÍN MUỒI" in shadow_mem_radar['Status']
+
+                # Nếu Tây/Tự doanh có dấu hiệu gom Hoặc có Shadow VIP
+                if (sm_score > 0 and not is_danger) or is_shadow_vip:
                     is_radar = True
+                    if is_shadow_vip:
+                        radar_reasons.append("🌟 WATCHLIST VIP: Lái Nội gom CHÍN MUỒI")
                     # Trích xuất các hành động gom hàng (Các câu có chứa dấu cộng điểm, VD: "(+5)")
                     positive_actions = [msg for msg in sm_details if "(+" in msg]
-                    
                     if positive_actions:
                         radar_reasons.extend(positive_actions)
-                    else:
+                    elif sm_score > 0:
                         radar_reasons.append(f"Smart Money tích cực (Điểm: {sm_score})")
 
                 if is_radar:
@@ -1779,10 +1784,31 @@ class LiveAssistant:
                 past_ctx = self.omni_matrix.explain_past_movement(ticker, lookback_days=10)
                 omni_now = self.omni_matrix.predict_t0_action(ticker, past_context=past_ctx)
 
+            # KIỂM TOÁN LÁI NỘI (VỚI BỘ NHỚ T+15)
+            current_date = pd.to_datetime(self.run_date) if hasattr(self, 'run_date') else pd.to_datetime('today')
+            shadow_memory = self._check_historical_shadow_profile(ticker, current_date, lookback_window=15)
+
+            # SHADOW OVERRIDE (QUYỀN PHỦ QUYẾT TỪ LÁI NỘI)
+            if shadow_memory and "CHÍN MUỒI" in shadow_memory['Status']:
+                if sm_result.get("is_danger", False):
+                    print(f"   🛡️ SHADOW OVERRIDE [{ticker}]: Lái Nội CHÍN MUỒI. Vô hiệu hóa Báo động đỏ của Tây/Tự doanh!")
+                    sm_result["is_danger"] = False
+                    sm_result["warnings"] = []
+                    sm_result["sm_details"].append("🌟 SHADOW OVERRIDE: Lái Nội bảo kê, hấp thụ mọi lực xả.")
+                
+                if ticker in active_blacklist:
+                    print(f"   🛡️ SHADOW OVERRIDE [{ticker}]: Gỡ mã khỏi Blacklist ngay lập tức!")
+                    active_blacklist.pop(ticker, None)
+
             # KHIÊN CHỐNG ĐỔ VỎ (ĐỌC BẢN ÁN TRỰC TIẾP TỪ ENGINE O(1))
             dump_warnings = sm_result.get("warnings", [])
             
             total_score, score_details = self.calculate_confluence_score(row, board_info, fund_info, sm_result, mf_result, vol_profile, omni_now)
+
+            # 🚀 CỘNG THƯỞNG CHO MÃ ĐƯỢC BẢO KÊ BỞI SHADOW OVERRIDE
+            if shadow_memory and "CHÍN MUỒI" in shadow_memory['Status']:
+                total_score += 15
+                score_details.append("🌟 SHADOW OVERRIDE (+15)")
 
             score_candidates.append({
                 'Ticker': ticker,
@@ -1873,11 +1899,6 @@ class LiveAssistant:
 
             # Gọi Radar Đo lường Tồn kho & Dòng tiền Ẩn
             cum_inventory, dominance_pct, shadow_flow = self._get_inventory_metrics(ticker)
-
-
-            # KIỂM TOÁN LÁI NỘI (VỚI BỘ NHỚ T+15)
-            current_date = pd.to_datetime(self.run_date) if hasattr(self, 'run_date') else pd.to_datetime('today')
-            shadow_memory = self._check_historical_shadow_profile(ticker, current_date, lookback_window=15)
 
             # Lấy giá vốn Lái từ Market Flow
             sm_vwap = mf_result.get('sm_vwap', 0)

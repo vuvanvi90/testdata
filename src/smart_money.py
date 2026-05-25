@@ -104,6 +104,22 @@ class SmartMoneyEngine:
             df_p_20d = df_l2_v[df_l2_v['time'] >= cutoff_1m]
             total_liq_20d_bn = (df_p_20d['close'] * df_p_20d['volume']).sum() / 1_000_000_000
 
+            # TÍNH TOÁN LỰC CẦU CHỦ ĐỘNG (ACTIVE DEMAND OVERRIDE)
+            buy_intent_ratio_t1 = 50.0
+            buy_intent_ratio_3d = 50.0
+
+            last_l2 = df_l2_v.iloc[-1]
+            t_buy_t1 = last_l2.get('total_buy_trade_volume', 0)
+            t_sell_t1 = last_l2.get('total_sell_trade_volume', 0)
+            if (t_buy_t1 + t_sell_t1) > 0:
+                buy_intent_ratio_t1 = (t_buy_t1 / (t_buy_t1 + t_sell_t1)) * 100
+                
+            df_l2_3d = df_l2_v[df_l2_v['time'] >= cutoff_3d]
+            t_buy_3d = df_l2_3d.get('total_buy_trade_volume', pd.Series([0])).sum()
+            t_sell_3d = df_l2_3d.get('total_sell_trade_volume', pd.Series([0])).sum()
+            if (t_buy_3d + t_sell_3d) > 0:
+                buy_intent_ratio_3d = (t_buy_3d / (t_buy_3d + t_sell_3d)) * 100
+
         # =====================================================================
         # LỚP 1: TẦM NHÌN DÀI HẠN (130 PHIÊN GẦN NHẤT)
         # =====================================================================
@@ -194,18 +210,26 @@ class SmartMoneyEngine:
                         elif latest_f_val <= -self.thresh['t1_spike']:
                             impact_pct = (abs(latest_f_val) / latest_total_val_bn * 100) if latest_total_val_bn > 0 else 100
                             if impact_pct >= self.thresh['min_impact_pct']:
-                                result["is_danger"] = True
-                                result["warnings"].append(f"Tây XẢ RÁT T-1 ({latest_f_val:.1f} Tỷ | Chiếm {impact_pct:.1f}% Cung)")
-                                result["last_trade_date"] = latest_trading_date
+                                # ACTIVE DEMAND OVERRIDE
+                                if buy_intent_ratio_t1 > 55.0:
+                                    result["sm_details"].append(f"🛡️ ACTIVE OVERRIDE: Tây XẢ T-1 ({latest_f_val:.1f}T) nhưng Lực Cầu Đỡ Giá áp đảo ({buy_intent_ratio_t1:.1f}%).")
+                                else:
+                                    result["is_danger"] = True
+                                    result["warnings"].append(f"Tây XẢ RÁT T-1 ({latest_f_val:.1f} Tỷ | Chiếm {impact_pct:.1f}% Cung)")
+                                    result["last_trade_date"] = latest_trading_date
                             else:
                                 result["sm_details"].append(f"Tây xả T-1 ({latest_f_val:.1f} Tỷ) nhưng thanh khoản dư sức hấp thụ (Chỉ {impact_pct:.1f}% Cung).")
                             
                         if net_3d < self.thresh['dump_3d']:
                             impact_3d = (abs(net_3d) / total_val_3d_bn * 100) if total_val_3d_bn > 0 else 100
                             if impact_3d >= self.thresh['min_impact_pct']:
-                                result["is_danger"] = True
-                                result["warnings"].append(f"Tây tháo cống 3D ({net_3d:.1f} Tỷ | Chiếm {impact_3d:.1f}% Cung)")
-                                result["last_trade_date"] = latest_trading_date
+                                # ACTIVE DEMAND OVERRIDE
+                                if buy_intent_ratio_3d > 55.0:
+                                    result["sm_details"].append(f"🛡️ ACTIVE OVERRIDE: Tây tháo cống 3D ({net_3d:.1f}T) nhưng Cầu Đỡ 3D áp đảo ({buy_intent_ratio_3d:.1f}%).")
+                                else:
+                                    result["is_danger"] = True
+                                    result["warnings"].append(f"Tây tháo cống 3D ({net_3d:.1f} Tỷ | Chiếm {impact_3d:.1f}% Cung)")
+                                    result["last_trade_date"] = latest_trading_date
                             else:
                                 result["sm_details"].append(f"Tây xả 3D ({net_3d:.1f} Tỷ) nhưng lực mua đối ứng tốt (Chỉ chiếm {impact_3d:.1f}%).")
 
@@ -274,18 +298,26 @@ class SmartMoneyEngine:
                         elif latest_p_val <= -self.thresh['t1_spike']:
                             impact_pct = (abs(latest_p_val) / latest_total_val_bn * 100) if latest_total_val_bn > 0 else 100
                             if impact_pct >= self.thresh['min_impact_pct']:
-                                result["is_danger"] = True
-                                result["warnings"].append(f"Tự doanh XẢ RÁT T-1 ({latest_p_val:.1f} Tỷ | Chiếm {impact_pct:.1f}% Cung)")
-                                result["last_trade_date"] = latest_trading_date
+                                # ACTIVE DEMAND OVERRIDE
+                                if buy_intent_ratio_t1 > 55.0:
+                                    result["sm_details"].append(f"🛡️ ACTIVE OVERRIDE: Tự doanh XẢ ({latest_p_val:.1f}T) nhưng Cầu Đỡ áp đảo ({buy_intent_ratio_t1:.1f}%).")
+                                else:
+                                    result["is_danger"] = True
+                                    result["warnings"].append(f"Tự doanh XẢ RÁT T-1 ({latest_p_val:.1f} Tỷ | Chiếm {impact_pct:.1f}% Cung)")
+                                    result["last_trade_date"] = latest_trading_date
                             else:
                                 result["sm_details"].append(f"Tự doanh xả T-1 ({latest_p_val:.1f} Tỷ) nhưng Impact thấp ({impact_pct:.1f}%). Bỏ qua nhiễu.")
                             
                         if net_3d < self.thresh['dump_3d']:
                             impact_3d = (abs(net_3d) / total_val_3d_bn * 100) if total_val_3d_bn > 0 else 100
                             if impact_3d >= self.thresh['min_impact_pct']:
-                                result["is_danger"] = True
-                                result["warnings"].append(f"Tự doanh tháo cống 3D ({net_3d:.1f} Tỷ | Chiếm {impact_3d:.1f}% Cung)")
-                                result["last_trade_date"] = latest_trading_date
+                                # ACTIVE DEMAND OVERRIDE
+                                if buy_intent_ratio_3d > 55.0:
+                                    result["sm_details"].append(f"🛡️ ACTIVE OVERRIDE: Tự doanh tháo cống 3D ({net_3d:.1f}T) nhưng Cầu 3D áp đảo ({buy_intent_ratio_3d:.1f}%).")
+                                else:
+                                    result["is_danger"] = True
+                                    result["warnings"].append(f"Tự doanh tháo cống 3D ({net_3d:.1f} Tỷ | Chiếm {impact_3d:.1f}% Cung)")
+                                    result["last_trade_date"] = latest_trading_date
                             else:
                                 result["sm_details"].append(f"Tự doanh xả 3D ({net_3d:.1f} Tỷ) nhưng Impact thấp ({impact_3d:.1f}%). Bỏ qua nhiễu.")
 
