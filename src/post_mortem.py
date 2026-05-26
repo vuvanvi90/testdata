@@ -25,6 +25,7 @@ class PostMortemAnalyzer:
         self.foreign_path = self.data_dir / 'macro/foreign_flow.parquet'
         self.prop_path = self.data_dir / 'macro/prop_flow.parquet'
         self.comp_path = self.data_dir / 'company/master_company.parquet'
+        self.intra_path = self.data_dir / 'intraday/master_intraday.parquet'
         
         print("\n" + "="*80)
         print(" 🔍 KHỞI ĐỘNG CÔNG CỤ KHÁM NGHIỆM ĐỊNH LƯỢNG (POST-MORTEM)")
@@ -42,6 +43,13 @@ class PostMortemAnalyzer:
 
             self.price_dict = self._filterd_dict(df=df_price)
             prop_dict = self._load_data_dict(self.prop_path)
+
+            # Nạp dữ liệu Intraday cho Post-Mortem
+            df_intra = self._load_parquet_safe(self.intra_path)
+            self.intra_dict = {}
+            if not df_intra.empty and 'ticker' in df_intra.columns:
+                for ticker, group in df_intra.groupby('ticker'):
+                    self.intra_dict[ticker] = group
 
             out_shares_dict = {}
             df_comp = self._load_parquet_safe(self.comp_path)
@@ -107,14 +115,56 @@ class PostMortemAnalyzer:
             
         return d_dict
 
+    def _prepare_latest_ohlcv(self, ticker, df_p):
+        """Đồng bộ dữ liệu: Nặn dòng nến T0 từ dữ liệu khớp lệnh Intraday thực tế"""
+        if df_p.empty: return df_p
+        df_p = df_p.copy()
+        df_p['time'] = pd.to_datetime(df_p['time']).dt.normalize()
+        
+        df_intra = self.intra_dict.get(ticker, pd.DataFrame())
+        if not df_intra.empty:
+            df_i = df_intra.copy()
+            df_i['time'] = pd.to_datetime(df_i['time'])
+            # latest_date = df_i['time'].dt.date.max()
+            latest_date = pd.Timestamp.now().date() # chỉ lấy phiên trong ngày
+            df_today = df_i[df_i['time'].dt.date == latest_date].sort_values('time')
+            
+            if not df_today.empty:
+                # Ép kiểu an toàn thể tích khối lượng khớp lệnh
+                today_candle = pd.DataFrame([{
+                    'ticker': ticker,
+                    'time': pd.to_datetime(latest_date),
+                    'open': float(df_today['price'].iloc[0]),
+                    'high': float(df_today['price'].max()),
+                    'low': float(df_today['price'].min()),
+                    'close': float(df_today['price'].iloc[-1]),
+                    'volume': float(df_today['volume'].sum())
+                }])
+                
+                # Đồng bộ cấu trúc cột phòng trường hợp df_p chứa nhiều chỉ báo cấu trúc khác
+                for col in df_p.columns:
+                    if col not in today_candle.columns:
+                        today_candle[col] = None
+                        
+                today_candle = today_candle[df_p.columns]
+                
+                # Gộp cây nến T0 sống vào đáy của dữ liệu quá khứ tĩnh
+                df_combined = pd.concat([df_p, today_candle], ignore_index=True)
+                df_combined = df_combined.sort_values('time').drop_duplicates(subset=['time'], keep='last')
+                return df_combined
+        return df_p
+
     def analyze(self, ticker, target_date_str, lookback_days=15):
         print(f"\n[🔬] KHÁM NGHIỆM MÃ: {ticker} | NGÀY SỰ KIỆN: {target_date_str} | QUÉT LÙI: {lookback_days} PHIÊN")
-        print("-" * 145)
+        print("-" * 65)
 
         df_p = self.price_dict.get(ticker)
         if df_p is None or df_p.empty:
             print(f"[!] Không tìm thấy dữ liệu giá cho mã {ticker}.")
             return
+
+        # Hòa mạng dữ liệu Intraday sống vào dòng thời gian trước khi lọc
+        df_p = self._prepare_latest_ohlcv(ticker, df_p)
 
         target_date = pd.to_datetime(target_date_str).normalize()
         df_p_valid = df_p[df_p['time'] <= target_date].copy() # Copy để tránh SettingWithCopyWarning
@@ -135,8 +185,8 @@ class PostMortemAnalyzer:
         recent_dates = trading_dates[-lookback_days:]
 
         # Căn chỉnh lại Header mở rộng
-        print(f"{'NGÀY (T-X)':<10} | {'C-H-L (ĐÓNG/CAO/THẤP)':<23} | {'KHỐI LƯỢNG':<10} | {'%1D':>6} | {'%5D':>6} | {'%20D':>6} | {'WYCKOFF':<9} | {'DÒNG TIỀN & LÁI NỘI'}")
-        print("-" * 145)
+        print(f"{'NGÀY (T-X)':<10} | {'C-H-L (ĐÓNG/CAO/THẤP)':<23} | {'KHỐI LƯỢNG':<11} | {'%1D':>6} | {'%5D':>6} | {'%20D':>6} | {'WYCKOFF':<9} | {'DÒNG TIỀN & LÁI NỘI'}")
+        print("-" * 65)
 
         sm_result = {}
         final_signal = "Không"
@@ -144,7 +194,7 @@ class PostMortemAnalyzer:
         for date_obj in recent_dates:
             date_str = pd.to_datetime(date_obj).strftime('%Y-%m-%d')
             is_target_day = (date_obj == target_date)
-            date_label = f"🔥 {date_str}" if is_target_day else f"{date_str}"
+            date_label = f"{date_str}" if is_target_day else f"{date_str}"
             
             # --- Trích xuất Dữ liệu Kỹ thuật ---
             curr_row = df_p_valid[df_p_valid['time'] == date_obj].iloc[0]
@@ -170,7 +220,7 @@ class PostMortemAnalyzer:
                 df_hist_cut = df_p_valid[df_p_valid['time'] <= date_obj].copy()
                 forecaster = WyckoffForecaster(data_input=df_hist_cut, output_dir=None, run_date=date_obj)
                 df_forecast = forecaster.run_forecast()
-            except Exception:
+            except Exception as e:
                 signal = "[Lỗi WyckoffForecaster]"
                 print(f"   [!] Gợi ý gỡ lỗi Forecaster tại ngày {date_str}: {e}")
                 traceback.print_exc()
@@ -180,9 +230,10 @@ class PostMortemAnalyzer:
                     last_row = df_forecast.iloc[-1]
                     close_price = last_row.get('Price', 0)
                     signal = last_row.get('Signal', 'Không')
-                except Exception:
+                except Exception as e:
+                    print(f"   [!] Gợi ý gỡ lỗi Forecaster tại ngày {date_str}: {e}")
                     pass
-
+            
             # Cập nhật kết luận cho ngày cuối cùng
             if is_target_day: final_signal = signal
 
@@ -248,7 +299,7 @@ class PostMortemAnalyzer:
             # 5. FORMAT CHUỖI IN RA BẢNG
             sm_str = ""
             if sm_danger and sm_warnings:
-                sm_str = f"[🚨 BÁO ĐỘNG ĐỎ] {' | '.join(sm_warnings)}"
+                sm_str = f"🚨 BÁO ĐỘNG ĐỎ: {' | '.join(sm_warnings)}"
             else:
                 # Nếu không có nguy hiểm, ưu tiên hiển thị Cờ Miễn Trừ
                 if is_shadow_override and active_override_msg:
@@ -268,9 +319,9 @@ class PostMortemAnalyzer:
             if not flow_info: flow_info = "Bình thường"
 
             # In format mở rộng
-            print(f"{date_label:<10} | {price_str:<23} | {vol:10,.0f} | {pct_1d_str} | {pct_5d_str} | {pct_20d_str} | {signal:<9} | {flow_info}")
+            print(f"{date_label:<10} | {price_str:<23} | {vol:11,.0f} | {pct_1d_str} | {pct_5d_str} | {pct_20d_str} | {signal:<9} | {flow_info}")
 
-        print("=" * 145)
+        print("=" * 65)
         self._print_conclusion(ticker, recent_dates[-1], sm_result, final_signal)
 
 

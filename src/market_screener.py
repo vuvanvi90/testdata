@@ -19,16 +19,17 @@ class MarketScreener:
         
         self._load_data()
         self._build_mappings()
+        self._load_live_price_data()
+
+    def load_pq(self, sub_path):
+        p = self.data_dir / sub_path
+        return pd.read_parquet(p) if p.exists() else pd.DataFrame()
 
     def _load_data(self):
         """Nạp dữ liệu EOD làm Chân lý tuyệt đối"""
-        def load_pq(sub_path):
-            p = self.data_dir / sub_path
-            return pd.read_parquet(p) if p.exists() else pd.DataFrame()
-
-        self.df_price = load_pq('price/master_price_l2.parquet')
-        self.df_prop = load_pq('macro/prop_flow.parquet')
-        self.df_idx = load_pq('macro/index_components.parquet')
+        self.df_price = self.load_pq('price/master_price_l2.parquet')
+        self.df_prop = self.load_pq('macro/prop_flow.parquet')
+        self.df_idx = self.load_pq('macro/index_components.parquet')
 
         if not self.df_price.empty and 'matched_volume' in self.df_price.columns and 'volume' not in self.df_price.columns:
             self.df_price = self.df_price.rename(columns={'matched_volume': 'volume'})
@@ -49,6 +50,94 @@ class MarketScreener:
                 ticker, idx_code = row['ticker'], row['index_code']
                 if ticker not in self.ticker_to_universe or idx_code in ['VN30', 'VNMidCap', 'VNSmallCap']:
                     self.ticker_to_universe[ticker] = idx_code
+
+    def _load_live_price_data(self):
+        try:
+            df_intra = self.load_pq('intraday/master_intraday.parquet')
+            df_board = self.load_pq('board/master_board.parquet')
+            if not self.df_price.empty: 
+                df_eod = self.df_price.copy()
+                df_eod['time'] = pd.to_datetime(df_eod['time']).dt.normalize()
+                latest_date = pd.Timestamp.now().date()
+
+                df_t0_merged = pd.DataFrame()
+                # LÕI 1: Xử lý Khớp lệnh (Intraday) -> Nặn OHLCV & Buy Intent
+                if not df_intra.empty and 'ticker' in df_intra.columns:
+                    df_intra['time'] = pd.to_datetime(df_intra['time'])
+                    df_today = df_intra[df_intra['time'].dt.date == latest_date].copy()
+                    
+                    if not df_today.empty:
+                        df_t0_merged = df_today.groupby('ticker').agg(
+                            open=('price', 'first'),
+                            high=('price', 'max'),
+                            low=('price', 'min'),
+                            close=('price', 'last'),
+                            volume=('volume', 'sum')
+                        ).reset_index()
+                        df_t0_merged['time'] = pd.to_datetime(latest_date)
+
+                        # Tính Lực Mua Chủ động (Buy Intent) từ Tick data
+                        df_today['val'] = df_today['price'] * df_today['volume']
+                        df_flow = df_today.groupby(['ticker', 'match_type'])['val'].sum().unstack(fill_value=0)
+                        
+                        # Xác định nhãn B (Buy) và S (Sell)
+                        bu_col = next((c for c in df_flow.columns if str(c).upper() in ['B', 'BU', 'BUY']), None)
+                        sd_col = next((c for c in df_flow.columns if str(c).upper() in ['S', 'SD', 'SELL']), None)
+                        
+                        if bu_col and sd_col:
+                            df_flow['buy_intent_t0'] = (df_flow[bu_col] / (df_flow[bu_col] + df_flow[sd_col]) * 100).fillna(50.0)
+                            df_t0_merged = df_t0_merged.merge(df_flow[['buy_intent_t0']], on='ticker', how='left')
+
+                # LÕI 2: Xử lý Sổ lệnh (Board) -> Tính Kê Lệnh (Imbalance)
+                if not df_board.empty and 'symbol' in df_board.columns and latest_date:
+                    df_board['time'] = pd.to_datetime(df_board['time'])
+                    df_b_today = df_board[df_board['time'].dt.date == latest_date].copy()
+                    df_b_today = df_b_today.rename(columns={'symbol': 'ticker'})
+                    
+                    if not df_b_today.empty:
+                        # Chỉ lấy dòng cuối cùng (Snapshot hiện tại của Sổ lệnh)
+                        df_b_last = df_b_today.sort_values('time').groupby('ticker').last().reset_index()
+                        
+                        # Tìm cột Tổng Đặt Mua / Bán
+                        bid_cols = next((c for c in ['bid_vol_1', 'bid_vol_2', 'bid_vol_3'] if c in df_b_last.columns), None)
+                        ask_cols = next((c for c in ['ask_vol_1', 'ask_vol_2', 'ask_vol_3'] if c in df_b_last.columns), None)
+                        
+                        if bid_cols and ask_cols:
+                            # Dùng .fillna(0).sum(axis=1) để cộng ngang các cột, bỏ qua giá trị rỗng
+                            df_b_last['total_bid_vol'] = df_b_last[bid_cols].fillna(0).sum(axis=1)
+                            df_b_last['total_ask_vol'] = df_b_last[ask_cols].fillna(0).sum(axis=1)
+
+                            # Tính Tỷ lệ Lệch Sổ lệnh (Dương = Kê Mua nhiều / Âm = Kê Bán nhiều)
+                            total_pend = df_b_last['total_bid_vol'] + df_b_last['total_ask_vol']
+                            df_b_last['imbalance_t0'] = ((df_b_last['total_bid_vol'] - df_b_last['total_ask_vol']) / total_pend * 100).fillna(0)
+                            
+                            if not df_t0_merged.empty:
+                                df_t0_merged = df_t0_merged.merge(df_b_last[['ticker', 'imbalance_t0']], on='ticker', how='left')
+
+                # HÒA MẠNG VÀO EOD LỊCH SỬ
+                if not df_t0_merged.empty:
+                    # Khởi tạo các cột mới cho df_eod để tránh lỗi Concat
+                    for new_col in ['buy_intent_t0', 'imbalance_t0']:
+                        if new_col not in df_eod.columns:
+                            df_eod[new_col] = None
+                        if new_col not in df_t0_merged.columns:
+                            df_t0_merged[new_col] = None
+
+                    # Cân bằng cấu trúc cột
+                    for col in df_eod.columns:
+                        if col not in df_t0_merged.columns:
+                            df_t0_merged[col] = None
+                    df_t0_merged = df_t0_merged[df_eod.columns]
+
+                    # Gộp T0 vào đáy EOD
+                    df_live = pd.concat([df_eod, df_t0_merged], ignore_index=True)
+                    
+                    # Khử trùng lặp (Ưu tiên giữ nến T0 Live thay vì EOD cũ của hôm nay)
+                    df_live = df_live.sort_values(['ticker', 'time']).drop_duplicates(subset=['ticker', 'time'], keep='last')
+                    
+                    self.df_price = df_live
+        except Exception as e:
+            print(f"[!] _load_live_price_data Error: {e}")
 
     def run_screener(self, target_universes=['VN30', 'VNMidCap'], start_date=None, end_date=None, lookback_days=30):
         """Thực thi quét thị trường theo Khung thời gian và Rổ tùy chỉnh."""
@@ -181,7 +270,7 @@ if __name__ == "__main__":
     screener = MarketScreener()
     
     # Kịch bản 1: Quét độc lập VN30 & MidCap trong 30 ngày qua
-    lookback = 10
+    lookback = 20
     # target_baskets = ['VN30', 'VNMidCap']
     target_baskets = ['VN30']
     
@@ -192,15 +281,15 @@ if __name__ == "__main__":
     df_report = screener.run_screener(target_universes=target_baskets, lookback_days=lookback)
     
     if not df_report.empty:
-        print("\n🏆 TOP 10 MÃ DẪN DẮT (TQS CAO NHẤT) - KHUYẾN NGHỊ ĐƯA VÀO SNIPER:")
+        print("\n🏆 TOP 15 MÃ DẪN DẮT (TQS CAO NHẤT) - KHUYẾN NGHỊ ĐƯA VÀO SNIPER:")
         print(f"{'MÃ':<5} | {'RỔ':<10} | {'TĂNG GIÁ':<10} | {'RS':<5} | {'TQS':<5} | {'MUA C.ĐỘNG':<12} | {'GHI CHÚ VPA'}")
         print("-" * 95)
-        for _, r in df_report.head(10).iterrows():
+        for _, r in df_report.head(15).iterrows():
             print(f"{r['ticker']:<5} | {r['universe']:<10} | {r['change_pct']:>6.2f}%   | {r['RS_Score']:>4.0f} | {r['TQS']:>4.0f} | {r['active_buy_pct']:>8.1f}%   | {r['VPA_Tag']}")
             
         print("\n" + "-" * 95)
-        print("🚨 TOP 10 MÃ SUY YẾU CẦN TRÁNH (RS THẤP NHẤT):")
-        df_laggards = df_report.sort_values('RS_Score', ascending=True).head(10)
+        print("🚨 TOP 15 MÃ SUY YẾU CẦN TRÁNH (RS THẤP NHẤT):")
+        df_laggards = df_report.sort_values('RS_Score', ascending=True).head(15)
         for _, r in df_laggards.iterrows():
             print(f"{r['ticker']:<5} | {r['universe']:<10} | {r['change_pct']:>6.2f}%   | {r['RS_Score']:>4.0f} | {r['TQS']:>4.0f} | {r['active_buy_pct']:>8.1f}%   | {r['VPA_Tag']}")
             

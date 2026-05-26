@@ -151,7 +151,8 @@ class TargetSniper:
         if not self.df_intra.empty:
             df_i = self.df_intra.copy()
             df_i['time'] = pd.to_datetime(df_i['time'])
-            latest_date = df_i['time'].dt.date.max()
+            # latest_date = df_i['time'].dt.date.max()
+            latest_date = pd.Timestamp.now().date()
             df_today = df_i[df_i['time'].dt.date == latest_date].sort_values('time')
             
             if not df_today.empty:
@@ -604,16 +605,20 @@ class TargetSniper:
         df_p_valid = df_full.dropna(subset=['close']).copy()
         pct_1d = 0.0
         pct_5d_base = 0.0
+        pct_20d_base = 0.0
         if len(df_p_valid) >= 6:
             c_today = float(df_p_valid['close'].iloc[-1]) # Giá chốt T0 (Ngày nổ)
             c_1d = float(df_p_valid['close'].iloc[-2])    # Giá chốt T-1 (Hôm qua)
             c_5d = float(df_p_valid['close'].iloc[-6])    # Giá chốt T-5
+            c_20d = float(df_p_valid['close'].iloc[-21])    # Giá chốt T-20
             
             # Gia tốc của riêng cây nến bùng nổ T0
             pct_1d = ((c_today - c_1d) / c_1d) * 100 if c_1d > 0 else 0
             
-            # ĐỘT PHÁ TOÁN HỌC: Nền nén phải được đo TRƯỚC ngày nổ (T-5 -> T-1)
+            # Nền nén phải được đo TRƯỚC ngày nổ (T-5 -> T-1)
             pct_5d_base = ((c_1d - c_5d) / c_5d) * 100 if c_5d > 0 else 0
+
+            pct_20d_base = ((c_1d - c_20d) / c_20d) * 100 if c_20d > 0 else 0
 
         # 2. Định vị Cờ Bảo Kê (Override Flags)
         sm_details = sm_result.get('sm_details', [])
@@ -655,14 +660,27 @@ class TargetSniper:
 
         # 3. Kích hoạt Holy Trinity (Bộ 3 Điều Kiện Vàng)
         is_kinetic_ignition = False
-        # Nền nén (trước nổ) dao động từ -10% đến +1% (Cho phép đi ngang), Nổ T0 >= 3.0%, Có bảo kê
-        if (-10.0 <= pct_5d_base <= 1.0) and (pct_1d >= 3.0) and is_money_backed:
+        # Độ siết nền ngắn hạn (%5D): Từ -3% đến +4%
+        # Vị thế nền trung hạn (%20D): Từ -8% đến +8%
+        # Biến động ngày bùng nổ (T0): Giá tăng >= 3%, Có bảo kê
+        if (-3.0 <= pct_5d_base <= 4.0) and (-8.0 <= pct_20d_base <= 8.0) and (pct_1d >= 3.0) and is_money_backed:
             is_kinetic_ignition = True
 
         # PHẦN 5: KẾT LUẬN ĐẦU TƯ
         print(" 🎯 HÀNH ĐỘNG KHUYẾN NGHỊ (SNIPER FINAL VERDICT):")
         final_action, final_reason = "WAIT", ""
 
+        # Ghi đè Cờ Đỏ nếu T0 có lực Cầu chủ động Bùng nổ (Đảo pha)
+        whale_thresh = 100.0 if self.universe == 'VN30' else (15.0 if self.universe == 'VNSmallCap' else 50.0)
+        is_reversal = False
+        if omni_now:
+            is_bullish = "BULLISH" in omni_now.get('verdict', '')
+            is_tilt_bull_strong = "TILT BULL" in omni_now.get('verdict', '') and omni_now.get('net_active_bn', 0) >= whale_thresh
+            is_reversal = is_bullish or is_tilt_bull_strong
+
+        is_validated_bull = micro_flow and ("BULLISH" in micro_flow['thesis'] or "BOTTOMING" in micro_flow['thesis'] or "TILT BULL" in micro_flow['thesis'])
+
+        # ƯU TIÊN 0: CÁC LỆNH CHẶN TUYỆT ĐỐI (TRÁNH BẪY LƯỜI BIẾNG)
         if omni_now and "BEARISH (Bẫy Kéo Xả Ảo)" in omni_now.get('verdict', ''):
             final_action = "REJECT"
             final_reason = "BẪY KẾO XẢ LEVEL-2: Lệnh bán thực tế to gấp nhiều lần lệnh mua dù đang kê dư mua ảo."
@@ -686,52 +704,29 @@ class TargetSniper:
             if has_active_override: backed_by.append("Cầu Đỡ Bảng Điện (Active T-1)")
             
             print(f"   🚀 [KINETIC IGNITION]: PHÁT HIỆN ĐIỂM KÍCH NỔ ĐỘNG LƯỢNG!")
+            print(f"      - Nền nén (%20D): {pct_20d_base:+.1f}%")
             print(f"      - Nền nén (%5D) : {pct_5d_base:+.1f}% (Đã rũ bỏ/đi ngang thành công)")
             print(f"      - Gia tốc (%1D) : {pct_1d:+.1f}% (Bứt phá V-Shape)")
             print(f"      - Bảo kê bởi    : {' + '.join(backed_by)}")
             print(f"      => LỆNH BẮN TỈA: MUA KHẨN CẤP (MARKET) quanh {buy_p:,.0f} đ.")
             print(f"      => 🛑 CHỐT CHẶN MỎ NEO: Cắt lỗ tuyệt đối nếu giá thủng {sl_price:,.0f} đ.")
 
-        # ƯU TIÊN 2: LUẬT QUẢN TRỊ BÁO ĐỘNG ĐỎ TRUYỀN THỐNG
-        elif sm_result.get("is_danger", False):
-            is_validated_bull = micro_flow and ("BULLISH" in micro_flow['thesis'] or "BOTTOMING" in micro_flow['thesis'] or "TILT BULL" in micro_flow['thesis'])
-            
-            # GIẢI CỨU LINH HOẠT
-            # Ghi đè Cờ Đỏ nếu T0 có lực Cầu chủ động Bùng nổ (Đảo pha)
-            whale_thresh = 100.0 if self.universe == 'VN30' else (15.0 if self.universe == 'VNSmallCap' else 50.0)
-            is_reversal = False
-            if omni_now:
-                is_bullish = "BULLISH" in omni_now.get('verdict', '')
-                is_tilt_bull_strong = "TILT BULL" in omni_now.get('verdict', '') and omni_now.get('net_active_bn', 0) >= whale_thresh
-                is_reversal = is_bullish or is_tilt_bull_strong
-
-            if not is_validated_bull and not is_reversal:
-                final_action = "REJECT"
-                final_reason = "Cá mập dài hạn đang tháo cống (Hoặc áp lực xả > Ngưỡng Impact). Bỏ qua mọi kỹ thuật."
-                print(f"   🚫 KHÔNG MUA: {final_reason}")
-            elif is_reversal:
-                # Nếu T0 Bullish, xí xóa cờ đỏ và cho phép lệnh mua đi tiếp
-                print(f"   🌟 GIẢI CỨU BÁO ĐỘNG ĐỎ: T0 Cầu chủ động bùng nổ, bẻ gãy áp lực xả 3D của Cá mập!")
-
-        # ƯU TIÊN 3: LUẬT ĐẢO PHA CẤU TRÚC
-        elif micro_flow and "BEARISH" in micro_flow['thesis']:
-            # GIẢI CỨU LINH HOẠT
-            # Mở khóa Đảo pha Cấu trúc (Structural Reversal).
-            # Nếu T0 có lực Cầu chủ động kéo thốc (BULLISH), cho phép xí xóa quá khứ xấu.
-            whale_thresh = 100.0 if self.universe == 'VN30' else (15.0 if self.universe == 'VNSmallCap' else 50.0)
-            is_reversal = False
-            if omni_now:
-                is_bullish = "BULLISH" in omni_now.get('verdict', '')
-                is_tilt_bull_strong = "TILT BULL" in omni_now.get('verdict', '') and omni_now.get('net_active_bn', 0) >= whale_thresh
-                is_reversal = is_bullish or is_tilt_bull_strong
-
-            if not is_reversal:
-                final_action = "REJECT"
-                final_reason = "ĐANG TẮM MÁU: Áp lực xả từ tuần trước vẫn tiếp diễn. Bắt đáy là cụt tay!"
-                print(f"   🩸 KHÔNG MUA: {final_reason}")
+        # 🚀 ƯU TIÊN 2: LUẬT QUẢN TRỊ BÁO ĐỘNG ĐỎ TRUYỀN THỐNG (NẾU KHÔNG ĐƯỢC GIẢI CỨU)
+        elif sm_result.get("is_danger", False) and not is_reversal:
+            final_action = "REJECT"
+            if is_validated_bull:
+                final_reason = "BÁO ĐỘNG ĐỎ: Quá khứ gom nhưng T-1 bị Tây/Tự doanh xả rát & T0 không có Cầu giải cứu!"
             else:
-                print(f"   🌟 ĐẢO PHA CẤU TRÚC: Quá khứ bị xả, nhưng T0 Cầu chủ động đã vào giải cứu. Cho phép ngắm bắn!")
+                final_reason = "Cá mập dài hạn đang tháo cống (Hoặc áp lực xả > Ngưỡng Impact). Bỏ qua mọi kỹ thuật."
+            print(f"   🚫 KHÔNG MUA: {final_reason}")
+            
+        # 🚀 ƯU TIÊN 3: LUẬT ĐẢO PHA CẤU TRÚC (NẾU KHÔNG ĐƯỢC GIẢI CỨU)
+        elif micro_flow and "BEARISH" in micro_flow['thesis'] and not is_reversal:
+            final_action = "REJECT"
+            final_reason = "ĐANG TẮM MÁU: Áp lực xả từ tuần trước vẫn tiếp diễn. Bắt đáy là cụt tay!"
+            print(f"   🩸 KHÔNG MUA: {final_reason}")
              
+        # CÁC KỊCH BẢN HỦY LỆNH BẮT ĐÁY / BULL-TRAP T0
         elif micro_flow and "BOTTOMING" in micro_flow['thesis'] and omni_now and "BEARISH" in omni_now.get('verdict',''):
             final_action = "CANCEL"
             final_reason = "HỦY KẾ HOẠCH BẮT ĐÁY: T-1 đã tiết cung, nhưng T0 lái lại tiếp tục táng hàng."
@@ -742,10 +737,17 @@ class TargetSniper:
             final_reason = "HỦY LỆNH MUA (BULL-TRAP): Quá khứ gom đẹp nhưng T0 bị xả ngược."
             print(f"   ⚠️ {final_reason}")
             
-        # ƯU TIÊN 4: CÁC KỊCH BẢN WYCKOFF KÍCH HOẠT MUA TRUYỀN THỐNG
-        elif signal in ['SOS', 'SPRING', 'TEST_CUNG', 'NEUTRAL'] and micro_flow and ("BULLISH" in micro_flow['thesis'] or "BOTTOMING" in micro_flow['thesis'] or "TILT BULL" in micro_flow['thesis']):
+        # 🚀 ƯU TIÊN 4: CÁC KỊCH BẢN WYCKOFF KÍCH HOẠT MUA TRUYỀN THỐNG
+        # Chú ý: Đã thêm `or is_reversal` để cho phép các mã "Bị chê" ở trên rơi xuống đây ăn lệnh Mua!
+        elif signal in ['SOS', 'SPRING', 'TEST_CUNG', 'NEUTRAL'] and micro_flow and (is_validated_bull or is_reversal):
             sl_price = price - (wyckoff_row.get('ATR', price * 0.02) * 2.5)
             
+            # In thông điệp vinh danh sự giải cứu (nếu có) trước khi bóp cò
+            if sm_result.get("is_danger", False) and is_reversal:
+                print(f"   🌟 GIẢI CỨU BÁO ĐỘNG ĐỎ: T0 Cầu chủ động bùng nổ, bẻ gãy áp lực xả của Cá mập!")
+            elif micro_flow and "BEARISH" in micro_flow['thesis'] and is_reversal:
+                print(f"   🌟 ĐẢO PHA CẤU TRÚC: Quá khứ bị xả, nhưng T0 Cầu chủ động đã vào giải cứu. Cho phép ngắm bắn!")
+                
             if omni_now and "Tiết cung" in omni_now.get('verdict', ''):
                 final_action = "BUY_LIMIT"
                 buy_p = board_info['best_bid'] if board_info else price
@@ -756,18 +758,18 @@ class TargetSniper:
                 final_action = "BUY_MARKET"
                 buy_p = board_info['best_ask'] if board_info and board_info['best_ask'] > 0 else price
                 final_reason = f"ĐIỂM NỔ BỨT PHÁ. Mua quét (Market) quanh {buy_p:,.0f} đ."
-                print(f"   🌟 ĐIỂM NỔ BỨT PHÁ (SNIPER TRIGGER): Quá khứ dọn đường + T0 Tiền vào xác nhận!")
+                print(f"   🌟 ĐIỂM NỔ BỨT PHÁ (SNIPER TRIGGER): Quá khứ dọn đường/Giải cứu + T0 Tiền vào xác nhận!")
                 print(f"      => LỆNH BẮN TỈA: Mua quét lên (Market) quanh {buy_p:,.0f} đ | Dừng lỗ cứng tại {sl_price:,.0f} đ.")
             else:
                  final_action = "WAIT"
-                 final_reason = "Có điểm cộng kỹ thuật, nhưng dòng tiền chưa đồng thuận mạnh."
+                 final_reason = "Có điểm cộng kỹ thuật/Cờ giải cứu, nhưng dòng tiền T0 chưa đủ mạnh để bóp cò."
                  print(f"   ☕ CHỜ ĐỢI: {final_reason}")
                 
             if sm_vwap > 0 and price < sm_vwap:
                 print(f"      => LỢI THẾ KÉP: Giá ({price:,.0f}) đang rẻ hơn giá vốn Cá mập ({sm_vwap:,.0f}).")
                 final_reason += f" (Rẻ hơn VWAP Lái)"
                 
-        # KỊCH BẢN GIẰNG CO (CHỜ ĐỢI)
+        # KỊCH BẢN GIẰNG CO (CHỜ ĐỢI TẤT CẢ CÁC TRƯỜNG HỢP KHÁC)
         else:
             final_action = "WAIT"
             final_reason = "Dòng tiền giằng co. Hành vi Lái chưa rõ ràng. Cần theo dõi thêm."
