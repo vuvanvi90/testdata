@@ -7,6 +7,7 @@ from pathlib import Path
 from src.forecaster import WyckoffForecaster
 from src.smart_money import SmartMoneyEngine
 from src.shadow_profiler import ShadowProfiler
+from src.omni_matrix import OmniFlowMatrix
 
 # Tắt cảnh báo Pandas để output sạch sẽ
 import warnings
@@ -26,6 +27,9 @@ class PostMortemAnalyzer:
         self.prop_path = self.data_dir / 'macro/prop_flow.parquet'
         self.comp_path = self.data_dir / 'company/master_company.parquet'
         self.intra_path = self.data_dir / 'intraday/master_intraday.parquet'
+        self.board_path = self.data_dir / 'board/master_board.parquet'
+        self.pt_path = self.data_dir / 'intraday/master_put_through.parquet'
+        self.indx_path = self.data_dir / 'macro/index_components.parquet'
         
         print("\n" + "="*80)
         print(" 🔍 KHỞI ĐỘNG CÔNG CỤ KHÁM NGHIỆM ĐỊNH LƯỢNG (POST-MORTEM)")
@@ -50,6 +54,11 @@ class PostMortemAnalyzer:
             if not df_intra.empty and 'ticker' in df_intra.columns:
                 for ticker, group in df_intra.groupby('ticker'):
                     self.intra_dict[ticker] = group
+
+            df_board = self._load_parquet_safe(self.board_path)
+            df_pt = self._load_parquet_safe(self.pt_path)
+            df_prop = self._load_parquet_safe(self.prop_path)
+            df_indx = self._load_parquet_safe(self.indx_path)
 
             out_shares_dict = {}
             df_comp = self._load_parquet_safe(self.comp_path)
@@ -77,6 +86,14 @@ class PostMortemAnalyzer:
                 universe=self.universe
             )
             self.profiler = ShadowProfiler(df_l2=df_price, verbose=False)
+
+            # KHỞI ĐỘNG OMNI-MATRIX
+            data_frames = {
+                'price_l2': df_price, 'prop': df_prop,
+                'comp': df_comp, 'idx': df_indx, 
+                'board': df_board, 'intra': df_intra, 'put_through': df_pt
+            }
+            self.omni_matrix = OmniFlowMatrix(data_frames, lookback_days=30)
         except Exception as e:
             print(f"[!] Lỗi _load_data: {e}")
 
@@ -163,6 +180,9 @@ class PostMortemAnalyzer:
             print(f"[!] Không tìm thấy dữ liệu giá cho mã {ticker}.")
             return
 
+        # Lấy mốc thời gian EOD cuối cùng hiện có
+        max_eod_date = pd.to_datetime(df_p['time']).dt.normalize().max() if (df_p is not None and not df_p.empty) else pd.Timestamp.min
+
         # Hòa mạng dữ liệu Intraday sống vào dòng thời gian trước khi lọc
         df_p = self._prepare_latest_ohlcv(ticker, df_p)
 
@@ -237,86 +257,103 @@ class PostMortemAnalyzer:
             # Cập nhật kết luận cho ngày cuối cùng
             if is_target_day: final_signal = signal
 
-            # =================================================================
-            # SMART MONEY & SHADOW PROFILER
-            # =================================================================
-            try:
-                sm_result = self.sm_engine.analyze_ticker(ticker, target_date=date_str)
-            except Exception as e:
-                print(f"[!] Lỗi analyze_ticker: {e}")
-                sm_result = {}
-
-            # 1. GỌI SHADOW PROFILER TRƯỚC ĐỂ LẤY TRẠNG THÁI LÁI NỘI
-            shadow_status = ""
-            try:
-                rules = self.profiler.build_criminal_profile([ticker], lookback_days=125)
-                alerts = self.profiler.live_shadow_radar([ticker], rules, target_date=date_str)
-                if isinstance(alerts, pd.DataFrame):
-                    if not alerts.empty:
-                        shadow_status = alerts.iloc[0].get('Status', '')
-                elif isinstance(alerts, list):
-                    if len(alerts) > 0:
-                        alert_item = alerts[0]
-                        if isinstance(alert_item, dict):
-                            shadow_status = alert_item.get('Status', '')
-                        else:
-                            shadow_status = str(alert_item)
-            except Exception as e:
-                shadow_status = f"[Lỗi Radar - {e}]"
-
-            # 2. TRÍCH XUẤT DỮ LIỆU SMART MONEY
-            sm_score = sm_result.get('total_sm_score', 0)
-            sm_danger = sm_result.get('is_danger', False)
-            sm_warnings = sm_result.get('warnings', [])
-            sm_details = sm_result.get('sm_details', [])
+            # XỬ LÝ LỆCH PHA DỮ LIỆU LIVE T0
+            is_live_t0 = (date_obj > max_eod_date)
             
-            if isinstance(sm_warnings, str):
-                sm_warnings = [sm_warnings] if sm_warnings else []
-
-            # 3. SHADOW OVERRIDE (Miễn trừ bằng Lái Nội)
-            is_shadow_override = False
-            if shadow_status and "CHÍN MUỒI" in shadow_status:
-                is_shadow_override = True
-                if sm_danger:
-                    sm_danger = False
-                    sm_warnings = []
-                    # Ghi đè vào sm_result để hàm _print_conclusion nhận diện sự ân xá
-                    sm_result['is_danger'] = False 
-                    sm_result['warnings'] = []
-
-            # 4. ACTIVE DEMAND OVERRIDE (Miễn trừ bằng Cầu Đỡ)
-            active_override_msg = ""
-            for detail in sm_details:
-                if "🛡️ ACTIVE OVERRIDE" in detail:
-                    active_override_msg = detail
-                    sm_danger = False
-                    sm_warnings = []
-                    # Ghi đè vào sm_result để hàm _print_conclusion nhận diện sự ân xá
-                    sm_result['is_danger'] = False 
-                    sm_result['warnings'] = []
-                    break
-
-            # 5. FORMAT CHUỖI IN RA BẢNG
-            sm_str = ""
-            if sm_danger and sm_warnings:
-                sm_str = f"🚨 BÁO ĐỘNG ĐỎ: {' | '.join(sm_warnings)}"
-            else:
-                # Nếu không có nguy hiểm, ưu tiên hiển thị Cờ Miễn Trừ
-                if is_shadow_override and active_override_msg:
-                    sm_str = f"🛡️ SHADOW OVERRIDE | {active_override_msg}"
-                elif is_shadow_override:
-                    sm_str = "🛡️ SHADOW OVERRIDE: Lái Nội cân Tây"
-                elif active_override_msg:
-                    sm_str = active_override_msg
+            if is_live_t0:
+                # Gọi OmniMatrix giải thích quá khứ và dự báo T0
+                past_ctx = self.omni_matrix.explain_past_movement(ticker, lookback_days=10) if hasattr(self.omni_matrix, 'explain_past_movement') else {}
+                omni_now = self.omni_matrix.predict_t0_action(ticker, past_context=past_ctx)
+                
+                if omni_now and "error" not in omni_now:
+                    details = omni_now.get('details', 'N/A')
+                    flow_info = f"⚡ [LIVE T0] > {details}"
                 else:
-                    sm_str = f"SM: ({sm_score})" if sm_score != 0 else "Bình thường"
+                    flow_info = "⏳ [LIVE T0] Đang chờ dữ liệu chốt phiên..."
 
-            # Đính kèm trạng thái Lái nội (Nếu không nằm trong trạng thái Chín Muồi Override)
-            if shadow_status and "CHÍN MUỒI" not in shadow_status:
-                sm_str += f" | Lái nội: {shadow_status}"
+                if is_target_day: 
+                    sm_result = {} # Làm rỗng kết quả để hàm _print_conclusion không lấy nhầm data cũ
+            else:
+                # =================================================================
+                # SMART MONEY & SHADOW PROFILER
+                # =================================================================
+                try:
+                    sm_result = self.sm_engine.analyze_ticker(ticker, target_date=date_str)
+                except Exception as e:
+                    print(f"[!] Lỗi analyze_ticker: {e}")
+                    sm_result = {}
 
-            flow_info = sm_str.strip()
-            if not flow_info: flow_info = "Bình thường"
+                # 1. GỌI SHADOW PROFILER TRƯỚC ĐỂ LẤY TRẠNG THÁI LÁI NỘI
+                shadow_status = ""
+                try:
+                    rules = self.profiler.build_criminal_profile([ticker], lookback_days=125)
+                    alerts = self.profiler.live_shadow_radar([ticker], rules, target_date=date_str)
+                    if isinstance(alerts, pd.DataFrame):
+                        if not alerts.empty:
+                            shadow_status = alerts.iloc[0].get('Status', '')
+                    elif isinstance(alerts, list):
+                        if len(alerts) > 0:
+                            alert_item = alerts[0]
+                            if isinstance(alert_item, dict):
+                                shadow_status = alert_item.get('Status', '')
+                            else:
+                                shadow_status = str(alert_item)
+                except Exception as e:
+                    shadow_status = f"[Lỗi Radar - {e}]"
+
+                # 2. TRÍCH XUẤT DỮ LIỆU SMART MONEY
+                sm_score = sm_result.get('total_sm_score', 0)
+                sm_danger = sm_result.get('is_danger', False)
+                sm_warnings = sm_result.get('warnings', [])
+                sm_details = sm_result.get('sm_details', [])
+                
+                if isinstance(sm_warnings, str):
+                    sm_warnings = [sm_warnings] if sm_warnings else []
+
+                # 3. SHADOW OVERRIDE (Miễn trừ bằng Lái Nội)
+                is_shadow_override = False
+                if shadow_status and "CHÍN MUỒI" in shadow_status:
+                    is_shadow_override = True
+                    if sm_danger:
+                        sm_danger = False
+                        sm_warnings = []
+                        # Ghi đè vào sm_result để hàm _print_conclusion nhận diện sự ân xá
+                        sm_result['is_danger'] = False 
+                        sm_result['warnings'] = []
+
+                # 4. ACTIVE DEMAND OVERRIDE (Miễn trừ bằng Cầu Đỡ)
+                active_override_msg = ""
+                for detail in sm_details:
+                    if "🛡️ ACTIVE OVERRIDE" in detail:
+                        active_override_msg = detail
+                        sm_danger = False
+                        sm_warnings = []
+                        # Ghi đè vào sm_result để hàm _print_conclusion nhận diện sự ân xá
+                        sm_result['is_danger'] = False 
+                        sm_result['warnings'] = []
+                        break
+
+                # 5. FORMAT CHUỖI IN RA BẢNG
+                sm_str = ""
+                if sm_danger and sm_warnings:
+                    sm_str = f"🚨 BÁO ĐỘNG ĐỎ: {' | '.join(sm_warnings)}"
+                else:
+                    # Nếu không có nguy hiểm, ưu tiên hiển thị Cờ Miễn Trừ
+                    if is_shadow_override and active_override_msg:
+                        sm_str = f"🛡️ SHADOW OVERRIDE | {active_override_msg}"
+                    elif is_shadow_override:
+                        sm_str = "🛡️ SHADOW OVERRIDE: Lái Nội cân Tây"
+                    elif active_override_msg:
+                        sm_str = active_override_msg
+                    else:
+                        sm_str = f"SM: ({sm_score})" if sm_score != 0 else "Bình thường"
+
+                # Đính kèm trạng thái Lái nội (Nếu không nằm trong trạng thái Chín Muồi Override)
+                if shadow_status and "CHÍN MUỒI" not in shadow_status:
+                    sm_str += f" | Lái nội: {shadow_status}"
+
+                flow_info = sm_str.strip()
+                if not flow_info: flow_info = "Bình thường"
 
             # In format mở rộng
             print(f"{date_label:<10} | {price_str:<23} | {vol:11,.0f} | {pct_1d_str} | {pct_5d_str} | {pct_20d_str} | {signal:<9} | {flow_info}")
