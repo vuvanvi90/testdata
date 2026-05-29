@@ -1297,12 +1297,19 @@ class LiveAssistant:
             
             entry_price = float(pos['entry_price'])
             entry_date = pos['date_bought']
+            original_sl = pos.get('sl_price', 0)
+
+            dynamic_sl, sl_reason = self._calculate_quantum_stop_loss(ticker, original_sl)
 
             row = row_data.iloc[0]
             current_price = float(row['Price'])
             signal = row['Signal']
             atr = float(row.get('ATR', current_price * 0.02))
             pnl_pct = (current_price - entry_price) / entry_price * 100
+
+            print(f"   🔹 Giám sát [ {ticker} ]: Giá hiện tại {current_price:,.0f} đ | PnL: {pnl_pct:+.1f}%")
+            if dynamic_sl != original_sl:
+                print(f"      ↳ {sl_reason}")
             
             # 1. KIỂM TOÁN T0 (REAL-TIME X-RAY) TỪ OMNI MATRIX
             omni_now = {}
@@ -1348,13 +1355,10 @@ class LiveAssistant:
             highest_price = float(pos.get('highest_price', pos.get('entry_price', current_price)))
             if current_price > highest_price:
                 pos['highest_price'] = current_price
-                new_sl = current_price - (atr * 2.5)
-                old_sl = pos.get('sl_price', 0)
-                if new_sl > old_sl:
-                    pos['sl_price'] = new_sl
-                    msg = f"Nâng SL (Trailing) từ {old_sl:,.0f} -> {new_sl:,.0f}đ"
+                if dynamic_sl > original_sl:
+                    pos['sl_price'] = dynamic_sl
+                    msg = f"Nâng SL (Trailing) từ {original_sl:,.0f} -> {dynamic_sl:,.0f}đ"
                     print(f"   {ticker}: 🔼 {msg}")
-                    # Chỉ ghi log nếu là danh mục THỰC CHIẾN
                     if "REAL" in p_type_label:
                         self._log_trade(ticker, "UPDATE_SL_REAL", current_price, msg)
 
@@ -1453,6 +1457,38 @@ class LiveAssistant:
         real_pf = self.load_portfolio("real")
         updated_real = self._run_portfolio_management_logic(real_pf, "🔥 THỰC CHIẾN (REAL MONEY)", report, sm_info_dict)
         self.save_portfolio(updated_real, "real")
+
+    # QUẢN TRỊ RỦI RO LƯỢNG TỬ (DYNAMIC HARD STOP-LOSS)
+    def _calculate_quantum_stop_loss(self, ticker, original_sl_price):
+        """
+        Khám nghiệm Khuyến nghị C: Trích xuất tọa độ giá vốn ngầm của Lái Nội
+        để làm bệ đỡ Stop-loss động thay vì dùng % cố định.
+        """
+        if not hasattr(self, 'omni_matrix') or self.omni_matrix is None:
+            return original_sl_price, "Mức cắt lỗ cơ học theo hệ thống"
+
+        try:
+            # 1. Triệu hồi Bản án T0 thời gian thực từ OmniMatrix
+            omni_now = self.omni_matrix.predict_t0_action(ticker)
+            l2_data = omni_now.get('l2_data', {}) if omni_now else {}
+            
+            # 2. Lấy giá vốn VWAP của các lệnh thỏa thuận khối lượng lớn (On + Off book)
+            dp_vwap = l2_data.get('darkpool_vwap', 0.0)
+            
+            if dp_vwap > 0:
+                # Giá vốn Lái chính là Chốt chặn cuối cùng. 
+                # Đặt Hard Stop-loss ngay dưới giá vốn Lái 0.5% (tránh nhiễu quét râu nến)
+                quantum_sl = dp_vwap * 0.995
+                
+                # CHỐT CHẶN BẢO VỆ: Nếu giá vốn Lái cao hơn cả điểm dừng lỗ cơ học cũ,
+                # ta chủ động nâng Stop-loss lên theo Lái để thu hẹp khoảng cách rủi ro!
+                if quantum_sl > original_sl_price:
+                    return quantum_sl, f"🛡️ MỎ NEO LƯỢNG TỬ: Dưới Giá vốn Lái Nội 0.5% (VWAP Lái: {dp_vwap:,.0f} đ)"
+                
+        except Exception as e:
+            print(f"[!] Lỗi tính toán Quantum Stop-Loss cho {ticker}: {e}")
+            
+        return original_sl_price, "Mức cắt lỗ cơ học theo hệ thống"
 
     def scan_opportunities(self):
         # 0. Gọi bộ lọc thị trường chung TRƯỚC TIÊN
@@ -1810,13 +1846,17 @@ class LiveAssistant:
                 total_score += 15
                 score_details.append("🌟 SHADOW OVERRIDE (+15)")
 
+            # tính stoploss
+            original_sl = price - (atr * (3.0 if price > 100000 else 2.5))
+            dynamic_sl, sl_reason = self._calculate_quantum_stop_loss(ticker, original_sl)
+
             score_candidates.append({
                 'Ticker': ticker,
                 'Price': price,
                 'ATR': atr,
                 'Total_Score': total_score,
                 'Score_Detail': score_details,
-                'Stoploss': price - (atr * (3.0 if price > 100000 else 2.5)),
+                'Stoploss': dynamic_sl,
                 'Takeprofit_20%': price + price * 0.2
             })
 
@@ -1835,6 +1875,7 @@ class LiveAssistant:
             # Lưu lại row này vào danh sách được chọn
             row_dict = row.to_dict()
             row_dict['Total_Score'] = total_score
+            row_dict['Stoploss'] = dynamic_sl
 
             # chỉ đưa vào mô phỏng giao dịch khi score >= 60 điểm
             if total_score >= 60:
@@ -1842,7 +1883,8 @@ class LiveAssistant:
 
             # Dynamic Risk Sizing (Quản trị vốn theo Quý)
             atr_multiplier = 3.0 if price > 100000 else 2.5
-            stop_loss = price - (atr * atr_multiplier)
+            # stop_loss = price - (atr * atr_multiplier)
+            stop_loss = dynamic_sl # dùng stoploss đã tính bên trên
             # take_profit = price + price * 0.2
 
             # Lấy thông tin sổ lệnh để gợi ý giá
@@ -2005,15 +2047,13 @@ class LiveAssistant:
                         info = next((item for item in selected_candidates if item["Ticker"] == t), None)
                         if info:
                             price = info['Price']
-                            atr = info.get('ATR', price * 0.02)
-                            sl_price = price - (atr * (3.0 if price > 100000 else 2.5))
-                                                        
+                                                   
                             # Ghi nhớ vào danh mục để ngày mai Robot theo dõi
                             active_portfolio[t] = {
                                 'ticker': t,
                                 'signal': info['Signal'],
                                 'entry_price': price,
-                                'sl_price': sl_price,
+                                'sl_price': info['Stoploss'],
                                 'highest_price': price,
                                 'date_bought': datetime.now().strftime('%Y-%m-%d')
                             }

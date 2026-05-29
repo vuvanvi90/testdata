@@ -2,6 +2,8 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 
+from src.darkpool_eng import DarkPoolEngine
+
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -24,6 +26,12 @@ class OmniFlowMatrix:
         self.df_intra = data_frames.get('intra', pd.DataFrame())
         self.df_pt = data_frames.get('put_through', pd.DataFrame())
         
+        self.dp_engine = DarkPoolEngine(
+            df_l2=self.df_price_l2,
+            df_pt=self.df_pt,
+            df_prop=self.df_prop
+        )
+
         self.lookback_days = lookback_days
         self.DIVISOR = 1_000_000_000 # Quy đổi ra Tỷ VNĐ
         
@@ -541,6 +549,13 @@ class OmniFlowMatrix:
                     "l2_data": past_context.get('l2_data', {}) if past_context else {}
                 }
 
+            # 🚀 GỌI VỆ TINH DARKPOOL T0 (THU THẬP PREMIUM & VWAP LÁI)
+            dp_ctx = self.dp_engine.get_darkpool_context(ticker, target_date_str=str(self.t0_date), lookback_days=5)
+            is_super_bullish = dp_ctx.get('is_super_bullish', False)
+            is_danger_dump = dp_ctx.get('is_danger_dump', False)
+            dp_vwap = dp_ctx.get('darkpool_vwap', 0.0)
+            dp_intent = dp_ctx.get('t0_intent', '')
+
             # 1. TRÍCH XUẤT HỒ SƠ VI CẤU TRÚC (SỨC MẠNH V3.3)
             f_net_t0 = t0_data.get('t0_foreign_net_bn', 0)
             pt_t0 = t0_data.get('t0_pt_val_bn', 0)
@@ -671,6 +686,16 @@ class OmniFlowMatrix:
             if spread_vacuum:
                 score -= 1; signals.append("🚨 THANH KHOẢN RỖNG: Chênh lệch Bid/Ask > 1.5%. Cẩn thận trượt giá!")
 
+            # F. ĐÁNH GIÁ DARKPOOL (KHUYẾN NGHỊ B)
+            if is_super_bullish:
+                score += 15 # Bơm điểm tuyệt đối
+                signals.append(f"🔥 DARKPOOL PREMIUM: Lái khát hàng thỏa thuận {dp_intent}")
+            elif is_danger_dump:
+                score -= 15 # Ép điểm xuống đáy
+                signals.append(f"🩸 DARKPOOL DISCOUNT: Lái xả ngầm {dp_intent}")
+            elif "PREMIUM" in dp_intent or "DISCOUNT" in dp_intent:
+                signals.append(f"🤝 Darkpool: {dp_intent}")
+
             # 🛡️ KIỂM TOÁN NGỮ CẢNH QUÁ KHỨ (BẢN VÁ TRAP L2)
             if past_context and "error" not in past_context:
                 if past_context.get('has_l2_trap'):
@@ -701,7 +726,9 @@ class OmniFlowMatrix:
                 "t0_shark_bu_bn": shark_bu_bn,
                 "t0_shark_sd_bn": shark_sd_bn,
                 "t0_shark_bu_count": shark_bu_count,
-                "t0_shark_sd_count": shark_sd_count
+                "t0_shark_sd_count": shark_sd_count,
+                "darkpool_vwap": dp_vwap,             # Truyền Tọa độ VWAP Lái cho live.py (Khuyến nghị C)
+                "is_super_bullish": is_super_bullish  # Truyền Quyền Veto cho sniper.py (Khuyến nghị B)
             })
 
             return {
@@ -735,7 +762,7 @@ if __name__ == "__main__":
 
     omni = OmniFlowMatrix(data_frames, lookback_days=30)
     
-    test_tickers = ['GMD'] # Thử với VN30, MidCap và SmallCap
+    test_tickers = ['ACB'] # Thử với VN30, MidCap và SmallCap
     
     for ticker in test_tickers:
         print("\n" + "="*95)
@@ -763,5 +790,9 @@ if __name__ == "__main__":
             print(f"    - Sổ lệnh (Bid)  : Mất cân bằng {now['imbalance']:+.2f} (Dương = Kê mua, Âm = Chặn bán)")
             print(f"    - KẾT LUẬN       : 🎯 {now['verdict']}")
             print(f"    - Tín hiệu phụ   : {now['details']}")
+            # IN TỌA ĐỘ DỪNG LỖ MỎ NEO (DARKPOOL VWAP)
+            dp_vwap = now.get('l2_data', {}).get('darkpool_vwap', 0)
+            if dp_vwap > 0:
+                print(f"    - Hard Stop-loss : 🛑 Thủng {dp_vwap:,.0f}đ (BỆ ĐỠ LÁI) -> Chạy ngay!")
         else:
             print(f"    [!] {now['error']}")

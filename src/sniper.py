@@ -666,11 +666,26 @@ class TargetSniper:
         if (-3.0 <= pct_5d_base <= 4.0) and (-8.0 <= pct_20d_base <= 8.0) and (pct_1d >= 3.0) and is_money_backed:
             is_kinetic_ignition = True
 
+
+        # TRÍCH XUẤT CỜ SUPER OVERRIDE (TỪ OMNI & DARKPOOL)
+        l2_data = omni_now.get('l2_data', {}) if omni_now else {}
+        is_super_bullish = l2_data.get('is_super_bullish', False)
+        is_danger_dump = l2_data.get('is_danger_dump', False)
+        dp_vwap = l2_data.get('darkpool_vwap', 0.0)
+        
+        # Tính Tỷ lệ Cầu chủ động T0 (Mua / Tổng Mua+Bán)
+        t0_bu = l2_data.get('t0_total_bu_bn', 0.0)
+        t0_sd = l2_data.get('t0_total_sd_bn', 0.0)
+        buy_intent_t0 = (t0_bu / (t0_bu + t0_sd) * 100) if (t0_bu + t0_sd) > 0 else 50.0
+        
+        # ĐIỀU KIỆN KÉP KHUYẾN NGHỊ B: Gom Premium + Cầu chủ động > 50%
+        is_super_override = is_super_bullish and (buy_intent_t0 > 50.0)
+
         # PHẦN 5: KẾT LUẬN ĐẦU TƯ
         print(" 🎯 HÀNH ĐỘNG KHUYẾN NGHỊ (SNIPER FINAL VERDICT):")
         final_action, final_reason = "WAIT", ""
 
-        # Ghi đè Cờ Đỏ nếu T0 có lực Cầu chủ động Bùng nổ (Đảo pha)
+        # BỘ LỌC CHUNG: TÍNH TOÁN CỜ GIẢI CỨU T0 VÀ XÁC NHẬN QUÁ KHỨ
         whale_thresh = 100.0 if self.universe == 'VN30' else (15.0 if self.universe == 'VNSmallCap' else 50.0)
         is_reversal = False
         if omni_now:
@@ -680,36 +695,31 @@ class TargetSniper:
 
         is_validated_bull = micro_flow and ("BULLISH" in micro_flow['thesis'] or "BOTTOMING" in micro_flow['thesis'] or "TILT BULL" in micro_flow['thesis'])
 
-        # ƯU TIÊN 0: CÁC LỆNH CHẶN TUYỆT ĐỐI (TRÁNH BẪY LƯỜI BIẾNG)
+        # ƯU TIÊN 0: CÁC LỆNH CHẶN TUYỆT ĐỐI (TRÁNH BẪY LƯỜI BIẾNG & ÚP SỌT)
         if omni_now and "BEARISH (Bẫy Kéo Xả Ảo)" in omni_now.get('verdict', ''):
             final_action = "REJECT"
             final_reason = "BẪY KẾO XẢ LEVEL-2: Lệnh bán thực tế to gấp nhiều lần lệnh mua dù đang kê dư mua ảo."
             print(f"   🚫 KHÔNG MUA: {final_reason}")
             
-        elif dp_action_tag == 'DANGER':
+        elif is_danger_dump: # Đã thay thế dp_action_tag cũ bằng cờ Darkpool mới
             final_action = "REJECT"
-            final_reason = "DARK POOL CẢNH BÁO ĐỎ: Phát hiện Lái Xả Ngầm khối lượng lớn (Trao tay phân phối)."
+            final_reason = "DARK POOL CẢNH BÁO ĐỎ: Lái Nội xả ngầm Thỏa thuận giá Discount (Bán tháo off-book)."
             print(f"   🚫 KHÔNG MUA: {final_reason}")
-            
-        # ƯU TIÊN 1: LUỒNG KÍCH NỔ ĐỘNG LƯỢNG (BỎ QUA WYCKOFF)
-        elif is_kinetic_ignition:
-            final_action = "BUY_MARKET"
-            sl_price = df_p_valid['low'].iloc[-1]
-            buy_p = board_info['best_ask'] if board_info and board_info['best_ask'] > 0 else price
-            final_reason = f"KINETIC IGNITION: Nền nén {pct_5d_base:+.1f}%, Bứt phá {pct_1d:+.1f}% + Cờ Bảo kê."
 
-            backed_by = []
-            if is_t0_whale_backed: backed_by.append("Cá Mập Real-time (T0)")
-            if has_shadow_override: backed_by.append("Lái Nội (Shadow)")
-            if has_active_override: backed_by.append("Cầu Đỡ Bảng Điện (Active T-1)")
+        # 🚀 ƯU TIÊN 1: SUPER BULLISH OVERRIDE (QUYỀN LỰC VETO TỪ DARKPOOL)
+        elif is_super_override:
+            final_action = "BUY_MARKET"
+            # Cài mỏ neo cắt lỗ chính là Giá vốn ngầm của Lái (Nếu có)
+            sl_price = dp_vwap if dp_vwap > 0 else df_p_valid['low'].iloc[-1]
+            buy_p = board_info['best_ask'] if board_info and board_info['best_ask'] > 0 else price
+            final_reason = f"SUPER OVERRIDE: Lái Nội gom giá Premium thỏa thuận + Cầu T0 áp đảo ({buy_intent_t0:.1f}%)."
             
-            print(f"   🚀 [KINETIC IGNITION]: PHÁT HIỆN ĐIỂM KÍCH NỔ ĐỘNG LƯỢNG!")
-            print(f"      - Nền nén (%20D): {pct_20d_base:+.1f}%")
-            print(f"      - Nền nén (%5D) : {pct_5d_base:+.1f}% (Đã rũ bỏ/đi ngang thành công)")
-            print(f"      - Gia tốc (%1D) : {pct_1d:+.1f}% (Bứt phá V-Shape)")
-            print(f"      - Bảo kê bởi    : {' + '.join(backed_by)}")
-            print(f"      => LỆNH BẮN TỈA: MUA KHẨN CẤP (MARKET) quanh {buy_p:,.0f} đ.")
-            print(f"      => 🛑 CHỐT CHẶN MỎ NEO: Cắt lỗ tuyệt đối nếu giá thủng {sl_price:,.0f} đ.")
+            print(f"   🔥 [SUPER OVERRIDE]: KÍCH HOẠT QUYỀN LỰC VETO TỐI THƯỢNG!")
+            print(f"      - Căn cứ Veto  : Lái nội khát hàng, gom Thỏa thuận giá Premium (Chấp nhận mua đắt).")
+            print(f"      - Xác nhận T0  : Lực cầu chủ động trên Bảng điện áp đảo ({buy_intent_t0:.1f}%).")
+            print(f"      - Phủ quyết    : Đè bẹp mọi cảnh báo rủi ro vĩ mô/vi mô khác.")
+            print(f"      => LỆNH BẮN TỈA: MUA QUÉT KHẨN CẤP (MARKET) quanh {buy_p:,.0f} đ.")
+            print(f"      => 🛑 BỆ ĐỠ LÁI (Hard Stop-Loss): Cắt lỗ tuyệt đối nếu giá thủng Giá vốn ngầm {sl_price:,.0f} đ.")
 
         # 🚀 ƯU TIÊN 2: LUẬT QUẢN TRỊ BÁO ĐỘNG ĐỎ TRUYỀN THỐNG (NẾU KHÔNG ĐƯỢC GIẢI CỨU)
         elif sm_result.get("is_danger", False) and not is_reversal:
