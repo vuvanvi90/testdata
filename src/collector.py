@@ -36,11 +36,11 @@ class VNStockDataPipeline:
         # Cấu trúc thư mục lưu Parquet
         self.folders = {
             'parquet_base': Path('data/parquet'),
-            'company': Path('data/parquet/company'),
-            'price': Path('data/parquet/price'),
-            'intraday': Path('data/parquet/intraday'),
-            'current': Path('data/parquet/board'),
-            'financial': Path('data/parquet/financial'),
+            'company': Path('data/parquet/macro'),
+            'price': Path('data/parquet/eod'),
+            'intraday': Path('data/parquet/t0'),
+            'current': Path('data/parquet/t0'),
+            'financial': Path('data/parquet/macro'),
             'macro': Path('data/parquet/macro')
         }
         for f in self.folders.values():
@@ -474,7 +474,7 @@ class VNStockDataPipeline:
         print(" 🦈 TẢI GIA TĂNG DÒNG TIỀN KHỐI NGOẠI (MULTI-THREADING)")
         print("="*50)
         
-        out_path = self.folders['macro'] / 'foreign_flow.parquet'
+        out_path = self.folders['price'] / 'foreign_flow.parquet'
         existing_df = pd.DataFrame()
         last_dates = {}
         
@@ -594,7 +594,7 @@ class VNStockDataPipeline:
         print(" 🦈 TẢI GIA TĂNG DÒNG TIỀN TỰ DOANH (MULTI-THREADING)")
         print("="*50)
         
-        out_path = self.folders['macro'] / 'prop_flow.parquet'
+        out_path = self.folders['price'] / 'prop_flow.parquet'
         existing_df = pd.DataFrame()
         last_dates = {}
         

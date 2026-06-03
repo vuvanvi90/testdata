@@ -39,22 +39,22 @@ class LiveAssistant:
         
         # Load dữ liệu Bảng giá và BCTC vào RAM (siêu nhanh nhờ Parquet)
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Đang nạp Master Data vào RAM...")
-        self.df_board = self._load_parquet_safe(self.parquet_dir / 'board/master_board.parquet')
-        self.df_fin = self._load_parquet_safe(self.parquet_dir / 'financial/master_financial.parquet')
+        self.df_board = self._load_parquet_safe(self.parquet_dir / 't0/master_board.parquet')
+        self.df_fin = self._load_parquet_safe(self.parquet_dir / 'macro/master_financial.parquet')
 
         # Nạp Tự doanh
-        self.df_prop = self._load_parquet_safe(self.parquet_dir / 'macro/prop_flow.parquet')
+        self.df_prop = self._load_parquet_safe(self.parquet_dir / 'eod/prop_flow.parquet')
         self.prop_dict = {}
 
         # Nạp Price L2
-        self.df_price_l2 = self._load_parquet_safe(self.parquet_dir / 'price/master_price_l2.parquet')
+        self.df_price_l2 = self._load_parquet_safe(self.parquet_dir / 'eod/master_price_l2.parquet')
         self.price_l2_dict = {}
 
         # Nạp Intraday
-        self.df_intra = self._load_parquet_safe(self.parquet_dir / 'intraday/master_intraday.parquet')
+        self.df_intra = self._load_parquet_safe(self.parquet_dir / 't0/master_intraday.parquet')
 
         # Nạp Put-through
-        self.df_pt = self._load_parquet_safe(self.parquet_dir / 'intraday/master_put_through.parquet')
+        self.df_pt = self._load_parquet_safe(self.parquet_dir / 't0/master_put_through.parquet')
 
         # Nạp danh sách mã theo ngành
         self.df_ind = self._load_parquet_safe(self.parquet_dir / 'macro/groups_by_industries.parquet')
@@ -67,7 +67,7 @@ class LiveAssistant:
 
         # Nạp Tổng khối lượng lưu hành để đo lường Cung/Cầu
         self.out_shares_dict = {}
-        df_comp = self._load_parquet_safe(self.parquet_dir / 'company/master_company.parquet')
+        df_comp = self._load_parquet_safe(self.parquet_dir / 'macro/master_company.parquet')
         # 1. Dự phòng: Nạp từ master_company
         if not df_comp.empty and 'ticker' in df_comp.columns and 'issue_share' in df_comp.columns:
             # Tạo dictionary O(1) tra cứu siêu tốc: { 'FPT': 1200000000, ... }

@@ -18,9 +18,9 @@ class DarkPoolEngine:
         self.data_dir = Path(data_dir)
         
         # Dependency Injection để tối ưu RAM khi chạy cùng OmniMatrix
-        self.df_price_l2 = df_l2 if df_l2 is not None else self._load_parquet_safe(self.data_dir / 'price/master_price_l2.parquet')
-        self.df_pt = df_pt if df_pt is not None else self._load_parquet_safe(self.data_dir / 'intraday/master_put_through.parquet')
-        self.df_prop = df_prop if df_prop is not None else self._load_parquet_safe(self.data_dir / 'macro/prop_flow.parquet')
+        self.df_price_l2 = df_l2 if df_l2 is not None else self._load_parquet_safe(self.data_dir / 'eod/master_price_l2.parquet')
+        self.df_pt = df_pt if df_pt is not None else self._load_parquet_safe(self.data_dir / 't0/master_put_through.parquet')
+        self.df_prop = df_prop if df_prop is not None else self._load_parquet_safe(self.data_dir / 'eod/prop_flow.parquet')
         
         if not self.df_price_l2.empty and 'matched_volume' in self.df_price_l2.columns and 'volume' not in self.df_price_l2.columns:
             self.df_price_l2 = self.df_price_l2.rename(columns={'matched_volume': 'volume'})

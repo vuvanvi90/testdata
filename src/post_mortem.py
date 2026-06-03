@@ -22,13 +22,12 @@ class PostMortemAnalyzer:
     def __init__(self, data_dir='data/parquet', universe='VN30'):
         self.data_dir = Path(data_dir)
         self.universe = universe
-        self.price_path = self.data_dir / 'price/master_price_l2.parquet'
-        self.foreign_path = self.data_dir / 'macro/foreign_flow.parquet'
-        self.prop_path = self.data_dir / 'macro/prop_flow.parquet'
-        self.comp_path = self.data_dir / 'company/master_company.parquet'
-        self.intra_path = self.data_dir / 'intraday/master_intraday.parquet'
-        self.board_path = self.data_dir / 'board/master_board.parquet'
-        self.pt_path = self.data_dir / 'intraday/master_put_through.parquet'
+        self.price_path = self.data_dir / 'eod/master_price_l2.parquet'
+        self.prop_path = self.data_dir / 'eod/prop_flow.parquet'
+        self.comp_path = self.data_dir / 'macro/master_company.parquet'
+        self.intra_path = self.data_dir / 't0/master_intraday.parquet'
+        self.board_path = self.data_dir / 't0/master_board.parquet'
+        self.pt_path = self.data_dir / 't0/master_put_through.parquet'
         self.indx_path = self.data_dir / 'macro/index_components.parquet'
         
         print("\n" + "="*80)

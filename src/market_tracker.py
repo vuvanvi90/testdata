@@ -14,9 +14,9 @@ class MarketTracker:
         if verbose:
             print(f"[{datetime.now().strftime('%H:%M:%S')}] Khởi động Hệ thống Kiểm kê Thị trường (Market Tracker)...")
         
-        self.price_path = f"{data_dir}/price/master_price_l2.parquet"
-        self.foreign_path = f"{data_dir}/macro/foreign_flow.parquet"
-        self.prop_path = f"{data_dir}/macro/prop_flow.parquet"
+        self.price_path = f"{data_dir}/eod/master_price_l2.parquet"
+        self.foreign_path = f"{data_dir}/eod/foreign_flow.parquet" # remove rồi
+        self.prop_path = f"{data_dir}/eod/prop_flow.parquet"
         self.industry_path = f"{data_dir}/macro/groups_by_industries.parquet"
         self.verbose = verbose
         

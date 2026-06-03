@@ -53,11 +53,11 @@ class TargetSniper:
     def _load_and_filter_data(self):
         """Chỉ nạp và giữ lại dữ liệu của ĐÚNG MÃ CẦN SOI để chạy với tốc độ ánh sáng"""
         # Đọc Master Data
-        df_price_l2_raw = self._load_parquet_safe(self.data_dir / 'price/master_price_l2.parquet')
-        df_prop_raw = self._load_parquet_safe(self.data_dir / 'macro/prop_flow.parquet')
-        df_intra_raw = self._load_parquet_safe(self.data_dir / 'intraday/master_intraday.parquet')
-        df_board_raw = self._load_parquet_safe(self.data_dir / 'board/master_board.parquet')
-        df_pt_raw = self._load_parquet_safe(self.data_dir / 'intraday/master_put_through.parquet')
+        df_price_l2_raw = self._load_parquet_safe(self.data_dir / 'eod/master_price_l2.parquet')
+        df_prop_raw = self._load_parquet_safe(self.data_dir / 'eod/prop_flow.parquet')
+        df_intra_raw = self._load_parquet_safe(self.data_dir / 't0/master_intraday.parquet')
+        df_board_raw = self._load_parquet_safe(self.data_dir / 't0/master_board.parquet')
+        df_pt_raw = self._load_parquet_safe(self.data_dir / 't0/master_put_through.parquet')
         
         # TIME-TRAVEL: CẮT BỎ TOÀN BỘ DỮ LIỆU TƯƠNG LAI
         if self.target_date:
@@ -69,7 +69,7 @@ class TargetSniper:
             if not df_board_raw.empty and 'time' in df_board_raw.columns:
                 df_board_raw = df_board_raw[df_board_raw['time'] <= target_end]
 
-        self.df_comp = self._load_parquet_safe(self.data_dir / 'company/master_company.parquet')
+        self.df_comp = self._load_parquet_safe(self.data_dir / 'macro/master_company.parquet')
         self.df_idx = self._load_parquet_safe(self.data_dir / 'macro/index_components.parquet')
 
         # Lọc siêu tốc (Chỉ lấy ticker)

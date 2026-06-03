@@ -5,7 +5,7 @@ from pathlib import Path
 
 class QuantPortfolioEngine:
     def __init__(self, price_dir=None, output_dir=None):
-        self.price_dir = Path(price_dir) / 'master_price_l2.parquet' if price_dir else Path('data/parquet/price/master_price_l2.parquet')
+        self.price_dir = Path(price_dir) / 'master_price_l2.parquet' if price_dir else Path('data/parquet/eod/master_price_l2.parquet')
         self.output_dir = Path(output_dir) if output_dir else Path('data/portfolio')
         self.output_dir.mkdir(parents=True, exist_ok=True)
         

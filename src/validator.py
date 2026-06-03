@@ -3,7 +3,7 @@ from pathlib import Path
 
 class ValidatePipeline:
     def __init__(self, path_dir=None):
-        self.path_dir = Path(path_dir) if path_dir else Path('data/parquet/price/master_price.parquet')
+        self.path_dir = Path(path_dir) if path_dir else Path('data/parquet/eod/master_price_l2.parquet')
 
     # def validate_master_price(parquet_path):
     def validate_master_price(self):

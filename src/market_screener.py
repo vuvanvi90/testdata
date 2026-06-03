@@ -27,8 +27,8 @@ class MarketScreener:
 
     def _load_data(self):
         """Nạp dữ liệu EOD làm Chân lý tuyệt đối"""
-        self.df_price = self.load_pq('price/master_price_l2.parquet')
-        self.df_prop = self.load_pq('macro/prop_flow.parquet')
+        self.df_price = self.load_pq('eod/master_price_l2.parquet')
+        self.df_prop = self.load_pq('eod/prop_flow.parquet')
         self.df_idx = self.load_pq('macro/index_components.parquet')
 
         if not self.df_price.empty and 'matched_volume' in self.df_price.columns and 'volume' not in self.df_price.columns:
@@ -53,8 +53,8 @@ class MarketScreener:
 
     def _load_live_price_data(self):
         try:
-            df_intra = self.load_pq('intraday/master_intraday.parquet')
-            df_board = self.load_pq('board/master_board.parquet')
+            df_intra = self.load_pq('t0/master_intraday.parquet')
+            df_board = self.load_pq('t0/master_board.parquet')
             if not self.df_price.empty: 
                 df_eod = self.df_price.copy()
                 df_eod['time'] = pd.to_datetime(df_eod['time']).dt.normalize()

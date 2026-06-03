@@ -27,9 +27,9 @@ class QuantOptimizer:
         self.parquet_dir = Path('data/parquet')
         self._ensure_exist_dir()
 
-        self.foreign_df = self._load_parquet(self.parquet_dir / 'macro/foreign_flow.parquet')
-        self.prop_df = self._load_parquet(self.parquet_dir / 'macro/prop_flow.parquet')
-        self.price_df = self._load_parquet(self.parquet_dir / 'price/master_price.parquet')
+        self.foreign_df = self._load_parquet(self.parquet_dir / 'eod/foreign_flow.parquet') # remove rồi
+        self.prop_df = self._load_parquet(self.parquet_dir / 'eod/prop_flow.parquet')
+        self.price_df = self._load_parquet(self.parquet_dir / 'eod/master_price.parquet') # remove rồi
 
     def _ensure_exist_dir(self):
         self.backtest_dir.mkdir(parents=True, exist_ok=True)
