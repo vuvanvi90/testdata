@@ -13,6 +13,9 @@ from pathlib import Path
 # Khớp lệnh định kỳ đóng cửa (ATC): 14h30 – 14h45
 # Giao dịch thỏa thuận: 9h00 – 15h00
 
+# Nên bán lúc 10h sáng
+# Nên mua lúc 14h chiều
+
 # from src.collector import VNStockDataPipeline
 # from src.run_bot import run_trading_system
 from src.run_bot import run_darkpool_radar, run_vn30_live, run_midcap_live, run_smallcap_live, run_sniper, run_post_mortem
@@ -20,28 +23,25 @@ from src.run_bot import run_darkpool_radar, run_vn30_live, run_midcap_live, run_
 # from src.backtester import VectorizedBacktester
 # from src.validator import ValidatePipeline
 # from src.market_flow_by_unit import MarketFlowAnalyzer
-# from src.optimizer import QuantOptimizer 
-# from src.reporter import CashFlowReporter 
+# from src.optimizer import QuantOptimizer
 # from src.notifier import send_telegram_alert 
 # from src.inspector import SignalInspector 
-from src.flow_tracker import SmartMoneyTracker
-# from src.shadow_profiler import ShadowProfiler
+# from src.flow_tracker import SmartMoneyTracker
 # from src.market_tracker import MarketTracker
-# from src.post_mortem import PostMortemAnalyzer
 
 def main():
-    df_price = _load_parquet(Path('data/parquet/price/master_price.parquet'))
-    df_price_l2 = _load_parquet(Path('data/parquet/price/master_price_l2.parquet'))
-    df_intra = _load_parquet(Path('data/parquet/intraday/master_intraday.parquet'))
-    df_foreign = _load_parquet(Path('data/parquet/macro/foreign_flow.parquet'))
-    df_prop = _load_parquet(Path('data/parquet/macro/prop_flow.parquet'))
-    df_comp = _load_parquet(Path('data/parquet/company/master_company.parquet'))
+    df_price = _load_parquet(Path('data/parquet/eod/master_price.parquet'))
+    df_price_l2 = _load_parquet(Path('data/parquet/eod/master_price_l2.parquet'))
+    df_intra = _load_parquet(Path('data/parquet/t0/master_intraday.parquet'))
+    df_foreign = _load_parquet(Path('data/parquet/eod/foreign_flow.parquet'))
+    df_prop = _load_parquet(Path('data/parquet/eod/prop_flow.parquet'))
+    df_comp = _load_parquet(Path('data/parquet/macro/master_company.parquet'))
     df_industry = _load_parquet(Path('data/parquet/macro/groups_by_industries.parquet'))
     df_index = _load_parquet(Path('data/parquet/macro/index_components.parquet'))
 
-    price_dict = _load_data_dict(Path('data/parquet/price/master_price.parquet'))
-    foreign_dict = _load_data_dict(Path('data/parquet/macro/foreign_flow.parquet'))
-    prop_dict = _load_data_dict(Path('data/parquet/macro/prop_flow.parquet'))
+    price_dict = _load_data_dict(Path('data/parquet/eod/master_price.parquet'))
+    foreign_dict = _load_data_dict(Path('data/parquet/eod/foreign_flow.parquet'))
+    prop_dict = _load_data_dict(Path('data/parquet/eod/prop_flow.parquet'))
     out_shares_dict = {}
     if not df_comp.empty and 'ticker' in df_comp.columns and 'issue_share' in df_comp.columns:
         out_shares_dict = df_comp.set_index('ticker')['issue_share'].to_dict()
@@ -76,17 +76,17 @@ def main():
 
     # watch_list = df_index[df_index['index_code'] == 'VN30']['ticker'].tolist()
     # watch_list = df_index[df_index['index_code'] == 'VNMidCap']['ticker'].tolist()
-    # watch_list = ["SHB", "FPT", "GAS"]
+    # watch_list = ["SHB", "VJC", "VRE", "VNM"]
     # run_sniper(tickers=watch_list)
+
+    # Test: Kiểm tra mã tăng và signal trước đó
+    # watch_list = df_index[df_index['index_code'] == 'VN30']['ticker'].tolist()
+    # watch_list = ["SHB", "VJC", "VRE", "VNM"]
+    # run_post_mortem(tickers=watch_list, target_date=datetime.now().strftime('%Y-%m-%d'), lookback_days=20)
 
     # # Bóc tách dòng tiền của 1 mã bất kỳ
     # tracker = SmartMoneyTracker(df_price, df_foreign, df_prop, df_indx=df_index)
     # tracker.track_ticker(ticker='ORS', target_date=None, start_date='2026-03-01')
-
-    # Test: Kiểm tra mã tăng và signal trước đó
-    # watch_list = df_index[df_index['index_code'] == 'VN30']['ticker'].tolist()
-    # watch_list = ["SHB", "FPT", "GAS"]
-    # run_post_mortem(tickers=watch_list, target_date=datetime.now().strftime('%Y-%m-%d'), lookback_days=20)
 
     # # Test: Kiểm tra thị trường, thanh khoản và volume mà Cá Mập nắm giữ
     # analyzer = MarketFlowAnalyzer(df_price, df_foreign, df_prop)
@@ -139,20 +139,6 @@ def main():
     # manual_list = ["DIG", "GMD"]
     # for ticker in manual_list:
     #     inspector.inspect_single_ticker(ticker=ticker)
-
-    # # Kiểm soát vùng xám
-    # profiler = ShadowProfiler(df_price)
-    # # Định nghĩa Tệp Tội phạm (Các mã Penny/Midcap siêu đầu cơ thường có lái)
-    # all_tickers = df_price['ticker'].unique().tolist()
-    # market_tickers = [t for t in all_tickers if len(str(t)) == 3]
-    # training_tickers = profiler._filter_shadow_candidates(market_tickers)
-    # # shadow_tickers = ['DHM', 'NO1', 'VSI']
-    # shadow_tickers = ['HRC']
-    # # Pha 1: Máy học tự động đo lường quy luật của nhóm này
-    # rules = profiler.build_criminal_profile(training_tickers, lookback_days=300)
-    # # Pha 2: Áp luật quét trực tiếp bảng điện hôm nay
-    # if rules:
-    #     profiler.live_shadow_radar(shadow_tickers, rules, target_date='2026-02-10')
 
     # tracker = MarketTracker(data_dir='data/parquet')
     # # # Tuần

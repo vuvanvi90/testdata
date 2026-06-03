@@ -23,16 +23,16 @@ class VN30DataPipeline:
         # mbk
 
     def run_pipeline(self):
-        df_price = self._load_parquet(Path('data/parquet/price/master_price.parquet'))
-        df_price_l2 = self._load_parquet(Path('data/parquet/price/master_price_l2.parquet'))
-        df_board = self._load_parquet(Path('data/parquet/board/master_board.parquet'))
-        df_intra = self._load_parquet(Path('data/parquet/intraday/master_intraday.parquet'))
-        df_pt = self._load_parquet(Path('data/parquet/intraday/master_put_through.parquet'))
-        df_foreign = self._load_parquet(Path('data/parquet/macro/foreign_flow.parquet'))
-        df_prop = self._load_parquet(Path('data/parquet/macro/prop_flow.parquet'))
+        df_price = self._load_parquet(Path('data/parquet/eod/master_price.parquet'))
+        df_price_l2 = self._load_parquet(Path('data/parquet/eod/master_price_l2.parquet'))
+        df_board = self._load_parquet(Path('data/parquet/t0/master_board.parquet'))
+        df_intra = self._load_parquet(Path('data/parquet/t0/master_intraday.parquet'))
+        df_pt = self._load_parquet(Path('data/parquet/t0/master_put_through.parquet'))
+        df_foreign = self._load_parquet(Path('data/parquet/eod/foreign_flow.parquet'))
+        df_prop = self._load_parquet(Path('data/parquet/eod/prop_flow.parquet'))
         df_industry = self._load_parquet(Path('data/parquet/macro/groups_by_industries.parquet'))
         df_index = self._load_parquet(Path('data/parquet/macro/index_components.parquet'))
-        df_fin = self._load_parquet(Path('data/parquet/financial/master_financial.parquet'))
+        df_fin = self._load_parquet(Path('data/parquet/macro/master_financial.parquet'))
 
         data_frames = {
             'price': df_price,
@@ -209,13 +209,13 @@ class VN30DataPipeline:
 
         # if not df_price_l2.empty:
         #     df_group = {ticker: group for ticker, group in df_price_l2.groupby('ticker')}
-        # #     print(df_group['FPT'].tail(1))
-        #     df_group['FPT'].tail(1).to_json("FPT_price_l2.json", orient='records', force_ascii=False, indent=4)
+        #     # print(df_group['ACB'].tail(1))
+        #     df_group['ACB'].tail(1).to_json("ACB_price_l2.json", orient='records', force_ascii=False, indent=4)
 
         # if not df_prop.empty:
         #     df_group = {ticker: group for ticker, group in df_prop.groupby('ticker')}
-        #     # print(df_group['GMD'].tail(1))
-        #     df_group['FPT'].tail(1).to_json("FPT_prop.json", orient='records', force_ascii=False, indent=4)
+        #     # print(df_group['ACB'].tail(1))
+        #     df_group['ACB'].tail(1).to_json("ACB_prop.json", orient='records', force_ascii=False, indent=4)
 
         # if not df_industry.empty:
         #     # print(df_industry.tail(10))
